@@ -23,3 +23,4 @@ diff_binning
 *.nc
 *.tar
 *.zst
+*.npy
