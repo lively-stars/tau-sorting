@@ -1,14 +1,22 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     "typer",
+#     "numpy",
+#     "netcdf4",
+#     "rich",
+#     "tqdm",
+#     "scipy",
+#     "matplotlib",
+# ]
+# ///
 """
 Tau-sorting: Opacity binning for stellar atmospheres
 
 This script reads atmospheric model data, opacity distribution functions (ODFs),
 and continuum opacity data to calculate binned opacities for radiative transfer.
 """
-
-from turtle import right
-
-from ast import Raise
 
 import typer
 from pathlib import Path
@@ -17,8 +25,6 @@ import numpy as np
 from numpy.typing import NDArray
 from netCDF4 import Dataset
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn
-import sys
 from tqdm import tqdm
 from scipy.interpolate import RegularGridInterpolator
 import matplotlib.pyplot as plt
@@ -947,7 +953,13 @@ def calculate_reference_opacities(
 
 
 def calculate_reference_opacities_from_custom_tp_grid(
-    atmo: AtmosphericData, reference_opacities: NDArray[np.float64], wavelength_grid: NDArray[np.float64], subbin: NDArray[np.float64], nbins: int, nsubbins: int, kind: str = "rosseland"
+    atmo: AtmosphericData,
+    reference_opacities: NDArray[np.float64],
+    wavelength_grid: NDArray[np.float64],
+    subbin: NDArray[np.float64],
+    nbins: int,
+    nsubbins: int,
+    kind: str = "rosseland",
 ) -> NDArray[np.float64]:
     """
     Calculate reference opacities (Rosseland mean, Planck mean, etc.).
@@ -980,7 +992,7 @@ def calculate_reference_opacities_from_custom_tp_grid(
     # shape verification
     n_atmosphere_points = atmo.nlevels
     opacity_at_tp_points = np.zeros((n_atmosphere_points,), dtype=np.float64)
-    
+
     total_kappa = reference_opacities  # shape: [nt, np, nbins, nsubbins]
     # console.print(f" total_kappa shape: {total_kappa.shape}")
 
@@ -989,8 +1001,7 @@ def calculate_reference_opacities_from_custom_tp_grid(
     console.print(f"Calculating {kind} reference opacities...")
     console.print(f"  Temperature grid: {temperature_grid.shape}")
     console.print(f"  Pressure grid: {pressure_grid.shape}")
-    temperature_pressure_grid = np.column_stack(
-        (temperature_grid, pressure_grid))
+    temperature_pressure_grid = np.column_stack((temperature_grid, pressure_grid))
     console.print(f"  Temp-Pressure grid shape: {temperature_pressure_grid.shape}")
     for atmosphere_depth_idx, (temperature, pressure) in tqdm(
         enumerate(temperature_pressure_grid), total=temperature_pressure_grid.shape[0]
@@ -1020,9 +1031,7 @@ def calculate_reference_opacities_from_custom_tp_grid(
         wavelength_grid_subbins_center = np.zeros_like(kappa_values)
         # console.print(f"odf.subbin shape: {odf.subbin.shape}")
         number_of_subbins: int = subbin.shape[1]
-        wavelength_grid_subbins_edges_shape = (
-            subbin.shape[0] * (number_of_subbins) + 1
-        )
+        wavelength_grid_subbins_edges_shape = subbin.shape[0] * (number_of_subbins) + 1
         wavelength_grid_subbins_edges = np.zeros(
             wavelength_grid_subbins_edges_shape, dtype=np.float64
         )
@@ -1112,12 +1121,13 @@ def calculate_reference_opacities_from_custom_tp_grid(
 
     return opacity_at_tp_points
 
+
 def compute_tau_rosseland(
     atmo: AtmosphericData, kappa_rosseland: NDArray[np.float64]
 ) -> NDArray[np.float64]:
     """
     Compute Rosseland optical depth profile for the atmosphere.
-    
+
     For each layer, the optical depth is calculated by integrating
     the product of the Rosseland mean opacity and the density over height,
     up to that layer.
@@ -1133,7 +1143,7 @@ def compute_tau_rosseland(
 
     """
     n_layers = atmo.nlevels
-    tau_rosseland = np.zeros(n_layers-1, dtype=np.float64)
+    tau_rosseland = np.zeros(n_layers - 1, dtype=np.float64)
     height = atmo.z[::-1]  # cm, reverse to go from top to bottom
     density = atmo.rho  # g/cm³, reverse to match
 
@@ -1143,22 +1153,75 @@ def compute_tau_rosseland(
         console.print(
             f"[red]Error: kappa_rosseland shape {kappa_rosseland.shape} does not match atmospheric layers {n_layers}[/red]"
         )
-        raise ValueError("Inconsistent shapes for kappa rosseland and atmospheric layers")
-    
+        raise ValueError(
+            "Inconsistent shapes for kappa rosseland and atmospheric layers"
+        )
+
     for layer_idx, _ in enumerate(height[:-1]):
-        console.print(f" Layer {layer_idx}: height={height[layer_idx]:.2e} cm, density={density[layer_idx]:.2e} g/cm³, kappa_rosseland={kappa_rosseland[layer_idx]:.2e} cm²/g")
-        
-        density_integrand = density[:layer_idx + 1]
-        height_integrand = height[:layer_idx + 1]
-        kappa_integrand = kappa_rosseland[:layer_idx + 1]
-    
+        console.print(
+            f" Layer {layer_idx}: height={height[layer_idx]:.2e} cm, density={density[layer_idx]:.2e} g/cm³, kappa_rosseland={kappa_rosseland[layer_idx]:.2e} cm²/g"
+        )
+
+        density_integrand = density[: layer_idx + 1]
+        height_integrand = height[: layer_idx + 1]
+        kappa_integrand = kappa_rosseland[: layer_idx + 1]
+
         console.print(f"Performing trapezoidal integration over {layer_idx} layers...")
-    
-        tau_rosseland[layer_idx] = np.trapezoid(kappa_integrand * density_integrand, height_integrand)
-    
+
+        tau_rosseland[layer_idx] = np.trapezoid(
+            kappa_integrand * density_integrand, height_integrand
+        )
+
     console.print("Rosseland optical depth profile calculation complete.")
 
     return tau_rosseland
+
+
+def plot_rosseland_tau(
+    atm: AtmosphericData, tau_rosseland: NDArray[np.float64]
+) -> None:
+    """
+    Plot the Rosseland optical depth profile.
+
+    Args:
+        atm: Atmospheric data
+        tau_rosseland: Optical depth profile array with shape [n_layers]
+    """
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+
+    # Left panel: tau vs height
+    height_mm = atm.z / 1e8  # Convert cm to Mm
+    ax1.semilogy(
+        height_mm[::-1][:-1],
+        tau_rosseland,
+        "b-",
+        linewidth=2,
+        label="Rosseland optical depth",
+    )
+    ax1.set_xlabel("Height [Mm]", fontsize=12)
+    ax1.set_ylabel("Rosseland Optical Depth τ", fontsize=12)
+    ax1.set_title("Rosseland Optical Depth Profile", fontsize=14, fontweight="bold")
+    ax1.grid(True, alpha=0.3, which="both")
+    ax1.legend(fontsize=10)
+
+    # Right panel: temperature vs tau
+    temperature = atm.T
+    ax2.semilogx(
+        tau_rosseland, temperature[:-1], "r-", linewidth=2, label="Temperature"
+    )
+    ax2.set_ylabel("Temperature [K]", fontsize=12)
+    ax2.set_xlabel("Rosseland Optical Depth τ", fontsize=12)
+    ax2.set_title("Temperature vs Optical Depth", fontsize=14, fontweight="bold")
+    ax2.grid(True, alpha=0.3, which="both")
+    ax2.legend(fontsize=10)
+
+    plt.tight_layout()
+    tau_plot_file = "tau_rosseland_profile.png"
+    plt.savefig(tau_plot_file, dpi=150, bbox_inches="tight")
+    console.print(
+        f"[green]✓ Tau Rosseland profile plot saved to {tau_plot_file}[/green]"
+    )
+    # plt.show()
 
 
 @app.command()
@@ -1247,9 +1310,8 @@ def main(
     interpolated_opacity = interpolate_kappa_to_atmosphere(odf, cont, atm)
     console.print(f"interpolated_opacity shape: {interpolated_opacity.shape}")
 
-
     console.print("Calculate kappa rosseland at each atmosphere T, p point...")
-    
+
     kappa_on_atmosphere_tp = calculate_reference_opacities_from_custom_tp_grid(
         atm,
         interpolated_opacity,
@@ -1257,42 +1319,17 @@ def main(
         odf.subbin,
         odf.nbins,
         odf.nsubbins,
-        kind="rosseland"
+        kind="rosseland",
     )
     console.print(f"kappa_on_atmosphere_tp shape: {kappa_on_atmosphere_tp.shape}")
-    
+
     tau_rosseland = compute_tau_rosseland(atm, kappa_on_atmosphere_tp)
     console.print(f"tau_rosseland shape: {tau_rosseland.shape}")
-    
-    
-    fig, ax = plt.subplots(figsize=(10, 6))
-    height_mm = atm.z / 1e8  # Convert cm to Mm
-    ax.semilogy(height_mm[::-1][:-1], tau_rosseland, 'b-', linewidth=2, label='Rosseland optical depth')
-    ax.set_xlabel('Height [Mm]', fontsize=12)
-    ax.set_ylabel('Rosseland Optical Depth τ', fontsize=12)
-    ax.set_title('Rosseland Optical Depth Profile', fontsize=14, fontweight='bold')
-    ax.grid(True, alpha=0.3, which='both')
-    ax.legend(fontsize=10)
-    plt.tight_layout()
-    tau_plot_file = 'tau_rosseland_profile.png'
-    plt.savefig(tau_plot_file, dpi=150, bbox_inches='tight')
-    console.print(f"[green]✓ Tau Rosseland profile plot saved to {tau_plot_file}[/green]")
-    plt.show()
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    temperature = atm.T
-    ax.semilogx(tau_rosseland, temperature[:-1], 'b-', linewidth=2, label='Rosseland optical depth')
-    ax.set_ylabel('Temperature [K]', fontsize=12)
-    ax.set_xlabel('Rosseland Optical Depth τ', fontsize=12)
-    # ax.set_title('Rosseland Optical Depth Profile', fontsize=14, fontweight='bold')
-    ax.grid(True, alpha=0.3, which='both')
-    ax.legend(fontsize=10)
-    plt.tight_layout()
-    # tau_plot_file = 'tau_rosseland_profile.png'
-    # plt.savefig(tau_plot_file, dpi=150, bbox_inches='tight')
-    console.print(f"[green]✓ Tau Rosseland profile plot saved to {tau_plot_file}[/green]")
-    plt.show()
-    
+    console.print("Plotting Rosseland optical depth profile...")
+
+    plot_rosseland_tau(atm, tau_rosseland)
+
     # TODO: Implement the following steps:
     # - Initialize grids and interpolation
     # - Calculate reference opacities (Rosseland, 500nm, etc.)
