@@ -24,7 +24,7 @@ LN10 = 4.342944819032518e-1
 
 
 def planck_function(
-    wavelength: NDArray[np.float64], temperature: NDArray[np.float64]
+    wavelength: NDArray[np.float64], temperature: np.float64
 ) -> NDArray[np.float64]:
     """
     Calculate the Planck function B_lambda(T) for given wavelengths and temperatures.
@@ -145,7 +145,7 @@ def plot_planck_and_derivatives():
     wavelengths = np.linspace(10, 2000, 1000)  # 10-2000 nm
     
     # Temperature (K)
-    T = 5800  # Solar temperature
+    T = np.array([5800], dtype=np.float64)  # Solar temperature
     T_extra = [5000, 5200, 5400, 5600, 6000, 6200, 6400, 6600]
     
     # Calculate Planck function

@@ -18,16 +18,21 @@ This script reads atmospheric model data, opacity distribution functions (ODFs),
 and continuum opacity data to calculate binned opacities for radiative transfer.
 """
 
+# from matplotlib.tests.test_widgets import ax
+import matplotlib
+
 import typer
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Annotated
 import numpy as np
 from numpy.typing import NDArray
 from netCDF4 import Dataset
 from rich.console import Console
 from tqdm import tqdm
 from scipy.interpolate import RegularGridInterpolator
+from scipy.integrate import cumulative_trapezoid
 import matplotlib.pyplot as plt
+import time
 
 console = Console()
 app = typer.Typer(help="Tau-sorting opacity binning tool")
@@ -45,11 +50,11 @@ class AtmosphericData:
     """Container for 1D atmospheric model data"""
 
     def __init__(self):
-        self.z = None  # height [cm]
-        self.rho = None  # density [g/cm^3]
-        self.p = None  # pressure [dyn/cm^2]
-        self.T = None  # temperature [K]
-        self.nlevels = 0
+        self.z: NDArray[np.float64] = None  # height [cm]
+        self.rho: NDArray[np.float64] = None  # density [g/cm^3]
+        self.p: NDArray[np.float64] = None  # pressure [dyn/cm^2]
+        self.T: NDArray[np.float64] = None  # temperature [K]
+        self.nlevels: int = 0
 
     def __repr__(self):
         return (
@@ -102,7 +107,7 @@ class ODFData:
         self.P: NDArray[np.float64] | None = None  # Pressure grid
         self.T: NDArray[np.float64] | None = None  # Temperature grid
         self.subbin: NDArray[np.float64] | None = None  # Sub-bin weights
-        self.vturb: NDArray[np.float64] | None = None  # Turbulent velocity
+        self.vturb: np.float64 | None = None  # Turbulent velocity
 
         # Dimensions
         self.np = 0
@@ -122,7 +127,7 @@ class ContinuumData:
     """Container for continuum opacity data"""
 
     def __init__(self):
-        self.kappa_abs = None  # Absorption opacity
+        self.kappa_abs: NDArray[np.float64] = None  # Absorption opacity
 
     def __repr__(self):
         return f"ContinuumData(shape={self.kappa_abs.shape if self.kappa_abs is not None else None})"
@@ -165,6 +170,63 @@ def read_atmospheric_model(filepath: Path) -> AtmosphericData:
         raise
 
 
+def read_odf_npy(filepath: Path) -> ODFData:
+    """
+    Read Opacity Distribution Function data from NumPy .npy file.
+
+    This is much faster than reading NetCDF format.
+    Expected structure: structured array with named fields from convert_odf_to_npy.py
+
+    Args:
+        filepath: Path to ODF .npy file
+
+    Returns:
+        ODFData object with opacity distributions
+    """
+    console.print(f"[cyan]Reading ODF data from {filepath}[/cyan]")
+    console.print("  Using fast .npy format")
+
+    try:
+        data = np.load(filepath, allow_pickle=True)
+
+        odf = ODFData()
+
+        # Read dimensions
+        odf.nt = int(data["nt"][0])
+        odf.np = int(data["np"][0])
+        odf.nbins = int(data["nbins"][0])
+        odf.nsubbins = int(data["nsubbins"][0])
+        odf.numfp = int(data["numfp"][0])
+
+        console.print(
+            f"  Dimensions: nt={odf.nt}, np={odf.np}, "
+            f"nbins={odf.nbins}, nsubbins={odf.nsubbins}"
+        )
+
+        # Read arrays
+        odf.ODF = data["ODF"][0]
+        odf.wavelength_grid = data["wavelength_grid"][0] * 1e-7 # convert to cm
+        odf.P = data["P"][0]
+        odf.T = data["T"][0]
+        odf.subbin = data["subbin"][0]
+        odf.vturb = np.float64(data["vturb"][0])
+
+        console.print(f"  Turbulent velocity: {odf.vturb} km/s")
+        console.print("  ✓ ODF loaded successfully")
+        console.print(f"  Temperature grid: {odf.T.min():.1f} - {odf.T.max():.1f} K")
+        console.print(f"  Pressure grid: {odf.P.min():.2e} - {odf.P.max():.2e} dyn/cm²")
+        console.print(
+            f"  Frequency range: {odf.wavelength_grid.min():.2e} - {odf.wavelength_grid.max():.2e} Hz"
+        )
+        console.print(f"  ODF sub-bins shape: {odf.subbin.shape}")
+
+        return odf
+
+    except Exception as e:
+        console.print(f"[red]Error reading ODF .npy file: {e}[/red]")
+        raise
+
+
 def read_odf_netcdf(filepath: Path) -> ODFData:
     """
     Read Opacity Distribution Function data from NetCDF file.
@@ -201,7 +263,7 @@ def read_odf_netcdf(filepath: Path) -> ODFData:
             odf.ODF = 10 ** (
                 nc.variables["ODF"][:] / 1000
             )  # short integer, convert: 10^(ODF/1000)
-            odf.wavelength_grid = nc.variables["FreqG"][:]
+            odf.wavelength_grid = nc.variables["FreqG"][:] * 1e-7
             odf.P = nc.variables["P"][:]
             odf.T = nc.variables["T"][:]
             odf.subbin = nc.variables["subbin"][:]
@@ -219,7 +281,7 @@ def read_odf_netcdf(filepath: Path) -> ODFData:
                 f"  Pressure grid: {odf.P.min():.2e} - {odf.P.max():.2e} dyn/cm²"
             )
             console.print(
-                f"  Frequency range: {odf.wavelength_grid.min():.2e} - {odf.wavelength_grid.max():.2e} Hz"
+                f"  Wavelength range: {odf.wavelength_grid.min() * 1e7:.2e} - {odf.wavelength_grid.max() * 1e7:.2e} cm"
             )
             console.print(f"  ODF sub-bins: {odf.subbin.shape}")
             initial_sub_bins = odf.subbin[0]
@@ -238,7 +300,7 @@ def read_odf_netcdf(filepath: Path) -> ODFData:
 
 def read_continuum_opacity(
     filepath: Path, n_bins: int, n_temperature: int, n_pressure: int
-) -> np.ndarray:
+) -> NDArray[np.float64]:
     """
     Read continuum opacity data from ASCII file.
 
@@ -261,12 +323,12 @@ def read_continuum_opacity(
         npy_path = Path(str(filepath).replace(".dat", ".npy"))
 
         if npy_path.exists():
-            console.print(f"  [green]Using fast .npy format[/green]")
+            console.print("  [green]Using fast .npy format[/green]")
             kappa = np.load(npy_path)
         else:
             # Fall back to ASCII .dat file
             console.print(
-                f"  [yellow]Loading ASCII (slow) - consider converting to .npy[/yellow]"
+                "  [yellow]Loading ASCII (slow) - consider converting to .npy[/yellow]"
             )
             data = np.loadtxt(str(filepath))
             expected_size = n_bins * n_temperature * n_pressure
@@ -297,7 +359,6 @@ def read_continuum_data(
     nlam: int,
     nt: int,
     n_pressure: int,
-    cont_scatter: float = 0.0,
 ) -> ContinuumData:
     """
     Read all continuum opacity data files.
@@ -307,7 +368,6 @@ def read_continuum_data(
         nlam: Number of wavelength bins
         nt: Number of temperature points
         n_pressure: Number of pressure points
-        cont_scatter: Scattering contribution factor (default: 0.0)
 
     Returns:
         ContinuumData object with all continuum opacities
@@ -385,7 +445,7 @@ def verify_data_consistency(atm: AtmosphericData, odf: ODFData, cont: ContinuumD
 
 
 def planck_function(
-    wavelength: NDArray[np.float64], temperature: NDArray[np.float64]
+    wavelength: NDArray[np.float64], temperature: float
 ) -> NDArray[np.float64]:
     """
     Calculate the Planck function B_lambda(T) for given wavelengths and temperatures.
@@ -409,7 +469,7 @@ def planck_function(
 
 
 def planck_derivative(
-    wavelength: NDArray[np.float64], temperature: NDArray[np.float64]
+    wavelength: NDArray[np.float64], temperature: float
 ) -> NDArray[np.float64]:
     """
     Calculate the derivative of the Planck function dB/dT.
@@ -433,7 +493,7 @@ def planck_derivative(
 
 
 def planck_derivative_analytic(
-    wavelength: NDArray[np.float64], temperature: NDArray[np.float64]
+    wavelength: NDArray[np.float64], temperature: float
 ) -> NDArray[np.float64]:
     """
     Calculate the analytic derivative of the Planck function dB/dT.
@@ -489,7 +549,7 @@ def planck_derivative_analytic(
     return derivative
 
 
-def plot_planck_and_derivatives(output_file: str = "planck_verification.png") -> None:
+def plot_planck_and_derivatives(output_file: str = "planck_verification.pdf") -> None:
     """
     Plot Planck function and its derivatives for verification.
 
@@ -514,7 +574,7 @@ def plot_planck_and_derivatives(output_file: str = "planck_verification.png") ->
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
 
     # === Left plot: Planck functions ===
-    cmap = plt.cm.plasma
+    cmap = matplotlib.colormaps.get_cmap("plasma")
     for i, T in enumerate(T_range):
         B = planck_function(wavelengths, T)
         color = cmap(i / len(T_range))
@@ -642,7 +702,7 @@ def plot_planck_and_derivatives(output_file: str = "planck_verification.png") ->
 
     # Print numerical verification at selected wavelengths
     console.print("\n[cyan]Numerical verification at selected wavelengths:[/cyan]")
-    T_test = 5800  # K (Solar temperature)
+    T_test = 5800.  # K (Solar temperature)
     for wl_nm, wl_cm in zip(selected_wavelengths_nm, selected_wavelengths):
         B = planck_function(np.array([wl_cm]), T_test)[0]
         dB_dT = planck_derivative_analytic(np.array([wl_cm]), T_test)[0]
@@ -831,7 +891,6 @@ def calculate_reference_opacities(
     temperature_pressure_grid = np.array(
         [(temp, pres) for temp in temperature_grid for pres in pressure_grid]
     )
-    console.print(f"  Temp-Pressure grid shape: {temperature_pressure_grid.shape}")
     for idx, (temperature, pressure) in tqdm(
         enumerate(temperature_pressure_grid), total=temperature_pressure_grid.shape[0]
     ):
@@ -850,7 +909,7 @@ def calculate_reference_opacities(
             raise ValueError("Inconsistent kappa values length")
 
         # Assign sub-bin wavelengths based on ODF frequency grid and sub-bin weights
-        wavelength_grid_bin_edges = odf.wavelength_grid * 1e-8  # cm
+        wavelength_grid_bin_edges = odf.wavelength_grid  # cm
         wavelength_grid_bin_size = np.diff(wavelength_grid_bin_edges)
         # console.print(f"  Wavelength grid shape: {wavelength_grid_bin_edges.shape}")
         # console.print(f"  Wavelength grid values: {wavelength_grid_bin_edges[:10]}")
@@ -994,7 +1053,6 @@ def calculate_reference_opacities_from_custom_tp_grid(
     opacity_at_tp_points = np.zeros((n_atmosphere_points,), dtype=np.float64)
 
     total_kappa = reference_opacities  # shape: [nt, np, nbins, nsubbins]
-    # console.print(f" total_kappa shape: {total_kappa.shape}")
 
     temperature_grid = atmo.T  # shape: [nt]
     pressure_grid = atmo.p  # shape: [np]
@@ -1013,7 +1071,6 @@ def calculate_reference_opacities_from_custom_tp_grid(
             atmosphere_depth_idx, ...
         ].flatten()  # shape: [nbins * nsubbins]
         # verify kappa_values length matches expected
-        # console.print(f" total_kappa shape: {total_kappa.shape}")
         expected_length = nbins * nsubbins
         if kappa_values.shape[0] != expected_length:
             console.print(
@@ -1024,12 +1081,9 @@ def calculate_reference_opacities_from_custom_tp_grid(
         # Assign sub-bin wavelengths based on ODF frequency grid and sub-bin weights
         wavelength_grid_bin_edges = wavelength_grid  # cm
         wavelength_grid_bin_size = np.diff(wavelength_grid_bin_edges)
-        # console.print(f"  Wavelength grid shape: {wavelength_grid_bin_edges.shape}")
-        # console.print(f"  Wavelength grid values: {wavelength_grid_bin_edges[:10]}")
 
         wavelength_grid_subbin_weights = subbin
         wavelength_grid_subbins_center = np.zeros_like(kappa_values)
-        # console.print(f"odf.subbin shape: {odf.subbin.shape}")
         number_of_subbins: int = subbin.shape[1]
         wavelength_grid_subbins_edges_shape = subbin.shape[0] * (number_of_subbins) + 1
         wavelength_grid_subbins_edges = np.zeros(
@@ -1037,41 +1091,27 @@ def calculate_reference_opacities_from_custom_tp_grid(
         )
         counter = 1
         for bin_idx in range(nbins):
-            # if bin_idx == 4:
-            #     sys.exit(0)
             left_edge = wavelength_grid_bin_edges[bin_idx]
             right_edge = wavelength_grid_bin_edges[bin_idx + 1]
             subbin_weights = wavelength_grid_subbin_weights[bin_idx]
             bin_size = wavelength_grid_bin_size[bin_idx]
             subbin_sizes = bin_size * subbin_weights
-            # console.print(f"  Bin {bin_idx}: bin_size={bin_size:.2e}, subbin_sizes={subbin_sizes}")
             sub_bin_edges = np.cumsum(subbin_sizes) + left_edge
             sub_bin_edges[-1] = right_edge  # ensure last edge matches right edge
-            # console.print(f"  sub_bin_edges: {sub_bin_edges}")
-            # console.print(f" np.cumsum(subbin_sizes): {np.cumsum(subbin_sizes)}")
-            # console.print(f" bin_size: {bin_size}")
 
             # for the first bin we set the left and right edges directly
             if bin_idx == 0:
                 wavelength_grid_subbins_edges[0] = left_edge
-                # console.print(f" setting wavelength_grid_subbins_edges[0] to {left_edge}")
                 wavelength_grid_subbins_edges[counter : counter + len(subbin_sizes)] = (
                     sub_bin_edges
                 )
-                # console.print(f"setting the subbins from {counter} to {counter+len(subbin_sizes)}")
-                # console.print(f" sub_bin_edges: {sub_bin_edges}")
-                # console.print(f"  First bin edges: {wavelength_grid_subbins_edges[:15]}")
-                # console.print(f"  Bin {bin_idx} edges: {wavelength_grid_subbins_edges[counter:counter+len(subbin_sizes)+1]}")
                 counter += len(subbin_weights)
             # for subsequent bins we set the left edge to the previous right edge
             else:
                 wavelength_grid_subbins_edges[counter : counter + len(subbin_sizes)] = (
                     sub_bin_edges
                 )
-                # console.print(f"  Bin {bin_idx} edges: {wavelength_grid_subbins_edges[counter-1:counter+len(subbin_sizes)]}")
                 counter += len(subbin_weights)
-            # console.print(f" After bin {bin_idx}, counter={counter}")
-            # console.print(f" Current wavelength_grid_subbins_edges: {wavelength_grid_subbins_edges[:counter+2]}")
         counter -= 1  # adjust for last increment
         if counter != len(kappa_values):
             console.print(
@@ -1119,7 +1159,7 @@ def calculate_reference_opacities_from_custom_tp_grid(
             idx_500nm = np.argmin(np.abs(wavelength_grid - wl_500nm))
             opacity_at_tp_points[atmosphere_depth_idx] = kappa_values[idx_500nm]
 
-    return opacity_at_tp_points
+    return opacity_at_tp_points, wavelength_grid_subbins_centers
 
 
 def compute_tau_rosseland(
@@ -1145,7 +1185,7 @@ def compute_tau_rosseland(
     n_layers = atmo.nlevels
     tau_rosseland = np.zeros(n_layers - 1, dtype=np.float64)
     height = atmo.z[::-1]  # cm, reverse to go from top to bottom
-    density = atmo.rho  # g/cm³, reverse to match
+    density: NDArray[np.float64] = atmo.rho  # g/cm³
 
     console.print("Calculating Rosseland optical depth profile...")
 
@@ -1157,20 +1197,10 @@ def compute_tau_rosseland(
             "Inconsistent shapes for kappa rosseland and atmospheric layers"
         )
 
-    for layer_idx, _ in enumerate(height[:-1]):
-        console.print(
-            f" Layer {layer_idx}: height={height[layer_idx]:.2e} cm, density={density[layer_idx]:.2e} g/cm³, kappa_rosseland={kappa_rosseland[layer_idx]:.2e} cm²/g"
-        )
-
-        density_integrand = density[: layer_idx + 1]
-        height_integrand = height[: layer_idx + 1]
-        kappa_integrand = kappa_rosseland[: layer_idx + 1]
-
-        console.print(f"Performing trapezoidal integration over {layer_idx} layers...")
-
-        tau_rosseland[layer_idx] = np.trapezoid(
-            kappa_integrand * density_integrand, height_integrand
-        )
+    # Use cumulative_trapezoid for efficient computation
+    tau_rosseland = cumulative_trapezoid(kappa_rosseland * density, height, initial=0)[
+        1:
+    ]  # Remove first element (which is 0) to match original shape
 
     console.print("Rosseland optical depth profile calculation complete.")
 
@@ -1216,12 +1246,280 @@ def plot_rosseland_tau(
     ax2.legend(fontsize=10)
 
     plt.tight_layout()
-    tau_plot_file = "tau_rosseland_profile.png"
+    tau_plot_file = "tau_rosseland_profile.pdf"
     plt.savefig(tau_plot_file, dpi=150, bbox_inches="tight")
     console.print(
         f"[green]✓ Tau Rosseland profile plot saved to {tau_plot_file}[/green]"
     )
     # plt.show()
+
+
+def get_depth_at_tau_values_from_full_opacity(
+    atm: AtmosphericData,
+    interpolated_opacity: NDArray[np.float64],
+    wavelength_grid: NDArray[np.float64],
+    tau_values: list[float],
+) -> tuple[NDArray[np.int64], NDArray[np.float64]]:
+    """
+    Get the atmospheric depth (height) for every subbin when it reaches
+    specified optical depth based on full opacity values.
+
+    Args:
+        atm: Atmospheric data
+        interpolated_opacity: Full opacity on the atmosphere T-p grid
+            - shape: [n_layers, nbins, nsubbins]
+        wavelength_grid: Wavelength grid for the opacity data [cm]
+        tau_values: List of optical depth values to find depths for
+
+    Returns:
+        height_at_tau: Heights at specified tau values [km]
+            - shape: [nbins * nsubbins, len(tau_values)]
+    """
+    console.print(
+        "\n[cyan]Atmospheric Depths at Specified Rosseland Optical Depths:[/cyan]"
+    )
+
+    heights = atm.z[::-1]  # cm, reversed to go from top to bottom
+    opacity = interpolated_opacity.reshape(
+        atm.nlevels, -1
+    )  # shape: [n_layers, nbins * nsubbins]
+
+    if opacity.shape[1] != wavelength_grid.shape[0]:
+        console.print(
+            f"[red]Error: opacity shape {opacity.shape} does not match wavelength grid shape {wavelength_grid.shape}[/red]"
+        )
+        raise ValueError(
+            f"Inconsistent shapes for opacity {opacity.shape} and wavelength grid {wavelength_grid.shape}"
+        )
+
+    # Initialize output array
+    n_wavelengths = opacity.shape[1]
+    console.print(f"n_wavelengths: {n_wavelengths}")
+    height_at_tau = np.zeros((n_wavelengths, len(tau_values)), dtype=np.float64)
+
+    # Compute cumulative optical depth for all wavelengths at once
+    density_integrand = atm.rho[:, np.newaxis]  # shape: [n_layers, 1]
+    kappa_integrand = opacity  # shape: [n_layers, n_wavelengths]
+
+    # Cumulative tau from top of atmosphere downward
+    tau_profile = cumulative_trapezoid(
+        kappa_integrand * density_integrand, x=heights, axis=0, initial=0
+    )  # shape: [n_layers, n_wavelengths]
+
+    # For each wavelength, find heights where tau reaches specified values
+    height_at_tau_index = np.zeros((n_wavelengths, len(tau_values)), dtype=np.int64)
+    for wl_idx in range(n_wavelengths):
+        for tau_idx, tau_val in enumerate(tau_values):
+            layer_idx = np.searchsorted(tau_profile[:, wl_idx], tau_val)
+            height_at_tau_index[wl_idx, tau_idx] = layer_idx
+            if layer_idx >= len(heights):
+                height_at_tau[wl_idx, tau_idx] = heights[-1] / 1e5  # Convert to km
+            else:
+                height_at_tau[wl_idx, tau_idx] = (
+                    heights[layer_idx] / 1e5
+                )  # Convert to km
+
+    return height_at_tau_index, height_at_tau
+
+
+def plot_height_at_tau_values(
+    wavelength_grid_input: NDArray[np.float64],
+    height_at_tau: NDArray[np.float64],
+    tau_values: list[float],
+    output_file: str = "height_at_tau_values.pdf",
+) -> None:
+    """
+    Plot the difference in atmospheric heights as a function of wavelength
+    for specified optical depth values.
+
+    Args:
+        wavelength_grid: Wavelength grid [cm]
+        height_at_tau: Heights at specified tau values [km]
+            - shape: [n_wavelengths, len(tau_values)]
+        tau_values: List of optical depth values
+        output_file: Output filename for the plot
+    """
+    console.print(
+        "\n[cyan]Plotting height differences at specified tau values...[/cyan]"
+    )
+
+    n_tau = len(tau_values)
+    wavelength_grid = wavelength_grid_input * 1e7 # convet to nm
+    TITLE_FONTSIZE = 8
+    LEGEND_FONTSIZE = 5
+
+    if n_tau == 2:
+        fig, axes = plt.subplots(2, 2, figsize=(10, 6))
+        axes = axes.flatten()
+    else:
+        fig, axes = plt.subplots(1, 3, figsize=(20, 6))
+
+    # Left panel: Absolute heights at each tau
+    ax1 = axes[0]
+    cmap = matplotlib.colormaps.get_cmap("berlin")
+    for i, tau_val in enumerate(tau_values):
+        color = cmap(i / max(1, n_tau - 1))
+        ax1.plot(
+            wavelength_grid,
+            height_at_tau[:, i],
+            linewidth=0.2,
+            color=color,
+            label=f"τ = {tau_val}",
+        )
+
+    ax1.set_xlabel("Wavelength [nm]", fontsize=12)
+    ax1.set_ylabel("Height [km]", fontsize=12)
+    ax1.set_title(
+        "Atmospheric Height at Optical Depth",
+        fontsize=TITLE_FONTSIZE,
+        fontweight="bold",
+    )
+    ax1.grid(True, alpha=0.3)
+    ax1.legend(fontsize=LEGEND_FONTSIZE, loc="best", reverse=True)
+    # ax1.set_xlim(0, 50)
+    ax1.set_xlim(wavelength_grid.min(), wavelength_grid.max())
+
+    # Right panel: Height differences between consecutive tau values
+    ax2 = axes[1]
+    if n_tau > 1:
+        for i in range(n_tau - 1):
+            height_diff = height_at_tau[:, i + 1] - height_at_tau[:, i]
+            color = cmap((i + 0.5) / max(1, n_tau - 1))
+            ax2.plot(
+                wavelength_grid,
+                height_diff,
+                linewidth=0.2,
+                color=color,
+                label=f"Δh (τ={tau_values[i+1]} - τ={tau_values[i]})",
+            )
+
+        ax2.set_xlabel("Wavelength [nm]", fontsize=12)
+        ax2.set_ylabel("Height Difference [km]", fontsize=12)
+        ax2.set_title(
+            "Height Difference vs Wavelength",
+            fontsize=TITLE_FONTSIZE,
+            fontweight="bold",
+        )
+        ax2.grid(True, alpha=0.3)
+        ax2.legend(fontsize=LEGEND_FONTSIZE, loc="best")
+        ax2.set_xlim(wavelength_grid.min(), wavelength_grid.max())
+        # ax2.set_xlim(0, 50)
+        ax2.axhline(y=0, color="k", linestyle="--", alpha=0.3)
+    else:
+        ax2.text(
+            0.5,
+            0.5,
+            "Need at least 2 tau values\nto plot differences",
+            ha="center",
+            va="center",
+            transform=ax2.transAxes,
+            fontsize=12,
+        )
+        ax2.set_xlabel("Wavelength [nm]", fontsize=12)
+        ax2.set_ylabel("Height Difference [km]", fontsize=12)
+        ax2.set_title(
+            "Height Difference vs Wavelength",
+            fontsize=TITLE_FONTSIZE,
+            fontweight="bold",
+        )
+
+    # Right panel: Histogram of heights at each tau
+    ax3 = axes[2]
+    bins = np.arange(0, 900, 10)
+    for i, tau_val in enumerate(tau_values):
+        color = cmap(i / max(1, n_tau - 1))
+        hist = ax3.hist(
+            height_at_tau[:, i],
+            bins=bins,
+            alpha=0.6,
+            color=color,
+            label=f"τ = {tau_val}",
+            edgecolor="black",
+            linewidth=0.5,
+            align="left",
+        )
+
+    ax3.set_xlabel("Height [km]", fontsize=12)
+    ax3.set_ylabel("Count", fontsize=12)
+    ax3.set_title(
+        "Height Distribution at Optical Depths",
+        fontsize=TITLE_FONTSIZE,
+        fontweight="bold",
+    )
+    ax3.grid(True, alpha=0.3, axis="y")
+    ax3.legend(fontsize=LEGEND_FONTSIZE, loc="best")
+
+    # Right panel: Histogram of differences in heights at each tau
+    bins = np.arange(0, 310, 10)
+    if n_tau == 2:
+        ax4 = axes[3]
+        hist = ax4.hist(
+            height_at_tau[:, 1] - height_at_tau[:, 0],
+            bins=bins,
+            alpha=0.6,
+            color="gray",
+            label="Height Difference (τ2 - τ1)",
+            edgecolor="black",
+            linewidth=0.5,
+            align="left",
+        )
+        ax4.set_xlabel("Height diff [km]", fontsize=12)
+        ax4.set_ylabel("Count", fontsize=12)
+        ax4.set_title(
+            "Height Difference Distribution at Optical Depths",
+            fontsize=TITLE_FONTSIZE,
+            fontweight="bold",
+        )
+        ax4.grid(True, alpha=0.3, axis="y")
+        ax4.legend(fontsize=LEGEND_FONTSIZE, loc="best")
+
+    plt.tight_layout()
+    plt.savefig(output_file, dpi=150, bbox_inches="tight")
+    console.print(f"[green]✓ Height at tau plot saved to {output_file}[/green]")
+
+
+def plot_tau_rosselend_at_tau_lambda_one_vs_wavelength(
+    tau_rosseland: NDArray[np.float64],
+    wavelength_grid_input: NDArray[np.float64],
+    output_file: str = "tau_rosseland_at_tau_lambda_one.jpg",
+    use_2d_histogram: bool = True,
+) -> None:
+    """
+    Plot the Rosseland optical depth at the height where the optical depth
+    at each wavelength subbin is equal to one, as a function of wavelength.
+
+    Args:
+        tau_rosseland: Rosseland optical depth profile [n_bins*n_subbins]
+        wavelength_grid: Wavelength grid [Angstrom]
+        output_file: Output filename for the plot
+        use_2d_histogram: If True, plot as 2D histogram instead of scatter plot
+    """
+    console.print("\n[cyan]Plotting τ_Rosseland at τ_λ=1 vs Wavelength...[/cyan]")
+    wavelength_grid = wavelength_grid_input * 1e8 # Angstrom
+    f, ax = plt.subplots(figsize=(10, 6))
+
+    x_data = np.log10(wavelength_grid)
+    y_data = -np.log10(tau_rosseland)
+
+    if use_2d_histogram:
+        # 2D histogram
+        h = ax.hist2d(x_data, y_data, bins=[100, 100], cmap="viridis", cmin=1)
+        plt.colorbar(h[3], ax=ax, label="Count")
+    else:
+        ax.scatter(x=x_data, y=y_data, s=1)
+
+    ax.set_xlabel(r"$\log_{10} \lambda \, [\AA]$", fontsize=12)
+    ax.set_ylabel(
+        r"-$\log_{10} \tau_\text{Ros} \left( d \left( \tau_\lambda = 1 \right) \right)$",
+        fontsize=12,
+    )
+    # ax.set_title("Rosseland Optical Depth at τ_λ=1 vs Wavelength", fontsize=14, fontweight="bold")
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(3, 5)
+    ax.set_ylim(-1, 7)
+    plt.tight_layout()
+    plt.savefig(output_file, dpi=150, bbox_inches="tight")
+    console.print(f"[green]✓ τ_Rosseland at τ_λ=1 plot saved to {output_file}[/green]")
 
 
 @app.command()
@@ -1238,22 +1536,27 @@ def main(
     continuum_abs: Path = typer.Option(
         "continuumabs.dat", "--cont-abs", help="Continuum absorption opacity file"
     ),
-    continuum_scat: Path = typer.Option(
-        "continuumscat.dat", "--cont-scat", help="Continuum scattering opacity file"
-    ),
-    continuum_all: Path = typer.Option(
-        "continuumall.dat", "--cont-all", help="Combined continuum opacity file"
-    ),
+    tau_values: Annotated[
+        list[float],
+        typer.Option(
+            "--tau-values",
+            "-t",
+            help="List of optical depth values to evaluate atmospheric depths at",
+        ),
+    ] = [0.1, 1.0],
     output_file: Optional[Path] = typer.Option(
         None,
         "--output",
         "-O",
         help="Output file for binned opacities (default: kappa_<nbands>_band.dat)",
     ),
-    nbands: int = typer.Option(2, "--nbands", "-n", help="Number of opacity bands"),
-    cont_scatter: float = typer.Option(
-        0.0, "--scatter", "-s", help="Continuum scattering contribution factor"
+    skip_first_n_wavelengths: Optional[int] = typer.Option(
+        1440,
+        "--skip-first-n-wavelengths",
+        "-s",
+        help="Number of initial wavelength points to skip",
     ),
+    nbands: int = typer.Option(2, "--nbands", "-n", help="Number of opacity bands"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
 ):
     """
@@ -1266,37 +1569,60 @@ def main(
     console.print("\n[bold cyan]═══ Tau-Sorting Opacity Binning Tool ═══[/bold cyan]\n")
 
     # Step 1: Read atmospheric model
+    t0 = time.perf_counter()
     try:
         atm = read_atmospheric_model(atm_file)
     except Exception:
         raise typer.Exit(code=1)
+    t1 = time.perf_counter()
+    console.print(f"[dim]⏱  read_atmospheric_model: {t1-t0:.3f}s[/dim]")
 
     # Step 2: Read ODF data
+    t0 = time.perf_counter()
     try:
-        odf = read_odf_netcdf(odf_file)
+        # Try .npy format first (much faster), fall back to NetCDF
+        npy_file = odf_file.with_suffix(".npy")
+        if npy_file.name == "ODF_nc_format.npy":
+            npy_file = npy_file.with_name("ODF_format.npy")
+
+        if npy_file.exists():
+            odf = read_odf_npy(npy_file)
+        else:
+            console.print(
+                f"[yellow]  .npy file not found, using NetCDF (slower)[/yellow]"
+            )
+            console.print(
+                f"[yellow]  Hint: Run 'python convert_odf_to_npy.py' to create {npy_file}[/yellow]"
+            )
+            odf = read_odf_netcdf(odf_file)
     except Exception:
         raise typer.Exit(code=1)
+    t1 = time.perf_counter()
+    console.print(f"[dim]⏱  read_odf: {t1-t0:.3f}s[/dim]")
 
     # Step 3: Read continuum data
+    t0 = time.perf_counter()
     try:
         cont = read_continuum_data(
             continuum_abs,
-            # continuum_scat,
-            # continuum_all,
             odf.nbins,
             odf.nt,
             odf.np,
-            cont_scatter,
         )
     except Exception:
         raise typer.Exit(code=1)
+    t1 = time.perf_counter()
+    console.print(f"[dim]⏱  read_continuum_data: {t1-t0:.3f}s[/dim]")
 
     # Step 4: Verify data consistency
+    t0 = time.perf_counter()
     if not verify_data_consistency(atm, odf, cont):
         console.print(
             "\n[red]Data verification failed. Please check your input files.[/red]"
         )
         raise typer.Exit(code=1)
+    t1 = time.perf_counter()
+    console.print(f"[dim]⏱  verify_data_consistency: {t1-t0:.3f}s[/dim]")
 
     console.print("\n[green]✓ All input data loaded and verified successfully![/green]")
     console.print("\n[cyan]Ready to proceed with opacity binning...[/cyan]")
@@ -1307,35 +1633,74 @@ def main(
     # reference_opacities.shape = (nt, np)
 
     # Interpolate reference opacities onto atmospheric model grid (T, p)
+    t0 = time.perf_counter()
     interpolated_opacity = interpolate_kappa_to_atmosphere(odf, cont, atm)
+    t1 = time.perf_counter()
     console.print(f"interpolated_opacity shape: {interpolated_opacity.shape}")
+    console.print(f"[dim]⏱  interpolate_kappa_to_atmosphere: {t1-t0:.3f}s[/dim]")
 
     console.print("Calculate kappa rosseland at each atmosphere T, p point...")
 
-    kappa_on_atmosphere_tp = calculate_reference_opacities_from_custom_tp_grid(
-        atm,
-        interpolated_opacity,
-        odf.wavelength_grid * 1e-8,  # convert to cm
-        odf.subbin,
-        odf.nbins,
-        odf.nsubbins,
-        kind="rosseland",
+    t0 = time.perf_counter()
+    kappa_on_atmosphere_tp, wavelength_grid_subbins_centers = (
+        calculate_reference_opacities_from_custom_tp_grid(
+            atm,
+            interpolated_opacity,
+            odf.wavelength_grid,  # convert to cm
+            odf.subbin,
+            odf.nbins,
+            odf.nsubbins,
+            kind="rosseland",
+        )
     )
+    t1 = time.perf_counter()
     console.print(f"kappa_on_atmosphere_tp shape: {kappa_on_atmosphere_tp.shape}")
+    console.print(
+        f"[dim]⏱  calculate_reference_opacities_from_custom_tp_grid: {t1-t0:.3f}s[/dim]"
+    )
 
+    t0 = time.perf_counter()
     tau_rosseland = compute_tau_rosseland(atm, kappa_on_atmosphere_tp)
+    t1 = time.perf_counter()
     console.print(f"tau_rosseland shape: {tau_rosseland.shape}")
+    console.print(f"[dim]⏱  compute_tau_rosseland: {t1-t0:.3f}s[/dim]")
 
     console.print("Plotting Rosseland optical depth profile...")
 
+    t0 = time.perf_counter()
     plot_rosseland_tau(atm, tau_rosseland)
+    t1 = time.perf_counter()
+    console.print(f"[dim]⏱  plot_rosseland_tau: {t1-t0:.3f}s[/dim]")
 
-    # TODO: Implement the following steps:
-    # - Initialize grids and interpolation
-    # - Calculate reference opacities (Rosseland, 500nm, etc.)
-    # - Perform tau-sorting
-    # - Calculate band-averaged opacities
-    # - Write output file
+    t0 = time.perf_counter()
+    height_at_tau_index, height_at_tau = get_depth_at_tau_values_from_full_opacity(
+        atm,
+        interpolated_opacity,
+        wavelength_grid_subbins_centers,
+        tau_values=tau_values,
+    )
+    console.print(f"height_at_tau shape: {height_at_tau.shape}")
+    t1 = time.perf_counter()
+    console.print(
+        f"[dim]⏱  get_depth_at_tau_values_from_full_opacity: {t1-t0:.3f}s[/dim]"
+    )
+
+    t0 = time.perf_counter()
+    plot_height_at_tau_values(
+        wavelength_grid_subbins_centers[skip_first_n_wavelengths:],
+        height_at_tau[skip_first_n_wavelengths:, :],
+        tau_values=tau_values,
+        output_file="height_at_tau_values.pdf",
+    )
+    t1 = time.perf_counter()
+    console.print(f"[dim]⏱  plot_height_at_tau_values: {t1-t0:.3f}s[/dim]")
+
+    tau_rosseland_at_tau_lambda_one = tau_rosseland[height_at_tau_index[:, -1]]
+
+    plot_tau_rosselend_at_tau_lambda_one_vs_wavelength(
+        tau_rosseland_at_tau_lambda_one[skip_first_n_wavelengths:],
+        wavelength_grid_subbins_centers[skip_first_n_wavelengths:],
+    )
 
     console.print("\n[yellow]Processing implementation in progress...[/yellow]")
 
@@ -1343,7 +1708,7 @@ def main(
 @app.command()
 def verify_planck(
     output: str = typer.Option(
-        "planck_verification.png",
+        "planck_verification.pdf",
         "--output",
         "-o",
         help="Output filename for verification plot",
