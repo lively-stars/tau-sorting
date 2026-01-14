@@ -1544,19 +1544,12 @@ def main(
             help="List of optical depth values to evaluate atmospheric depths at",
         ),
     ] = [0.1, 1.0],
-    output_file: Optional[Path] = typer.Option(
-        None,
-        "--output",
-        "-O",
-        help="Output file for binned opacities (default: kappa_<nbands>_band.dat)",
-    ),
     skip_first_n_wavelengths: Optional[int] = typer.Option(
         1440,
         "--skip-first-n-wavelengths",
         "-s",
         help="Number of initial wavelength points to skip",
     ),
-    nbands: int = typer.Option(2, "--nbands", "-n", help="Number of opacity bands"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
 ):
     """
