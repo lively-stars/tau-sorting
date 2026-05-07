@@ -205,7 +205,7 @@ def read_odf_npy(filepath: Path) -> ODFData:
 
         # Read arrays
         odf.ODF = data["ODF"][0]
-        odf.wavelength_grid = data["wavelength_grid"][0] * 1e-7 # convert to cm
+        odf.wavelength_grid = data["wavelength_grid"][0] * 1e-7  # convert to cm
         odf.P = data["P"][0]
         odf.T = data["T"][0]
         odf.subbin = data["subbin"][0]
@@ -615,7 +615,7 @@ def plot_planck_and_derivatives(output_file: str = "planck_verification.pdf") ->
         "k--",
         linewidth=1.5,
         alpha=0.3,
-        label=f"T={T_tangent+200}K",
+        label=f"T={T_tangent + 200}K",
     )
     ax2.plot(
         wavelengths_nm,
@@ -623,7 +623,7 @@ def plot_planck_and_derivatives(output_file: str = "planck_verification.pdf") ->
         "k:",
         linewidth=1.5,
         alpha=0.3,
-        label=f"T={T_tangent-200}K",
+        label=f"T={T_tangent - 200}K",
     )
 
     # Draw tangent lines at selected wavelengths
@@ -702,7 +702,7 @@ def plot_planck_and_derivatives(output_file: str = "planck_verification.pdf") ->
 
     # Print numerical verification at selected wavelengths
     console.print("\n[cyan]Numerical verification at selected wavelengths:[/cyan]")
-    T_test = 5800.  # K (Solar temperature)
+    T_test = 5800.0  # K (Solar temperature)
     for wl_nm, wl_cm in zip(selected_wavelengths_nm, selected_wavelengths):
         B = planck_function(np.array([wl_cm]), T_test)[0]
         dB_dT = planck_derivative_analytic(np.array([wl_cm]), T_test)[0]
@@ -976,39 +976,120 @@ def calculate_reference_opacities(
         B_lambda = planck_function(wavelength_grid_subbins_centers, temperature)
         dB_dT = planck_derivative_analytic(wavelength_grid_subbins_centers, temperature)
         if kind == "rosseland":
-            # Rosseland mean opacity
-            if kappa_values.shape != wavelength_grid_subbins_centers.shape:
-                console.print(
-                    f"[red]Error: kappa_values shape {kappa_values.shape} does not match wavelength grid shape {wavelength_grid_subbins_centers.shape}[/red]"
-                )
-                raise ValueError(
-                    "Inconsistent shapes for kappa values and wavelength grid"
-                )
-            integrand_num = np.trapezoid(
-                (1.0 / kappa_values) * dB_dT, wavelength_grid_subbins_centers
+            total_kappa[t_idx, p_idx] = compute_rosseland_mean(
+                kappa_values, dB_dT, wavelength_grid_subbins_centers
             )
-            integrand_den = np.trapezoid(dB_dT, wavelength_grid_subbins_centers)
-            kappa_rosseland = (
-                integrand_den / integrand_num if integrand_num != 0 else 0.0
-            )
-            total_kappa[t_idx, p_idx] = kappa_rosseland
-
         elif kind == "planck":
-            # Planck mean opacity
-            integrand_num = np.trapezoid(
-                kappa_values * B_lambda, wavelength_grid_subbins_centers
+            total_kappa[t_idx, p_idx] = compute_planck_mean(
+                kappa_values, B_lambda, wavelength_grid_subbins_centers
             )
-            integrand_den = np.trapezoid(B_lambda, wavelength_grid_subbins_centers)
-            kappa_planck = integrand_num / integrand_den if integrand_den != 0 else 0.0
-            total_kappa[t_idx, p_idx] = kappa_planck
-
         elif kind == "500nm":
-            # Opacity at 500nm
-            wl_500nm = 500e-7  # cm
-            idx_500nm = np.argmin(np.abs(wavelength_grid - wl_500nm))
-            total_kappa[t_idx, p_idx] = kappa_values[idx_500nm]
+            total_kappa[t_idx, p_idx] = compute_opacity_at_wavelength(
+                kappa_values, wavelength_grid_subbins_centers, 500e-7
+            )
 
     return total_kappa
+
+
+def compute_rosseland_mean(
+    kappa_values: NDArray[np.float64],
+    dB_dT: NDArray[np.float64],
+    wavelength_grid: NDArray[np.float64],
+) -> float:
+    """
+    Compute Rosseland mean opacity.
+
+    Args:
+        kappa_values: Opacity values at each wavelength point
+        dB_dT: Planck derivative at each wavelength point
+        wavelength_grid: Wavelength grid [cm]
+
+    Returns:
+        Rosseland mean opacity
+    """
+    if kappa_values.shape != wavelength_grid.shape:
+        console.print(
+            f"[red]Error: kappa_values shape {kappa_values.shape} does not match wavelength grid shape {wavelength_grid.shape}[/red]"
+        )
+        raise ValueError("Inconsistent shapes for kappa values and wavelength grid")
+    integrand_num = np.trapezoid((1.0 / kappa_values) * dB_dT, wavelength_grid)
+    integrand_den = np.trapezoid(dB_dT, wavelength_grid)
+    return integrand_den / integrand_num if integrand_num != 0 else 0.0
+
+
+def compute_planck_mean(
+    kappa_values: NDArray[np.float64],
+    B_lambda: NDArray[np.float64],
+    wavelength_grid: NDArray[np.float64],
+) -> float:
+    """
+    Compute Planck mean opacity.
+
+    Args:
+        kappa_values: Opacity values at each wavelength point
+        B_lambda: Planck function at each wavelength point
+        wavelength_grid: Wavelength grid [cm]
+
+    Returns:
+        Planck mean opacity
+    """
+    integrand_num = np.trapezoid(kappa_values * B_lambda, wavelength_grid)
+    integrand_den = np.trapezoid(B_lambda, wavelength_grid)
+    return integrand_num / integrand_den if integrand_den != 0 else 0.0
+
+
+def compute_opacity_at_wavelength(
+    kappa_values: NDArray[np.float64],
+    wavelength_grid: NDArray[np.float64],
+    target_wavelength: float,
+) -> float:
+    """
+    Get opacity at a specific wavelength.
+
+    Args:
+        kappa_values: Opacity values at each wavelength point
+        wavelength_grid: Wavelength grid [cm]
+        target_wavelength: Target wavelength [cm]
+
+    Returns:
+        Opacity at the target wavelength
+    """
+    idx = np.argmin(np.abs(wavelength_grid - target_wavelength))
+    return kappa_values[idx]
+
+
+def compute_combined_opacity(
+    kappa_values: NDArray[np.float64],
+    B_lambda: NDArray[np.float64],
+    dB_dT_lambda: NDArray[np.float64],
+    wavelength_grid: NDArray[np.float64],
+    tau_threshold: float,
+) -> float:
+    r"""
+    Compute combined opacity considering a tau threshold.
+
+    Eq. 12 from A. Voegler et al. 2004:
+    $\bar{\kappa}_i=2^{-\frac{\tau_i}{\tau_0}} \bar{K}_{P, i}+\left(1-2^{-\frac{\tau_i}{\tau_0}}\right) \bar{K}_{R, i}$.
+
+    Args:
+        kappa_values: Opacity values at each wavelength point
+        B_lambda: Planck function at each wavelength point
+        dB_dT_lambda: Derivative of Planck function at each wavelength point
+        wavelength_grid: Wavelength grid [cm]
+        tau_threshold: Tau threshold value
+
+    Returns:
+        Combined opacity value
+    """
+    kappa_planck = compute_planck_mean(kappa_values, B_lambda, wavelength_grid)
+    kappa_rosseland = compute_rosseland_mean(
+        kappa_values, dB_dT_lambda, wavelength_grid
+    )
+
+    return (
+        2 ** (-tau_threshold) * kappa_planck
+        + (1 - 2 ** (-tau_threshold)) * kappa_rosseland
+    )
 
 
 def calculate_reference_opacities_from_custom_tp_grid(
@@ -1344,7 +1425,7 @@ def plot_height_at_tau_values(
     )
 
     n_tau = len(tau_values)
-    wavelength_grid = wavelength_grid_input * 1e7 # convet to nm
+    wavelength_grid = wavelength_grid_input * 1e7  # convet to nm
     TITLE_FONTSIZE = 8
     LEGEND_FONTSIZE = 5
 
@@ -1390,7 +1471,7 @@ def plot_height_at_tau_values(
                 height_diff,
                 linewidth=0.2,
                 color=color,
-                label=f"Δh (τ={tau_values[i+1]} - τ={tau_values[i]})",
+                label=f"Δh (τ={tau_values[i + 1]} - τ={tau_values[i]})",
             )
 
         ax2.set_xlabel("Wavelength [nm]", fontsize=12)
@@ -1481,6 +1562,8 @@ def plot_height_at_tau_values(
 def plot_tau_rosselend_at_tau_lambda_one_vs_wavelength(
     tau_rosseland: NDArray[np.float64],
     wavelength_grid_input: NDArray[np.float64],
+    tau_bin_edges: list[int | float],
+    lambda_bin_edges: list[int | float],
     output_file: str = "tau_rosseland_at_tau_lambda_one.jpg",
     use_2d_histogram: bool = True,
 ) -> None:
@@ -1491,11 +1574,13 @@ def plot_tau_rosselend_at_tau_lambda_one_vs_wavelength(
     Args:
         tau_rosseland: Rosseland optical depth profile [n_bins*n_subbins]
         wavelength_grid: Wavelength grid [Angstrom]
+        tau_bin_edges: Optical depth bin edges to plot
+        lambda_bin_edges: Wavelength bin edges to plot
         output_file: Output filename for the plot
         use_2d_histogram: If True, plot as 2D histogram instead of scatter plot
     """
     console.print("\n[cyan]Plotting τ_Rosseland at τ_λ=1 vs Wavelength...[/cyan]")
-    wavelength_grid = wavelength_grid_input * 1e8 # Angstrom
+    wavelength_grid = wavelength_grid_input * 1e8  # Angstrom
     f, ax = plt.subplots(figsize=(10, 6))
 
     x_data = np.log10(wavelength_grid)
@@ -1517,9 +1602,287 @@ def plot_tau_rosselend_at_tau_lambda_one_vs_wavelength(
     ax.grid(True, alpha=0.3)
     ax.set_xlim(3, 5)
     ax.set_ylim(-1, 7)
+
+    for _, edge in enumerate(tau_bin_edges):
+        ax.axhline(edge, c="k")
+    for _, edge in enumerate(lambda_bin_edges):
+        ax.axvline(edge, c="k")
+
     plt.tight_layout()
     plt.savefig(output_file, dpi=150, bbox_inches="tight")
     console.print(f"[green]✓ τ_Rosseland at τ_λ=1 plot saved to {output_file}[/green]")
+
+
+def assign_tau_to_bin(
+    tau_rosseland: NDArray[np.float64],
+    wavelength_grid_input: NDArray[np.float64],
+    tau_bin_edges: list[int | float],
+    lambda_bin_edges: list[int | float],
+) -> NDArray[np.int32]:
+    """
+    Assign sub-bins to tau-wavelength bins.
+
+    Args:
+        tau_rosseland_at_tau_lambda_one: Tau values at sub-bin wavelengths [n_bins*n_subbins]
+        wavelength_grid_subbins_center: Wavelength at sub-bin centers. [n_bins*n_subbins]
+        tau_bin_edges: Tau edges.
+        lambda_bin_edges: Wavelength edges.
+
+    Returns:
+        Tau-bin index per sub-bin wavelength point.
+        Values are in [0, n_tau_bins-1], or -1 if out of configured ranges.
+    """
+    wavelength_grid = wavelength_grid_input * 1e8  # Angstrom
+    x_data = np.log10(wavelength_grid)
+    # Prevent log10(0) when tau is numerically tiny.
+    y_data = -np.log10(np.clip(tau_rosseland, 1.0e-300, None))
+
+    tau_edges = np.asarray(tau_bin_edges, dtype=np.float64)
+    lambda_edges = np.asarray(lambda_bin_edges, dtype=np.float64)
+
+    n_lambda_bins = len(lambda_edges) - 1
+    n_tau_bins = len(tau_edges) - 1
+
+    lambda_idx = np.digitize(x_data, lambda_edges, right=False) - 1
+    tau_idx = np.digitize(y_data, tau_edges, right=False) - 1
+
+    valid = (
+        (lambda_idx >= 0)
+        & (lambda_idx < n_lambda_bins)
+        & (tau_idx >= 0)
+        & (tau_idx < n_tau_bins)
+    )
+
+    band_index = np.full(x_data.shape, -1, dtype=np.int32)
+    # We keep only tau-bin identity for band means (n_bins = n_tau_bins).
+    band_index[valid] = tau_idx[valid].astype(np.int32)
+
+    return band_index
+
+
+def calculate_tau_bin_opacities(
+    odf: ODFData,
+    cont: ContinuumData,
+    band_index: NDArray[np.int32],
+    n_bins: int,
+    tau_transition: float = 0.35,
+) -> dict[str, NDArray[np.float64] | NDArray[np.int32]]:
+    r"""
+    Calculate tau-binned opacities.
+
+    After we perform the tau-sorting and assign each sub-bin to a tau-wavelength bin, we can calculate the binned opacities for each bin.
+    We do so by calculating the average of planck mean or rosseland mean opacities for all sub-bins that fall into the same tau-wavelength bin,
+    weighted by their wavelength contribution to the total opacity in that bin.
+
+    Following eq. 16
+    $B_l=\sum_i \Delta v_i B_{\Delta v_i} \sum_{j(i, l)} w_{j(i, l)}$
+    and eq. 17
+    $\bar{\kappa}_{P, l}=\frac{1}{B_l} \sum_i \Delta v_i B_{\Delta v_i} \sum_{j(i, l)} w_{j(i, l)} \kappa_{i j(i, l)}$,
+
+    Args:
+        odf: ODF table containing line opacity and T/P grids
+        cont: Continuum opacity table
+        band_index: Assigned tau-wavelength band index per sub-bin wavelength point
+            Shape: [nbins * nsubbins], values -1 for out-of-range
+        n_bins: Number of tau bins in output (len(tau_bin_edges) - 1)
+        tau_transition: Optical depth transition scale in Eq. 12
+
+    Returns:
+        Dictionary with:
+          - "kappa_planck": Planck mean opacity [nt, np, n_bands]
+          - "kappa_rosseland": Rosseland mean opacity [nt, np, n_bands]
+          - "kappa_mixed": Eq. 12 mixed opacity [nt, np, n_bands]
+          - "B_band": Band-integrated Planck source [nt, n_bands]
+          - "dBdT_band": Band-integrated dB/dT source [nt, n_bands]
+          - "members_per_band": Number of sub-bin wavelength points in each band [n_bands]
+    """
+    if odf.ODF is None or cont.kappa_abs is None:
+        raise ValueError("ODF and continuum data must be loaded.")
+    if n_bins <= 0:
+        raise ValueError(f"n_bins must be > 0, got {n_bins}")
+    if tau_transition <= 0.0:
+        raise ValueError(f"tau_transition must be > 0, got {tau_transition}")
+
+    if cont.kappa_abs.shape != (odf.nt, odf.np, odf.nbins):
+        raise ValueError(
+            f"Continuum shape {cont.kappa_abs.shape} does not match expected {(odf.nt, odf.np, odf.nbins)}"
+        )
+    if odf.wavelength_grid is None or odf.subbin is None:
+        raise ValueError("ODF wavelength grid and subbin weights are required.")
+
+    wavelength_grid = odf.wavelength_grid
+    subbin_weights = odf.subbin
+    if wavelength_grid.shape[0] != odf.nbins + 1:
+        raise ValueError(
+            f"Wavelength grid length ({wavelength_grid.shape[0]}) must be nbins+1 ({odf.nbins + 1})"
+        )
+    if subbin_weights.shape != (odf.nbins, odf.nsubbins):
+        raise ValueError(
+            f"Sub-bin weights shape {subbin_weights.shape} does not match ({odf.nbins}, {odf.nsubbins})"
+        )
+
+    n_subbin_points = odf.nbins * odf.nsubbins
+    if band_index.shape[0] != n_subbin_points:
+        raise ValueError(
+            f"Band index length ({band_index.shape[0]}) does not match nbins*nsubbins ({n_subbin_points})"
+        )
+
+    valid_band_mask = band_index >= 0
+    if not np.any(valid_band_mask):
+        raise ValueError("No wavelength points were assigned to tau-wavelength bins.")
+    if np.any(band_index[valid_band_mask] >= n_bins):
+        raise ValueError(
+            f"Found band_index >= n_bins ({n_bins}). Check tau-bin assignment."
+        )
+
+    n_bands = n_bins
+
+    # Build sub-bin centers and widths from bin edges and per-bin relative weights.
+    bin_widths = np.diff(wavelength_grid)[:, np.newaxis]
+    subbin_widths_2d = bin_widths * subbin_weights
+    subbin_offsets = np.cumsum(subbin_widths_2d, axis=1) - 0.5 * subbin_widths_2d
+    subbin_centers_2d = wavelength_grid[:-1, np.newaxis] + subbin_offsets
+
+    subbin_widths = subbin_widths_2d.reshape(-1)
+    subbin_centers = subbin_centers_2d.reshape(-1)
+
+    total_kappa = odf.ODF + cont.kappa_abs[..., np.newaxis]
+    opacity_flat = total_kappa.reshape(odf.nt, odf.np, -1)
+
+    # ODF tables store log10(T), convert to K for Planck weighting.
+    temperature_1d = np.power(10.0, odf.T)
+    temperature_2d = temperature_1d[:, np.newaxis]
+    wavelength_2d = subbin_centers[np.newaxis, :]
+
+    B_lambda = planck_function(wavelength_2d, temperature_2d)
+    dB_dT = planck_derivative_analytic(wavelength_2d, temperature_2d)
+
+    B_band = np.zeros((odf.nt, n_bands), dtype=np.float64)
+    dBdT_band = np.zeros((odf.nt, n_bands), dtype=np.float64)
+    kappa_planck = np.zeros((odf.nt, odf.np, n_bands), dtype=np.float64)
+    kappa_rosseland = np.zeros((odf.nt, odf.np, n_bands), dtype=np.float64)
+    members_per_band = np.zeros((n_bands,), dtype=np.int32)
+
+    for band in range(n_bands):
+        member_mask = band_index == band
+        members_per_band[band] = int(np.sum(member_mask))
+        if members_per_band[band] == 0:
+            continue
+
+        widths = subbin_widths[member_mask]
+        B_sel = B_lambda[:, member_mask]
+        dB_dT_sel = dB_dT[:, member_mask]
+        kappa_sel = opacity_flat[:, :, member_mask]
+        safe_kappa = np.clip(kappa_sel, 1.0e-300, None)
+
+        weighted_B = B_sel * widths[np.newaxis, :]
+        weighted_dBdT = dB_dT_sel * widths[np.newaxis, :]
+
+        B_sum = np.sum(weighted_B, axis=1)
+        dBdT_sum = np.sum(weighted_dBdT, axis=1)
+        planck_num = np.sum(kappa_sel * weighted_B[:, np.newaxis, :], axis=2)
+        rosseland_denom = np.sum(weighted_dBdT[:, np.newaxis, :] / safe_kappa, axis=2)
+
+        B_band[:, band] = B_sum
+        dBdT_band[:, band] = dBdT_sum
+        kappa_planck[:, :, band] = np.divide(
+            planck_num,
+            B_sum[:, np.newaxis],
+            out=np.zeros_like(planck_num),
+            where=B_sum[:, np.newaxis] > 0.0,
+        )
+        kappa_rosseland[:, :, band] = np.divide(
+            dBdT_sum[:, np.newaxis],
+            rosseland_denom,
+            out=np.zeros_like(rosseland_denom),
+            where=rosseland_denom > 0.0,
+        )
+
+    # Match tausort.c (meanop): tau_i = kappa_ro * p / 2.74e4
+    # ODF pressure grid is log10(p), convert to linear pressure.
+    pressure_linear = np.power(10.0, odf.P)
+    tau_i = kappa_rosseland * pressure_linear[np.newaxis, :, np.newaxis] / 2.74e4
+    mix_planck = np.power(2.0, -(tau_i / tau_transition))
+    mix_planck = np.clip(mix_planck, 0.0, 1.0)
+    kappa_mixed = mix_planck * kappa_planck + (1.0 - mix_planck) * kappa_rosseland
+
+    return {
+        "kappa_planck": kappa_planck,
+        "kappa_rosseland": kappa_rosseland,
+        "kappa_mixed": kappa_mixed,
+        "B_band": B_band,
+        "dBdT_band": dBdT_band,
+        "members_per_band": members_per_band,
+    }
+
+
+def save_tau_bin_opacities_npy(
+    output_file: Path,
+    tau_bin_results: dict[str, NDArray[np.float64] | NDArray[np.int32]],
+    temperature_grid: NDArray[np.float64],
+    pressure_grid: NDArray[np.float64],
+) -> None:
+    """
+    Save tau-binned opacity products to a structured .npy file.
+
+    The saved file can be loaded with:
+        data = np.load("tau_bin_opacities.npy")
+        mixed = data["mixed"]
+        temperature = data["T"]
+        pressure = data["p"]
+    """
+    planck = np.asarray(tau_bin_results["kappa_planck"], dtype=np.float64)
+    rosseland = np.asarray(tau_bin_results["kappa_rosseland"], dtype=np.float64)
+    mixed = np.asarray(tau_bin_results["kappa_mixed"], dtype=np.float64)
+    members = np.asarray(tau_bin_results["members_per_band"], dtype=np.int32)
+    temperature = np.asarray(temperature_grid, dtype=np.float64)
+    pressure = np.asarray(pressure_grid, dtype=np.float64)
+
+    if not (planck.shape == rosseland.shape == mixed.shape):
+        raise ValueError(
+            f"Opacity shapes must match; got planck={planck.shape}, rosseland={rosseland.shape}, mixed={mixed.shape}"
+        )
+
+    if planck.ndim != 3:
+        raise ValueError(
+            f"Expected opacity arrays of shape [nt, np, nbands], got {planck.shape}"
+        )
+
+    nt, n_pressure, n_bands = planck.shape
+    if members.shape != (n_bands,):
+        raise ValueError(
+            f"members_per_band shape must be ({n_bands},), got {members.shape}"
+        )
+    if temperature.shape != (nt,):
+        raise ValueError(
+            f"temperature_grid shape must be ({nt},), got {temperature.shape}"
+        )
+    if pressure.shape != (n_pressure,):
+        raise ValueError(
+            f"pressure_grid shape must be ({n_pressure},), got {pressure.shape}"
+        )
+
+    dtype = np.dtype(
+        [
+            ("planck", np.float64, (nt, n_pressure, n_bands)),
+            ("rosseland", np.float64, (nt, n_pressure, n_bands)),
+            ("mixed", np.float64, (nt, n_pressure, n_bands)),
+            ("T", np.float64, (nt,)),
+            ("p", np.float64, (n_pressure,)),
+            ("members_per_band", np.int32, (n_bands,)),
+        ]
+    )
+
+    packed = np.empty((), dtype=dtype)
+    packed["planck"] = planck
+    packed["rosseland"] = rosseland
+    packed["mixed"] = mixed
+    packed["T"] = temperature
+    packed["p"] = pressure
+    packed["members_per_band"] = members
+
+    np.save(output_file, packed)
+    console.print(f"[green]✓ Saved tau-bin opacities to {output_file}[/green]")
 
 
 @app.command()
@@ -1544,11 +1907,30 @@ def main(
             help="List of optical depth values to evaluate atmospheric depths at",
         ),
     ] = [0.1, 1.0],
+    tau_bin_edges: Annotated[
+        list[float],
+        typer.Option(
+            "--tau-bin-edges",
+            help="List of optical depth bin edges to sort opacities at",
+        ),
+    ] = [-99, -0.1, 1.5, 3.8, 7.0],
+    lambda_bin_edges: Annotated[
+        list[float],
+        typer.Option(
+            "--lambda-bin-edges",
+            help="List of wavelength edges to sort opacities at",
+        ),
+    ] = [3.0, 5.0],
     skip_first_n_wavelengths: Optional[int] = typer.Option(
         1440,
         "--skip-first-n-wavelengths",
         "-s",
         help="Number of initial wavelength points to skip",
+    ),
+    tau_bin_output: Path = typer.Option(
+        "tau_bin_opacities.npy",
+        "--tau-bin-output",
+        help="Output .npy file for tau-binned Planck/Rosseland/mixed opacities",
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
 ):
@@ -1568,7 +1950,7 @@ def main(
     except Exception:
         raise typer.Exit(code=1)
     t1 = time.perf_counter()
-    console.print(f"[dim]⏱  read_atmospheric_model: {t1-t0:.3f}s[/dim]")
+    console.print(f"[dim]⏱  read_atmospheric_model: {t1 - t0:.3f}s[/dim]")
 
     # Step 2: Read ODF data
     t0 = time.perf_counter()
@@ -1591,7 +1973,7 @@ def main(
     except Exception:
         raise typer.Exit(code=1)
     t1 = time.perf_counter()
-    console.print(f"[dim]⏱  read_odf: {t1-t0:.3f}s[/dim]")
+    console.print(f"[dim]⏱  read_odf: {t1 - t0:.3f}s[/dim]")
 
     # Step 3: Read continuum data
     t0 = time.perf_counter()
@@ -1605,7 +1987,7 @@ def main(
     except Exception:
         raise typer.Exit(code=1)
     t1 = time.perf_counter()
-    console.print(f"[dim]⏱  read_continuum_data: {t1-t0:.3f}s[/dim]")
+    console.print(f"[dim]⏱  read_continuum_data: {t1 - t0:.3f}s[/dim]")
 
     # Step 4: Verify data consistency
     t0 = time.perf_counter()
@@ -1615,7 +1997,7 @@ def main(
         )
         raise typer.Exit(code=1)
     t1 = time.perf_counter()
-    console.print(f"[dim]⏱  verify_data_consistency: {t1-t0:.3f}s[/dim]")
+    console.print(f"[dim]⏱  verify_data_consistency: {t1 - t0:.3f}s[/dim]")
 
     console.print("\n[green]✓ All input data loaded and verified successfully![/green]")
     console.print("\n[cyan]Ready to proceed with opacity binning...[/cyan]")
@@ -1630,7 +2012,7 @@ def main(
     interpolated_opacity = interpolate_kappa_to_atmosphere(odf, cont, atm)
     t1 = time.perf_counter()
     console.print(f"interpolated_opacity shape: {interpolated_opacity.shape}")
-    console.print(f"[dim]⏱  interpolate_kappa_to_atmosphere: {t1-t0:.3f}s[/dim]")
+    console.print(f"[dim]⏱  interpolate_kappa_to_atmosphere: {t1 - t0:.3f}s[/dim]")
 
     console.print("Calculate kappa rosseland at each atmosphere T, p point...")
 
@@ -1649,21 +2031,21 @@ def main(
     t1 = time.perf_counter()
     console.print(f"kappa_on_atmosphere_tp shape: {kappa_on_atmosphere_tp.shape}")
     console.print(
-        f"[dim]⏱  calculate_reference_opacities_from_custom_tp_grid: {t1-t0:.3f}s[/dim]"
+        f"[dim]⏱  calculate_reference_opacities_from_custom_tp_grid: {t1 - t0:.3f}s[/dim]"
     )
 
     t0 = time.perf_counter()
     tau_rosseland = compute_tau_rosseland(atm, kappa_on_atmosphere_tp)
     t1 = time.perf_counter()
     console.print(f"tau_rosseland shape: {tau_rosseland.shape}")
-    console.print(f"[dim]⏱  compute_tau_rosseland: {t1-t0:.3f}s[/dim]")
+    console.print(f"[dim]⏱  compute_tau_rosseland: {t1 - t0:.3f}s[/dim]")
 
     console.print("Plotting Rosseland optical depth profile...")
 
     t0 = time.perf_counter()
     plot_rosseland_tau(atm, tau_rosseland)
     t1 = time.perf_counter()
-    console.print(f"[dim]⏱  plot_rosseland_tau: {t1-t0:.3f}s[/dim]")
+    console.print(f"[dim]⏱  plot_rosseland_tau: {t1 - t0:.3f}s[/dim]")
 
     t0 = time.perf_counter()
     height_at_tau_index, height_at_tau = get_depth_at_tau_values_from_full_opacity(
@@ -1675,7 +2057,7 @@ def main(
     console.print(f"height_at_tau shape: {height_at_tau.shape}")
     t1 = time.perf_counter()
     console.print(
-        f"[dim]⏱  get_depth_at_tau_values_from_full_opacity: {t1-t0:.3f}s[/dim]"
+        f"[dim]⏱  get_depth_at_tau_values_from_full_opacity: {t1 - t0:.3f}s[/dim]"
     )
 
     t0 = time.perf_counter()
@@ -1686,16 +2068,56 @@ def main(
         output_file="height_at_tau_values.pdf",
     )
     t1 = time.perf_counter()
-    console.print(f"[dim]⏱  plot_height_at_tau_values: {t1-t0:.3f}s[/dim]")
+    console.print(f"[dim]⏱  plot_height_at_tau_values: {t1 - t0:.3f}s[/dim]")
 
     tau_rosseland_at_tau_lambda_one = tau_rosseland[height_at_tau_index[:, -1]]
 
     plot_tau_rosselend_at_tau_lambda_one_vs_wavelength(
         tau_rosseland_at_tau_lambda_one[skip_first_n_wavelengths:],
         wavelength_grid_subbins_centers[skip_first_n_wavelengths:],
+        tau_bin_edges=tau_bin_edges,
+        lambda_bin_edges=lambda_bin_edges,
     )
 
-    console.print("\n[yellow]Processing implementation in progress...[/yellow]")
+    console.print("\n[cyan]Calculating tau-binned opacities...[/cyan]")
+
+    bin_number = assign_tau_to_bin(
+        tau_rosseland_at_tau_lambda_one,
+        wavelength_grid_subbins_centers,
+        tau_bin_edges=tau_bin_edges,
+        lambda_bin_edges=lambda_bin_edges,
+    )
+    unique_bins = np.unique(bin_number[bin_number >= 0])
+    unassigned = int(np.sum(bin_number < 0))
+    console.print(f"assigned bands: {unique_bins}")
+    console.print(f"unassigned wavelength points: {unassigned}/{len(bin_number)}")
+
+    t0 = time.perf_counter()
+    tau_bin_results = calculate_tau_bin_opacities(
+        odf=odf,
+        cont=cont,
+        band_index=bin_number,
+        n_bins=len(tau_bin_edges) - 1,
+        tau_transition=0.35,
+    )
+    t1 = time.perf_counter()
+    console.print(
+        f"tau-binned opacity shapes: "
+        f"planck={tau_bin_results['kappa_planck'].shape}, "
+        f"rosseland={tau_bin_results['kappa_rosseland'].shape}, "
+        f"mixed={tau_bin_results['kappa_mixed'].shape}"
+    )
+    console.print(f"[dim]⏱  calculate_tau_bin_opacities: {t1 - t0:.3f}s[/dim]")
+
+    t0 = time.perf_counter()
+    save_tau_bin_opacities_npy(
+        tau_bin_output,
+        tau_bin_results,
+        temperature_grid=np.power(10.0, odf.T),
+        pressure_grid=np.power(10.0, odf.P),
+    )
+    t1 = time.perf_counter()
+    console.print(f"[dim]⏱  save_tau_bin_opacities_npy: {t1 - t0:.3f}s[/dim]")
 
 
 @app.command()

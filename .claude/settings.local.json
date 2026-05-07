@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv run:*)",
+      "Bash(jj log *)",
+      "Bash(jj status *)",
+      "Bash(jj diff *)",
+      "Bash(jj file *)",
+      "Bash(jj commit -m ' *)"
+    ]
+  }
+}
