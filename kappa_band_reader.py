@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
@@ -19,25 +18,21 @@ class KappaBandComparison:
     back_heating: int
     tab_T: np.ndarray
     tab_p: np.ndarray
-    kap_5000: Optional[np.ndarray]
-    B_5000: Optional[np.ndarray]
+    kap_5000: np.ndarray | None
+    B_5000: np.ndarray | None
     kap_mean: np.ndarray
     B_band: np.ndarray
-    nuout: Optional[np.ndarray]
+    nuout: np.ndarray | None
 
 
 def _read_exact(fp, dtype: np.dtype, count: int, label: str) -> np.ndarray:
     arr = np.fromfile(fp, dtype=dtype, count=count)
     if arr.size != count:
-        raise ValueError(
-            f"Unexpected EOF while reading {label}: expected {count}, got {arr.size}"
-        )
+        raise ValueError(f"Unexpected EOF while reading {label}: expected {count}, got {arr.size}")
     return arr
 
 
-def read_kappa_4_band_comparison(
-    path: str | Path, endian: str = "<", strict: bool = True
-) -> KappaBandComparison:
+def read_kappa_4_band_comparison(path: str | Path, endian: str = "<", strict: bool = True) -> KappaBandComparison:
     """
     Read a kappa_4_band_comparison.dat file written by C fwrite calls.
 
@@ -57,9 +52,7 @@ def read_kappa_4_band_comparison(
 
     with file_path.open("rb") as fp:
         header = _read_exact(fp, i4, 8, "header")
-        tau5000bin, NT, Np, Nbands_out, pp_axis, full_odf, scatter_on, back_heating = (
-            int(v) for v in header
-        )
+        tau5000bin, NT, Np, Nbands_out, pp_axis, full_odf, scatter_on, back_heating = (int(v) for v in header)
 
         tab_T = _read_exact(fp, f8, NT, "tab_T")
         tab_p = _read_exact(fp, f8, Np, "tab_p")
@@ -70,9 +63,7 @@ def read_kappa_4_band_comparison(
             kap_5000 = _read_exact(fp, f4, NT * Np, "kap_5000").reshape(NT, Np)
             B_5000 = _read_exact(fp, f4, NT, "B_5000")
 
-        kap_mean = _read_exact(fp, f4, Nbands_out * NT * Np, "kap_mean").reshape(
-            Nbands_out, NT, Np
-        )
+        kap_mean = _read_exact(fp, f4, Nbands_out * NT * Np, "kap_mean").reshape(Nbands_out, NT, Np)
         B_band = _read_exact(fp, f4, Nbands_out * NT, "B_band").reshape(Nbands_out, NT)
 
         nuout = None
@@ -81,15 +72,11 @@ def read_kappa_4_band_comparison(
             if strict:
                 trailing = fp.read()
                 if trailing:
-                    raise ValueError(
-                        "Trailing bytes after nuout that are not full float32 values"
-                    )
+                    raise ValueError("Trailing bytes after nuout that are not full float32 values")
         elif strict:
             trailing = fp.read()
             if trailing:
-                raise ValueError(
-                    f"Unexpected trailing bytes at end of file: {len(trailing)} bytes"
-                )
+                raise ValueError(f"Unexpected trailing bytes at end of file: {len(trailing)} bytes")
 
     return KappaBandComparison(
         tau5000bin=tau5000bin,

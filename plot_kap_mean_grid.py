@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
-from typing import Optional
 
 os.environ.setdefault("MPLCONFIGDIR", str(Path(".mplconfig").resolve()))
 os.environ.setdefault("XDG_CACHE_HOME", str(Path(".cache").resolve()))
@@ -39,9 +38,7 @@ def _load_mixed_comparison(
     mixed_raw = np.asarray(rec["mixed"], dtype=np.float64)
 
     if mixed_raw.ndim != 3:
-        raise ValueError(
-            f"Expected mixed to be 3D; got shape {mixed_raw.shape}"
-        )
+        raise ValueError(f"Expected mixed to be 3D; got shape {mixed_raw.shape}")
 
     # Accept either [nt, np, nbands] (tausort.py output) or [nbands, nt, np].
     if mixed_raw.shape[-1] == expected_nbands:
@@ -49,18 +46,12 @@ def _load_mixed_comparison(
     elif mixed_raw.shape[0] == expected_nbands:
         mixed_nt_np_nb = np.transpose(mixed_raw, (1, 2, 0))
     else:
-        raise ValueError(
-            f"Could not infer mixed band axis for shape {mixed_raw.shape} and nbands={expected_nbands}"
-        )
+        raise ValueError(f"Could not infer mixed band axis for shape {mixed_raw.shape} and nbands={expected_nbands}")
 
     if mixed_nt_np_nb.shape[0] != t_axis.shape[0]:
-        raise ValueError(
-            "Comparison mixed T axis does not match comparison T coordinate length"
-        )
+        raise ValueError("Comparison mixed T axis does not match comparison T coordinate length")
     if mixed_nt_np_nb.shape[1] != p_axis.shape[0]:
-        raise ValueError(
-            "Comparison mixed p axis does not match comparison p coordinate length"
-        )
+        raise ValueError("Comparison mixed p axis does not match comparison p coordinate length")
     if mixed_nt_np_nb.shape[2] != expected_nbands:
         raise ValueError("Comparison mixed band count does not match kap_mean bands")
 
@@ -72,7 +63,7 @@ def plot_kap_mean_grid(
     output_path: str | Path = "kap_mean_grid_4x3.png",
     *,
     endian: str = "<",
-    comparison_path: Optional[str | Path] = "tau_bin_opacities.npy",
+    comparison_path: str | Path | None = "tau_bin_opacities.npy",
 ) -> Path:
     """
     Create a 4x3 grid of kap_mean plots at 12 different (T, p) points.
@@ -87,9 +78,7 @@ def plot_kap_mean_grid(
 
     compare_t = compare_p = compare_mixed = None
     if comparison_path is not None and Path(comparison_path).exists():
-        compare_t, compare_p, compare_mixed = _load_mixed_comparison(
-            comparison_path, data.Nbands_out
-        )
+        compare_t, compare_p, compare_mixed = _load_mixed_comparison(comparison_path, data.Nbands_out)
         source_label = "kap_mean vs ln(mixed)"
 
     fig, axes = plt.subplots(4, 3, figsize=(13, 12), sharex=True, sharey=True)
@@ -145,9 +134,7 @@ def plot_kap_mean_grid(
 
 
 def _main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Plot a 4x3 grid of kap_mean vectors at sampled (T,p) points."
-    )
+    parser = argparse.ArgumentParser(description="Plot a 4x3 grid of kap_mean vectors at sampled (T,p) points.")
     parser.add_argument(
         "--input",
         default="kappa_4_band_comparison.dat",

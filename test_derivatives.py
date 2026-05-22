@@ -1,5 +1,6 @@
 import numpy as np
-from planck import planck_function, planck_derivative, planck_derivative_analytic
+
+from planck import planck_derivative, planck_derivative_analytic, planck_function
 
 # Test at a single wavelength and temperature
 wl = 500.0  # nm
@@ -24,4 +25,4 @@ actual_change = B_plus - B
 
 print(f"\nExpected change for dT={dT}K: {expected_change:.6e}")
 print(f"Actual change: {actual_change:.6e}")
-print(f"Ratio: {actual_change/expected_change:.6f}")
+print(f"Ratio: {actual_change / expected_change:.6f}")

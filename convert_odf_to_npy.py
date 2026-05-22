@@ -12,10 +12,12 @@ Convert ODF NetCDF format to NumPy .npy format for faster loading.
 This script reads the ODF_nc_format.nc file and converts it to a structured
 NumPy array saved as ODF_format.npy for significantly faster I/O.
 """
+
+import sys
+from pathlib import Path
+
 import numpy as np
 from netCDF4 import Dataset
-from pathlib import Path
-import sys
 
 
 def convert_odf_netcdf_to_npy(
@@ -62,23 +64,25 @@ def convert_odf_netcdf_to_npy(
 
     # Create structured array with named fields
     # This allows access like odf_array['ODF'], odf_array['T'], etc.
-    print(f"\nCreating structured array...")
-    
+    print("\nCreating structured array...")
+
     # Create a single structured array element
-    dtype = np.dtype([
-        ("ODF", f"({nt_dim},{np_dim},{nbins},{nsubbins})f8"),
-        ("wavelength_grid", f"({numfp},)f8"),
-        ("P", f"({np_dim},)f8"),
-        ("T", f"({nt_dim},)f8"),
-        ("subbin", f"({nbins},{nsubbins})f8"),
-        ("vturb", "f8"),
-        ("nt", "i4"),
-        ("np", "i4"),
-        ("nbins", "i4"),
-        ("nsubbins", "i4"),
-        ("numfp", "i4"),
-    ])
-    
+    dtype = np.dtype(
+        [
+            ("ODF", f"({nt_dim},{np_dim},{nbins},{nsubbins})f8"),
+            ("wavelength_grid", f"({numfp},)f8"),
+            ("P", f"({np_dim},)f8"),
+            ("T", f"({nt_dim},)f8"),
+            ("subbin", f"({nbins},{nsubbins})f8"),
+            ("vturb", "f8"),
+            ("nt", "i4"),
+            ("np", "i4"),
+            ("nbins", "i4"),
+            ("nsubbins", "i4"),
+            ("numfp", "i4"),
+        ]
+    )
+
     odf_structured = np.zeros(1, dtype=dtype)
     odf_structured["ODF"][0] = odf_data
     odf_structured["wavelength_grid"][0] = wavelength_grid
@@ -96,12 +100,12 @@ def convert_odf_netcdf_to_npy(
     np.save(output_file, odf_structured)
 
     # Verify the saved file
-    print(f"\nVerifying saved file...")
+    print("\nVerifying saved file...")
     loaded = np.load(output_file, allow_pickle=True)
-    print(f"  ✓ File saved successfully")
+    print("  ✓ File saved successfully")
     print(f"  File size: {output_file.stat().st_size / 1024 / 1024:.2f} MB")
     print(f"  Original NetCDF size: {input_file.stat().st_size / 1024 / 1024:.2f} MB")
-    
+
     # Quick verification
     assert loaded["nt"][0] == nt_dim
     assert loaded["np"][0] == np_dim
@@ -109,7 +113,7 @@ def convert_odf_netcdf_to_npy(
     assert loaded["nsubbins"][0] == nsubbins
     assert np.allclose(loaded["T"][0], temperature)
     assert np.allclose(loaded["P"][0], pressure)
-    print(f"  ✓ Verification passed")
+    print("  ✓ Verification passed")
 
     return output_file
 
@@ -117,9 +121,7 @@ def convert_odf_netcdf_to_npy(
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description="Convert ODF NetCDF format to NumPy .npy format"
-    )
+    parser = argparse.ArgumentParser(description="Convert ODF NetCDF format to NumPy .npy format")
     parser.add_argument(
         "--input",
         "-i",

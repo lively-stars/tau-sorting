@@ -26,8 +26,7 @@ class TestPlotKapMeanGrid(unittest.TestCase):
             self.assertGreater(output.stat().st_size, 0)
 
     @unittest.skipUnless(
-        Path("kappa_4_band_comparison.dat").exists()
-        and Path("tau_bin_opacities.npy").exists(),
+        Path("kappa_4_band_comparison.dat").exists() and Path("tau_bin_opacities.npy").exists(),
         "comparison inputs not available",
     )
     def test_plot_with_comparison_overlay_is_written(self) -> None:

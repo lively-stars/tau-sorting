@@ -1,7 +1,5 @@
-import numpy as np
 import matplotlib.pyplot as plt
-from scipy.interpolate import UnivariateSpline
-
+import numpy as np
 
 
 def read_grouped_column_file(filename):
@@ -19,7 +17,7 @@ def read_grouped_column_file(filename):
     current_label = None
     current_vals = []
 
-    with open(filename, "r") as f:
+    with open(filename) as f:
         for line in f:
             s = line.strip()
             if not s:
@@ -69,19 +67,15 @@ def smooth_1d(y, window=5):
     return y_smooth
 
 
-
-
-
-
-
 def piecewise_linear_breaks_tails(
-    x, y,
+    x,
+    y,
     min_tail_frac_low=0.01,
-    max_tail_frac_low=0.20,   # e.g. up to 20% for low tail
+    max_tail_frac_low=0.20,  # e.g. up to 20% for low tail
     min_tail_frac_high=0.01,
     max_tail_frac_high=0.05,  # e.g. only up to 5% for high tail
     step_tail_frac=0.01,
-    min_mid_frac=0.20
+    min_mid_frac=0.20,
 ):
     """
     Find two breakpoints that split (x, y) into three segments:
@@ -106,20 +100,19 @@ def piecewise_linear_breaks_tails(
         raise ValueError("Too few points for 3 segments.")
 
     # convert fractions to absolute lengths
-    min_low_tail  = max(3, int(round(min_tail_frac_low  * n)))
-    max_low_tail  = max(min_low_tail + 1, int(round(max_tail_frac_low  * n)))
+    min_low_tail = max(3, int(round(min_tail_frac_low * n)))
+    max_low_tail = max(min_low_tail + 1, int(round(max_tail_frac_low * n)))
     min_high_tail = max(3, int(round(min_tail_frac_high * n)))
     max_high_tail = max(min_high_tail + 1, int(round(max_tail_frac_high * n)))
 
     step_tail = max(1, int(round(step_tail_frac * n)))
-    min_mid   = max(1, int(round(min_mid_frac * n)))
+    min_mid = max(1, int(round(min_mid_frac * n)))
 
     best_sse = np.inf
     best = None  # will hold (b1, b2, low_len, high_len)
 
     for low_len in range(min_low_tail, max_low_tail + 1, step_tail):
         for high_len in range(min_high_tail, max_high_tail + 1, step_tail):
-
             mid_len = n - low_len - high_len
             if mid_len < min_mid:
                 continue  # middle too small, skip
@@ -128,22 +121,22 @@ def piecewise_linear_breaks_tails(
             b2 = n - high_len
 
             # segment 1: [0 .. b1]
-            x1, y1 = x[:b1+1], y[:b1+1]
+            x1, y1 = x[: b1 + 1], y[: b1 + 1]
             c1 = np.polyfit(x1, y1, 1)
             y1_fit = np.polyval(c1, x1)
-            sse = np.sum((y1 - y1_fit)**2)
+            sse = np.sum((y1 - y1_fit) ** 2)
 
             # segment 2: [b1 .. b2]
-            x2, y2 = x[b1:b2+1], y[b1:b2+1]
+            x2, y2 = x[b1 : b2 + 1], y[b1 : b2 + 1]
             c2 = np.polyfit(x2, y2, 1)
             y2_fit = np.polyval(c2, x2)
-            sse += np.sum((y2 - y2_fit)**2)
+            sse += np.sum((y2 - y2_fit) ** 2)
 
             # segment 3: [b2 .. n-1]
             x3, y3 = x[b2:], y[b2:]
             c3 = np.polyfit(x3, y3, 1)
             y3_fit = np.polyval(c3, x3)
-            sse += np.sum((y3 - y3_fit)**2)
+            sse += np.sum((y3 - y3_fit) ** 2)
 
             if sse < best_sse:
                 best_sse = sse
@@ -155,37 +148,37 @@ def piecewise_linear_breaks_tails(
     b1, b2, low_len, high_len = best
     mid_len = n - low_len - high_len
 
-    low_frac  = low_len  / n
-    mid_frac  = mid_len  / n
+    low_frac = low_len / n
+    mid_frac = mid_len / n
     high_frac = high_len / n
 
-    hit_max_tail_low  = (low_len  >= max_low_tail)
-    hit_max_tail_high = (high_len >= max_high_tail)
-    hit_max_tail_any  = hit_max_tail_low or hit_max_tail_high
+    hit_max_tail_low = low_len >= max_low_tail
+    hit_max_tail_high = high_len >= max_high_tail
+    hit_max_tail_any = hit_max_tail_low or hit_max_tail_high
 
     result = {
         "b1": b1,
         "b2": b2,
-        "low_len":  low_len,
-        "mid_len":  mid_len,
+        "low_len": low_len,
+        "mid_len": mid_len,
         "high_len": high_len,
-        "low_frac":  low_frac,
-        "mid_frac":  mid_frac,
+        "low_frac": low_frac,
+        "mid_frac": mid_frac,
         "high_frac": high_frac,
-        "hit_max_tail_low":  hit_max_tail_low,
+        "hit_max_tail_low": hit_max_tail_low,
         "hit_max_tail_high": hit_max_tail_high,
-        "hit_max_tail_any":  hit_max_tail_any,
+        "hit_max_tail_any": hit_max_tail_any,
         "sse_3seg": best_sse,
         "params": {
             "n": n,
-            "min_tail_frac_low":  min_tail_frac_low,
-            "max_tail_frac_low":  max_tail_frac_low,
+            "min_tail_frac_low": min_tail_frac_low,
+            "max_tail_frac_low": max_tail_frac_low,
             "min_tail_frac_high": min_tail_frac_high,
             "max_tail_frac_high": max_tail_frac_high,
             "step_tail_frac": step_tail_frac,
             "min_mid_frac": min_mid_frac,
-            "min_low_tail_points":  min_low_tail,
-            "max_low_tail_points":  max_low_tail,
+            "min_low_tail_points": min_low_tail,
+            "max_low_tail_points": max_low_tail,
             "min_high_tail_points": min_high_tail,
             "max_high_tail_points": max_high_tail,
             "min_mid_points": min_mid,
@@ -194,12 +187,7 @@ def piecewise_linear_breaks_tails(
     return result
 
 
-def refine_middle_segment(
-    x, y,
-    seg_info,
-    mid_step_frac=0.02,
-    min_mid_sub_frac=0.10
-):
+def refine_middle_segment(x, y, seg_info, mid_step_frac=0.02, min_mid_sub_frac=0.10):
     """
     Optional refinement: split the middle segment into two by adding
     one extra breakpoint, if it improves the SSE.
@@ -230,9 +218,9 @@ def refine_middle_segment(
 
     b1 = seg_info["b1"]
     b2 = seg_info["b2"]
-    low_len  = seg_info["low_len"]
+    low_len = seg_info["low_len"]
     high_len = seg_info["high_len"]
-    mid_len  = seg_info["mid_len"]
+    mid_len = seg_info["mid_len"]
     sse_3seg = seg_info["sse_3seg"]
 
     # if middle is too small, nothing to do
@@ -241,7 +229,7 @@ def refine_middle_segment(
         return seg_info
 
     mid_start = b1
-    mid_end   = b2
+    mid_end = b2
     n_mid = mid_end - mid_start + 1
 
     min_mid_sub = max(1, int(round(min_mid_sub_frac * n_mid)))
@@ -255,27 +243,27 @@ def refine_middle_segment(
     def sse_3():
         sse = 0.0
         # low tail
-        x1, y1 = x[:b1+1], y[:b1+1]
+        x1, y1 = x[: b1 + 1], y[: b1 + 1]
         c1 = np.polyfit(x1, y1, 1)
         y1_fit = np.polyval(c1, x1)
-        sse += np.sum((y1 - y1_fit)**2)
+        sse += np.sum((y1 - y1_fit) ** 2)
         # middle
-        x2, y2 = x[b1:b2+1], y[b1:b2+1]
+        x2, y2 = x[b1 : b2 + 1], y[b1 : b2 + 1]
         c2 = np.polyfit(x2, y2, 1)
         y2_fit = np.polyval(c2, x2)
-        sse += np.sum((y2 - y2_fit)**2)
+        sse += np.sum((y2 - y2_fit) ** 2)
         # high tail
         x3, y3 = x[b2:], y[b2:]
         c3 = np.polyfit(x3, y3, 1)
         y3_fit = np.polyval(c3, x3)
-        sse += np.sum((y3 - y3_fit)**2)
+        sse += np.sum((y3 - y3_fit) ** 2)
         return sse
 
     baseline_sse3 = sse_3()  # we could also use seg_info["sse_3seg"], but this recomputes consistently
 
     # candidate internal splits in the middle, ordered from centre outward
     j_min = mid_start + min_mid_sub
-    j_max = mid_end   - min_mid_sub
+    j_max = mid_end - min_mid_sub
     candidates = list(range(j_min, j_max + 1, mid_step))
 
     centre = (mid_start + mid_end) // 2
@@ -289,28 +277,28 @@ def refine_middle_segment(
         sse = 0.0
 
         # low tail
-        x1, y1 = x[:b1+1], y[:b1+1]
+        x1, y1 = x[: b1 + 1], y[: b1 + 1]
         c1 = np.polyfit(x1, y1, 1)
         y1_fit = np.polyval(c1, x1)
-        sse += np.sum((y1 - y1_fit)**2)
+        sse += np.sum((y1 - y1_fit) ** 2)
 
         # mid1
-        x2, y2 = x[b1:j+1], y[b1:j+1]
+        x2, y2 = x[b1 : j + 1], y[b1 : j + 1]
         c2 = np.polyfit(x2, y2, 1)
         y2_fit = np.polyval(c2, x2)
-        sse += np.sum((y2 - y2_fit)**2)
+        sse += np.sum((y2 - y2_fit) ** 2)
 
         # mid2
-        x3, y3 = x[j:b2+1], y[j:b2+1]
+        x3, y3 = x[j : b2 + 1], y[j : b2 + 1]
         c3 = np.polyfit(x3, y3, 1)
         y3_fit = np.polyval(c3, x3)
-        sse += np.sum((y3 - y3_fit)**2)
+        sse += np.sum((y3 - y3_fit) ** 2)
 
         # high tail
         x4, y4 = x[b2:], y[b2:]
         c4 = np.polyfit(x4, y4, 1)
         y4_fit = np.polyval(c4, x4)
-        sse += np.sum((y4 - y4_fit)**2)
+        sse += np.sum((y4 - y4_fit) ** 2)
 
         if sse < best_sse4:
             best_sse4 = sse
@@ -333,10 +321,6 @@ def refine_middle_segment(
     return seg_info
 
 
-
-
-
-
 def sse_4seg(x, y, b1, b_mid, b2):
     """
     Compute total SSE for four linear segments:
@@ -349,36 +333,33 @@ def sse_4seg(x, y, b1, b_mid, b2):
     sse = 0.0
 
     # segment 1: low tail [0..b1]
-    x1, y1 = x[:b1+1], y[:b1+1]
+    x1, y1 = x[: b1 + 1], y[: b1 + 1]
     c1 = np.polyfit(x1, y1, 1)
     y1_fit = np.polyval(c1, x1)
-    sse += np.sum((y1 - y1_fit)**2)
+    sse += np.sum((y1 - y1_fit) ** 2)
 
     # segment 2: mid1 [b1..b_mid]
-    x2, y2 = x[b1:b_mid+1], y[b1:b_mid+1]
+    x2, y2 = x[b1 : b_mid + 1], y[b1 : b_mid + 1]
     c2 = np.polyfit(x2, y2, 1)
     y2_fit = np.polyval(c2, x2)
-    sse += np.sum((y2 - y2_fit)**2)
+    sse += np.sum((y2 - y2_fit) ** 2)
 
     # segment 3: mid2 [b_mid..b2]
-    x3, y3 = x[b_mid:b2+1], y[b_mid:b2+1]
+    x3, y3 = x[b_mid : b2 + 1], y[b_mid : b2 + 1]
     c3 = np.polyfit(x3, y3, 1)
     y3_fit = np.polyval(c3, x3)
-    sse += np.sum((y3 - y3_fit)**2)
+    sse += np.sum((y3 - y3_fit) ** 2)
 
     # segment 4: high tail [b2..n-1]
     x4, y4 = x[b2:], y[b2:]
     c4 = np.polyfit(x4, y4, 1)
     y4_fit = np.polyval(c4, x4)
-    sse += np.sum((y4 - y4_fit)**2)
+    sse += np.sum((y4 - y4_fit) ** 2)
 
     return sse
 
-def refine_b1_local(
-    x, y, seg_info,
-    window_frac=0.05,
-    min_mid_sub_frac=0.10
-):
+
+def refine_b1_local(x, y, seg_info, window_frac=0.05, min_mid_sub_frac=0.10):
     """
     Locally refine the first breakpoint b1 by sliding it within a window.
 
@@ -399,8 +380,10 @@ def refine_b1_local(
     b_mid = seg_info["b_mid"]
 
     # minimal lengths from original tail search
-    min_low_tail_points  = params["min_low_tail_points"]
+    min_low_tail_points = params["min_low_tail_points"]
+    max_low_tail_points = params["max_low_tail_points"]
     min_high_tail_points = params["min_high_tail_points"]
+    max_high_tail_points = params["max_high_tail_points"]
 
     # approximate total middle length between b1 and b2
     mid_total = b2 - b1
@@ -409,8 +392,9 @@ def refine_b1_local(
     # local search window around current b1
     win = max(1, int(round(window_frac * n)))
     cand_min = max(min_low_tail_points - 1, b1 - win)
-    # must leave enough room for mid1 and mid2 before b2
-    cand_max = min(b1 + win, b_mid - min_mid_sub)
+    # must leave enough room for mid1 and mid2 before b2,
+    # and not exceed the max low-tail length
+    cand_max = min(b1 + win, b_mid - min_mid_sub, max_low_tail_points - 1)
 
     if cand_min >= cand_max:
         return seg_info  # nothing to do
@@ -419,15 +403,19 @@ def refine_b1_local(
     best_sse = np.inf
 
     for cand_b1 in range(cand_min, cand_max + 1):
-        low_len  = cand_b1 + 1
+        low_len = cand_b1 + 1
         mid1_len = b_mid - cand_b1
         mid2_len = b2 - b_mid
         high_len = n - b2
 
-        if (low_len  < min_low_tail_points or
-            mid1_len < min_mid_sub or
-            mid2_len < min_mid_sub or
-            high_len < min_high_tail_points):
+        if (
+            low_len < min_low_tail_points
+            or low_len > max_low_tail_points
+            or mid1_len < min_mid_sub
+            or mid2_len < min_mid_sub
+            or high_len < min_high_tail_points
+            or high_len > max_high_tail_points
+        ):
             continue
 
         sse = sse_4seg(x, y, cand_b1, b_mid, b2)
@@ -440,24 +428,20 @@ def refine_b1_local(
         seg_info["b1_old"] = b1
         seg_info["b1"] = best_b1
         # recompute lengths/fractions
-        low_len  = best_b1 + 1
+        low_len = best_b1 + 1
         high_len = n - b2
-        mid_len  = n - low_len - high_len
+        mid_len = n - low_len - high_len
         seg_info["low_len"] = low_len
         seg_info["high_len"] = high_len
         seg_info["mid_len"] = mid_len
-        seg_info["low_frac"]  = low_len / n
-        seg_info["mid_frac"]  = mid_len / n
+        seg_info["low_frac"] = low_len / n
+        seg_info["mid_frac"] = mid_len / n
         seg_info["high_frac"] = high_len / n
 
     return seg_info
 
 
-def refine_b2_local(
-    x, y, seg_info,
-    window_frac=0.05,
-    min_mid_sub_frac=0.10
-):
+def refine_b2_local(x, y, seg_info, window_frac=0.05, min_mid_sub_frac=0.10):
     """
     Locally refine the second breakpoint b2 by sliding it within a window.
 
@@ -475,15 +459,17 @@ def refine_b2_local(
 
     b_mid = seg_info["b_mid"]
 
-    min_low_tail_points  = params["min_low_tail_points"]
+    min_low_tail_points = params["min_low_tail_points"]
+    max_low_tail_points = params["max_low_tail_points"]
     min_high_tail_points = params["min_high_tail_points"]
+    max_high_tail_points = params["max_high_tail_points"]
 
     mid_total = b2 - b1
     min_mid_sub = max(1, int(round(min_mid_sub_frac * mid_total)))
 
     win = max(1, int(round(window_frac * n)))
-    # must leave room for mid2 and high tail
-    cand_min = max(b2 - win, b_mid + min_mid_sub)
+    # must leave room for mid2 and high tail, and not exceed max high-tail length
+    cand_min = max(b2 - win, b_mid + min_mid_sub, n - max_high_tail_points)
     cand_max = min(b2 + win, n - min_high_tail_points)
 
     if cand_min >= cand_max:
@@ -493,15 +479,19 @@ def refine_b2_local(
     best_sse = np.inf
 
     for cand_b2 in range(cand_min, cand_max + 1):
-        low_len  = b1 + 1
+        low_len = b1 + 1
         mid1_len = b_mid - b1
         mid2_len = cand_b2 - b_mid
         high_len = n - cand_b2
 
-        if (low_len  < min_low_tail_points or
-            mid1_len < min_mid_sub or
-            mid2_len < min_mid_sub or
-            high_len < min_high_tail_points):
+        if (
+            low_len < min_low_tail_points
+            or low_len > max_low_tail_points
+            or mid1_len < min_mid_sub
+            or mid2_len < min_mid_sub
+            or high_len < min_high_tail_points
+            or high_len > max_high_tail_points
+        ):
             continue
 
         sse = sse_4seg(x, y, b1, b_mid, cand_b2)
@@ -512,28 +502,28 @@ def refine_b2_local(
     if best_b2 != b2 and best_sse < np.inf:
         seg_info["b2_old"] = b2
         seg_info["b2"] = best_b2
-        low_len  = b1 + 1
+        low_len = b1 + 1
         high_len = n - best_b2
-        mid_len  = n - low_len - high_len
+        mid_len = n - low_len - high_len
         seg_info["low_len"] = low_len
         seg_info["high_len"] = high_len
         seg_info["mid_len"] = mid_len
-        seg_info["low_frac"]  = low_len / n
-        seg_info["mid_frac"]  = mid_len / n
+        seg_info["low_frac"] = low_len / n
+        seg_info["mid_frac"] = mid_len / n
         seg_info["high_frac"] = high_len / n
 
     return seg_info
 
 
-
 def iterative_refine_breaks(
-    x, y,
+    x,
+    y,
     seg_initial,
     n_iter=2,
     mid_step_frac=0.02,
     min_mid_sub_frac=0.10,
     window_frac=0.05,
-    warn_mid_shift_frac=0.25
+    warn_mid_shift_frac=0.25,
 ):
     """
     Iteratively refine b1, b2 and b_mid.
@@ -576,11 +566,7 @@ def iterative_refine_breaks(
 
     for it in range(n_iter):
         # 1) (re)compute middle split
-        seg = refine_middle_segment(
-            x, y, seg,
-            mid_step_frac=mid_step_frac,
-            min_mid_sub_frac=min_mid_sub_frac
-        )
+        seg = refine_middle_segment(x, y, seg, mid_step_frac=mid_step_frac, min_mid_sub_frac=min_mid_sub_frac)
 
         if not seg.get("split_mid", False):
             break  # nothing more to refine
@@ -588,25 +574,13 @@ def iterative_refine_breaks(
         old_b_mid = seg["b_mid"]
 
         # 2) refine b1 locally
-        seg = refine_b1_local(
-            x, y, seg,
-            window_frac=window_frac,
-            min_mid_sub_frac=min_mid_sub_frac
-        )
+        seg = refine_b1_local(x, y, seg, window_frac=window_frac, min_mid_sub_frac=min_mid_sub_frac)
 
         # 3) refine b2 locally
-        seg = refine_b2_local(
-            x, y, seg,
-            window_frac=window_frac,
-            min_mid_sub_frac=min_mid_sub_frac
-        )
+        seg = refine_b2_local(x, y, seg, window_frac=window_frac, min_mid_sub_frac=min_mid_sub_frac)
 
         # 4) recompute middle split after updated b1, b2
-        seg = refine_middle_segment(
-            x, y, seg,
-            mid_step_frac=mid_step_frac,
-            min_mid_sub_frac=min_mid_sub_frac
-        )
+        seg = refine_middle_segment(x, y, seg, mid_step_frac=mid_step_frac, min_mid_sub_frac=min_mid_sub_frac)
 
         if seg.get("split_mid", False):
             new_b_mid = seg["b_mid"]
@@ -614,13 +588,11 @@ def iterative_refine_breaks(
             shift = abs(new_b_mid - old_b_mid)
             seg["b_mid_old"] = old_b_mid
             seg["b_mid_shift"] = shift
-            seg["mid_shift_warning"] = (shift > warn_mid_shift_frac * mid_len)
+            seg["mid_shift_warning"] = shift > warn_mid_shift_frac * mid_len
         else:
             seg["mid_shift_warning"] = False
 
     return seg
-
-
 
 
 def best_weighted_polyfit(x, y, degrees=(3, 4, 5), high_frac=0.2, high_weight=10.0):
@@ -690,72 +662,120 @@ def best_weighted_polyfit(x, y, degrees=(3, 4, 5), high_frac=0.2, high_weight=10
     return best_poly
 
 
-
-
-
-
-
-
-
-
-
-
-def process_file(
-    filename,
+def analyze_group(
+    values,
     smooth_window=7,
-    normalise_derivatives=True,
-    max_vertical_lines=6,
-    edge_cut=3,   # ignore maxima too close to boundaries
+    min_tail_frac_low=0.01,
+    max_tail_frac_low=0.20,
+    min_tail_frac_high=0.01,
+    max_tail_frac_high=0.05,
+    step_tail_frac=0.01,
+    min_mid_frac=0.20,
+    refine_mid=True,
 ):
-    groups = read_grouped_column_file(filename)
+    """
+    Smooth + segment a single 1D group of values.
 
-    for label, values in groups.items():
-        print(f"Processing group: {label}")
+    Pipeline:
+      1) log10 transform (with non-positive guard).
+      2) moving-average smoothing.
+      3) initial 3-segment break search (piecewise_linear_breaks_tails).
+      4) iterative refinement (iterative_refine_breaks) — skipped when
+         refine_mid is False; the seg dict will then have split_mid=False
+         and no b_mid.
 
-        values = np.asarray(values, dtype=float)
+    Parameters
+    ----------
+    values : array-like
+        Raw values for one group (will be log10'd).
+    smooth_window : int
+        Moving-average window passed to smooth_1d.
+    refine_mid : bool
+        If False, return the 3-segment result from piecewise_linear_breaks_tails
+        without running iterative_refine_breaks (no mid split, no b1/b2 nudging).
 
-        # --- optional log10 transform on the data ---
-        if np.any(values <= 0):
-            pos = values[values > 0]
-            if len(pos) == 0:
-                raise ValueError("All values are <= 0, cannot take log10.")
-            min_pos = np.min(pos)
-            safe = np.where(values <= 0, min_pos * 1e-6, values)
-            y_data = np.log10(safe)
-        else:
-            y_data = np.log10(values)
+    Returns
+    -------
+    dict with keys:
+        seg       : segmentation dict (b1, b2, optional b_mid, *_len, *_frac, ...)
+        y_data    : log10 of input
+        y_smooth  : smoothed log10
+        x         : index array
+    """
+    values = np.asarray(values, dtype=float)
 
-        x = np.arange(len(y_data))
+    if np.any(values <= 0):
+        pos = values[values > 0]
+        if len(pos) == 0:
+            raise ValueError("All values are <= 0, cannot take log10.")
+        min_pos = np.min(pos)
+        safe = np.where(values <= 0, min_pos * 1e-6, values)
+        y_data = np.log10(safe)
+    else:
+        y_data = np.log10(values)
 
-         # --- smoothing (moving average) ---
-        y_smooth = smooth_1d(y_data, window=smooth_window)
-        
-        poly = best_weighted_polyfit(x, y_smooth, degrees=(8,9,10,11))
+    x = np.arange(len(y_data))
 
-        # example: use the smoothed log data for segmentation
-        shape_y = y_smooth   # or y_fit
+    y_smooth = smooth_1d(y_data, window=smooth_window)
 
-        # 1. initial 3-seg search with asymmetric tails
-        seg0 = piecewise_linear_breaks_tails(
-            x, shape_y,
-            min_tail_frac_low=0.01,
-            max_tail_frac_low=0.2,
-            min_tail_frac_high=0.005,
-            max_tail_frac_high=0.05,
-            step_tail_frac=0.005,
-            min_mid_frac=0.20
-        )
+    seg0 = piecewise_linear_breaks_tails(
+        x,
+        y_smooth,
+        min_tail_frac_low=min_tail_frac_low,
+        max_tail_frac_low=max_tail_frac_low,
+        min_tail_frac_high=min_tail_frac_high,
+        max_tail_frac_high=max_tail_frac_high,
+        step_tail_frac=step_tail_frac,
+        min_mid_frac=min_mid_frac,
+    )
 
-        # 2. first mid split and iterative refinement
+    if refine_mid:
         seg = iterative_refine_breaks(
-            x, shape_y,
+            x,
+            y_smooth,
             seg_initial=seg0,
             n_iter=6,
             mid_step_frac=0.02,
             min_mid_sub_frac=0.10,
             window_frac=0.05,
-            warn_mid_shift_frac=0.25
+            warn_mid_shift_frac=0.25,
         )
+    else:
+        seg = dict(seg0)
+        seg["split_mid"] = False
+
+    return {"seg": seg, "y_data": y_data, "y_smooth": y_smooth, "x": x}
+
+
+def process_file(
+    filename=None,
+    smooth_window=7,
+    normalise_derivatives=True,
+    max_vertical_lines=6,
+    edge_cut=3,  # ignore maxima too close to boundaries
+    groups=None,
+):
+    """
+    Run analyze_group + diagnostic plot for every group.
+
+    Source of groups (exactly one of):
+      filename : str — file readable by read_grouped_column_file.
+      groups   : dict[label, array-like] — pre-built in-memory groups.
+    """
+    if (filename is None) == (groups is None):
+        raise ValueError("Provide exactly one of `filename` or `groups`.")
+
+    if groups is None:
+        groups = read_grouped_column_file(filename)
+
+    for label, values in groups.items():
+        print(f"Processing group: {label}")
+
+        result = analyze_group(values, smooth_window=smooth_window)
+        seg = result["seg"]
+        y_data = result["y_data"]
+        y_smooth = result["y_smooth"]
+        x = result["x"]
 
         # 3. dump some diagnostics
         print(f"Group {label}:")
@@ -770,60 +790,30 @@ def process_file(
             print(f"    mid1: {seg['mid1_len']} pts ({seg['mid1_frac']:.3f})")
             print(f"    mid2: {seg['mid2_len']} pts ({seg['mid2_frac']:.3f})")
             if seg.get("mid_shift_warning", False):
-                print(f"  WARNING: mid break moved a lot "
-                      f"(shift={seg['b_mid_shift']}, mid_len={seg['mid_len']})")
+                print(f"  WARNING: mid break moved a lot (shift={seg['b_mid_shift']}, mid_len={seg['mid_len']})")
         else:
             print("  middle not split further.")
 
-        
-
-
-
         # ---- PLOTTING ----
-        fig, (ax1, ax2) = plt.subplots(
-            2, 1,
-            figsize=(8, 6),
-            sharex=True,
-            gridspec_kw={'height_ratios': [2, 1]}
-        )
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), sharex=True, gridspec_kw={"height_ratios": [2, 1]})
 
-        # TOP: raw data, smoothed data, poly fit + vertical lines
-        ax1.plot(x, y_data,       label="data (log)",        linewidth=1.0, alpha=0.4)
-        ax1.plot(x, y_smooth,     label="smoothed (log)",    linewidth=1.5)
-        #ax1.plot(x, y_fit,        label="poly fit",          linewidth=1.5, linestyle="--")
+        ax1.plot(x, y_data, label="data (log)", linewidth=1.0, alpha=0.4)
+        ax1.plot(x, y_smooth, label="smoothed (log)", linewidth=1.5)
 
-        
-        
-       # 4. plotting vertical lines
         b1 = seg["b1"]
         b2 = seg["b2"]
-        ax1.axvline(x=b1, linestyle=":",  linewidth=1.0, alpha=0.8, color="red")
-        ax1.axvline(x=b2, linestyle=":",  linewidth=1.0, alpha=0.8, color="red")
+        ax1.axvline(x=b1, linestyle=":", linewidth=1.0, alpha=0.8, color="red")
+        ax1.axvline(x=b2, linestyle=":", linewidth=1.0, alpha=0.8, color="red")
         if seg.get("split_mid", False):
             ax1.axvline(x=seg["b_mid"], linestyle="--", linewidth=1.0, alpha=0.8, color="orange")
-
-
 
         ax1.set_ylabel("log10(value)")
         ax1.set_title(f"Group: {label}")
         ax1.grid(True, alpha=0.3)
         ax1.legend(loc="best")
 
-        # BOTTOM: derivatives of polynomial
-       # ax2.plot(x, fd_plot, label="1st deriv (norm.)", linestyle="--")
-       # ax2.plot(x, sd_plot, label="2nd deriv (norm.)", linestyle="-.")
-
-       # ax2.set_xlabel("Index in group")
-       # ax2.set_ylabel("Derivatives")
-       # ax2.grid(True, alpha=0.3)
-       # ax2.legend(loc="best")
-
         plt.tight_layout()
         plt.show()
-
-        
-        
-        
 
 
 if __name__ == "__main__":

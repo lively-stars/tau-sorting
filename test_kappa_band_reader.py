@@ -62,9 +62,7 @@ class TestKappaBandReader(unittest.TestCase):
         tab_p = np.array([10.0, 20.0], dtype=np.float64)
         kap_5000 = np.arange(NT * Np, dtype=np.float32).reshape(NT, Np) + 0.5
         B_5000 = np.array([5.0, 6.0, 7.0], dtype=np.float32)
-        kap_mean = np.arange(Nbands_out * NT * Np, dtype=np.float32).reshape(
-            Nbands_out, NT, Np
-        )
+        kap_mean = np.arange(Nbands_out * NT * Np, dtype=np.float32).reshape(Nbands_out, NT, Np)
         B_band = np.arange(Nbands_out * NT, dtype=np.float32).reshape(Nbands_out, NT)
         nuout = np.array([100.0, 200.0, 300.0, 400.0], dtype=np.float32)
 

@@ -18,7 +18,7 @@ This repository contains the source code and documentation for tau-sorting.
 │   ├── global_tau.h_4bins
 │   └── global_tau.h_grey
 ├── global_tau.h               - Header file with global variables for tau-sorting
-├── p00big3.bdf                - Line absorption data file    
+├── p00big3.bdf                - Line absorption data file
 └── tausort.c                  - C source code for tau-sorting
 ```
 
@@ -27,7 +27,7 @@ This repository contains the source code and documentation for tau-sorting.
 netcdf ODF_nc_format {
 dimensions:
 	np = 150 ;                            - number of pressure points
-	nt = 300 ;                            - number of temperature points               
+	nt = 300 ;                            - number of temperature points
 	nbins = 328 ;                         - number of lambda bins
 	nsubbins = 12 ;                       - number of sub-bins per lambda bin
 	numfp = 329 ;                         - number of lambda edges (lambda!!)
