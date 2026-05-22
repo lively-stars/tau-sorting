@@ -4,6 +4,7 @@ This repository contains the source code and documentation for tau-sorting.
 
 ## Data files
 
+```
 ├── G2_1D.dat                  - 1D atmospheric model data (height - ascending, density, pressure, temperature)
 ├── Makefile                   - Makefile to compile the c version tau-sorting code
 ├── ODF_nc_format.nc           - ODF data in netCDF format (p, T, n_bins, n_subbins)
@@ -19,8 +20,9 @@ This repository contains the source code and documentation for tau-sorting.
 ├── global_tau.h               - Header file with global variables for tau-sorting
 ├── p00big3.bdf                - Line absorption data file    
 └── tausort.c                  - C source code for tau-sorting
+```
 
-
+```
 ❯ ncdump -h ODF_nc_format.nc
 netcdf ODF_nc_format {
 dimensions:
@@ -39,6 +41,7 @@ variables:
 // global attributes:
 		:vturb = 2. ;
 }
+```
 
 ## Python implementation
 
