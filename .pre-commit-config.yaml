@@ -1,0 +1,34 @@
+# Pre-commit hook config.
+#
+# NOTE: This repository uses Jujutsu (jj), which is NOT colocated with git here
+# (no .git directory). The `pre-commit` framework hooks into `.git/hooks/`, so
+# `pre-commit install` will not have anything to attach to.
+#
+# Two ways to use this file:
+#
+#   1. Run the hooks manually before committing:
+#        uv run pre-commit run --all-files
+#
+#   2. Use the wrapper script that runs the same tools without the framework:
+#        ./scripts/precommit.sh
+#
+# If you later colocate jj with git (`jj git init --colocate` in a fresh repo),
+# `uv run pre-commit install` will then wire these hooks to `.git/hooks/pre-commit`.
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.0
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: check-merge-conflict

@@ -27,6 +27,41 @@ make clean
 
 # Install dependencies
 uv sync
+
+# Lint + format (manual pre-commit; see "Pre-commit" section below)
+./scripts/precommit.sh            # auto-fix + format the tree
+./scripts/precommit.sh --check    # report-only, exit non-zero if changes needed
+uv run ruff check .               # lint only
+uv run ruff format .              # format only
+```
+
+## Pre-commit
+
+This repo uses Jujutsu (`jj`) without a colocated git checkout, so the standard
+`pre-commit` framework cannot install a real hook (it would target
+`.git/hooks/`, which does not exist). Instead, run the checks manually before
+`jj commit` / `jj describe`:
+
+```bash
+./scripts/precommit.sh            # ruff format + ruff check --fix + whitespace/EOF
+```
+
+The script lives at `scripts/precommit.sh` and mirrors what `.pre-commit-config.yaml`
+would do (`ruff-check --fix`, `ruff-format`, trailing whitespace, end-of-file
+fixer). The YAML file is kept for reference and for the day you decide to
+colocate jj with git via `jj git init --colocate`; after that,
+`uv run pre-commit install` will wire it up.
+
+Ruff is configured in `pyproject.toml` under `[tool.ruff]` — line length 120,
+target `py312`, rules `E,F,W,I,UP` with a small ignore list (`E501`, `E741`,
+`UP007`).
+
+A handy jj alias to run the script before describing/committing:
+
+```toml
+# in ~/.config/jj/config.toml
+[aliases]
+precommit = ["util", "exec", "--", "bash", "-c", "./scripts/precommit.sh"]
 ```
 
 ## Architecture

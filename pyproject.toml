@@ -8,8 +8,37 @@ dependencies = [
     "matplotlib>=3.10.8",
     "netcdf4>=1.7.4",
     "numpy>=2.4.0",
-    "pre-commit>=4.5.1",
     "scipy>=1.16.3",
     "tqdm>=4.67.1",
     "typer>=0.21.1",
 ]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.5.1",
+    "ruff>=0.14.0",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = [
+    ".jj",
+    ".venv",
+    "diff_binning",
+    "__pycache__",
+]
+
+[tool.ruff.lint]
+# Pragmatic starter set: pycodestyle errors/warnings, pyflakes, isort, pyupgrade.
+# Keep this minimal so the first run is clean-ish; expand later as desired.
+select = ["E", "F", "W", "I", "UP"]
+ignore = [
+    "E501",  # line-too-long: ruff format handles wrapping; warn-only is noisy here
+    "E741",  # ambiguous variable name (l, I, O) -- common in physics code
+    "UP007", # Optional/Union -> X | Y -- leave existing Annotated/Optional alone
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Allow `from x import *` and unused imports in notebooks/quick scripts if added later.
+"test_*.py" = ["F401"]

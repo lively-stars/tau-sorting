@@ -26,3 +26,6 @@ diff_binning
 *.tar
 *.zst
 *.npy
+
+# Debug dumps from sort_weighted_opacity_per_tau_bin
+debug_tau_bin_*.json
