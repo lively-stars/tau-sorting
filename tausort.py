@@ -30,6 +30,7 @@ import numpy as np
 from numpy.typing import NDArray
 from netCDF4 import Dataset
 from rich.console import Console
+from rich.table import Table
 from tqdm import tqdm
 from scipy.interpolate import RegularGridInterpolator
 from scipy.integrate import cumulative_trapezoid
@@ -1983,6 +1984,123 @@ def plot_sorted_weighted_opacity_per_tau_bin(
     )
 
 
+def compute_bot_segment_overlap_per_tau_bin(
+    sorted_per_bin: dict[int, dict],
+    tau_bin_edges: list[float],
+    smooth_window: int = 7,
+) -> dict[int, dict]:
+    """
+    Per tau-bin: run analyze_group on s_bot only, then reuse those break
+    positions (b1, b2, optional b_mid) as segment boundaries in *sorted-index*
+    space for both s_top and s_bot. For each segment, build the set of
+    original sub-bin indices via sort_idx_top / sort_idx_bot and compute the
+    overlap between the top and bot sets. By construction both sets have the
+    same size (= segment length).
+    """
+    n_bins = len(tau_bin_edges) - 1
+    overlaps: dict[int, dict] = {}
+
+    table = Table(
+        title="Segment overlap (bot-derived breaks applied to top) per tau-bin",
+        show_lines=False,
+    )
+    table.add_column("bin", justify="right")
+    table.add_column("τ range", justify="center")
+    table.add_column("segment", justify="left")
+    table.add_column("|A|=|B|", justify="right")
+    table.add_column("|A∩B|", justify="right")
+    table.add_column("overlap %", justify="right")
+
+    for k in range(n_bins):
+        r = sorted_per_bin.get(k, {})
+        edge_low = tau_bin_edges[k]
+        edge_high = tau_bin_edges[k + 1]
+        tau_label = f"[{edge_low:.2f}, {edge_high:.2f}]"
+
+        if r.get("empty", False) or "sorted_weighted_kappa_bot" not in r:
+            table.add_row(str(k), tau_label, "—", "—", "—", "—")
+            overlaps[k] = {"empty": True}
+            continue
+
+        s_bot = np.asarray(r["sorted_weighted_kappa_bot"], dtype=np.float64)
+        member_indices = np.asarray(r["member_indices"])
+        sort_idx_top = np.asarray(r["sort_idx_top"])
+        sort_idx_bot = np.asarray(r["sort_idx_bot"])
+        n = s_bot.size
+
+        if n <= 10:
+            table.add_row(str(k), tau_label, "—", str(n), "—", "—")
+            overlaps[k] = {"too_small": True, "n": int(n)}
+            continue
+
+        try:
+            res = analyze_group(s_bot, smooth_window=smooth_window)
+        except Exception as e:
+            console.print(f"[yellow]bin {k}: analyze_group failed: {e}[/yellow]")
+            table.add_row(str(k), tau_label, "—", str(n), "—", "—")
+            overlaps[k] = {"failed": True, "error": str(e)}
+            continue
+
+        seg = res["seg"]
+        b1 = int(seg["b1"])
+        b2 = int(seg["b2"])
+        split_mid = bool(seg.get("split_mid", False))
+        b_mid = int(seg["b_mid"]) if split_mid else None
+
+        if split_mid:
+            seg_defs = [
+                ("low",  0,        b1 + 1),
+                ("mid1", b1 + 1,   b_mid + 1),
+                ("mid2", b_mid + 1, b2),
+                ("high", b2,       n),
+            ]
+        else:
+            seg_defs = [
+                ("low",  0,      b1 + 1),
+                ("mid",  b1 + 1, b2),
+                ("high", b2,     n),
+            ]
+
+        bin_overlaps: dict[str, dict] = {}
+        for i, (name, lo, hi) in enumerate(seg_defs):
+            idx_range = slice(lo, hi)
+            set_top = set(member_indices[sort_idx_top[idx_range]].tolist())
+            set_bot = set(member_indices[sort_idx_bot[idx_range]].tolist())
+            size = len(set_top)
+            n_inter = len(set_top & set_bot)
+            pct = (n_inter / size * 100.0) if size > 0 else 0.0
+
+            bin_overlaps[name] = {
+                "lo": lo,
+                "hi": hi,
+                "set_top": set_top,
+                "set_bot": set_bot,
+                "size": size,
+                "n_intersection": n_inter,
+                "overlap_pct": pct,
+            }
+
+            table.add_row(
+                str(k) if i == 0 else "",
+                tau_label if i == 0 else "",
+                name,
+                str(size),
+                str(n_inter),
+                f"{pct:.1f}",
+            )
+
+        overlaps[k] = {
+            "b1": b1,
+            "b2": b2,
+            "b_mid": b_mid,
+            "split_mid": split_mid,
+            "segments": bin_overlaps,
+        }
+
+    console.print(table)
+    return overlaps
+
+
 def calculate_tau_bin_opacities(
     odf: ODFData,
     cont: ContinuumData,
@@ -2457,6 +2575,16 @@ def main(
     t1 = time.perf_counter()
     console.print(
         f"[dim]⏱  plot_sorted_weighted_opacity_per_tau_bin: {t1 - t0:.3f}s[/dim]"
+    )
+
+    t0 = time.perf_counter()
+    compute_bot_segment_overlap_per_tau_bin(
+        sorted_per_bin,
+        tau_bin_edges=tau_bin_edges,
+    )
+    t1 = time.perf_counter()
+    console.print(
+        f"[dim]⏱  compute_bot_segment_overlap_per_tau_bin: {t1 - t0:.3f}s[/dim]"
     )
 
     t0 = time.perf_counter()
