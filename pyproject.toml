@@ -15,6 +15,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "basedpyright>=1.39.5",
     "pre-commit>=4.5.1",
     "ruff>=0.14.0",
 ]
@@ -42,3 +43,23 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Allow `from x import *` and unused imports in notebooks/quick scripts if added later.
 "test_*.py" = ["F401"]
+
+[tool.pyright]
+# Consumed by basedpyright (drop-in compatible with Pyright config).
+include = ["**/*.py"]
+exclude = [
+    ".venv",
+    ".jj",
+    "diff_binning",
+    "__pycache__",
+    "debug_tau_bin_*.json",
+]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"        # start permissive; flip to "strict" per-file as desired
+venvPath = "."
+venv = ".venv"
+# Scientific code uses ndarray-typed args heavily — silence the noisiest defaults.
+reportMissingTypeStubs = false
+reportUnknownArgumentType = false
+reportUnknownVariableType = false
+reportUnknownMemberType = false
