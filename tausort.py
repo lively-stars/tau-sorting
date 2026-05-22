@@ -19,6 +19,8 @@ and continuum opacity data to calculate binned opacities for radiative transfer.
 """
 
 # from matplotlib.tests.test_widgets import ax
+from contourpy import max_threads
+import json
 import matplotlib
 
 import typer
@@ -33,6 +35,8 @@ from scipy.interpolate import RegularGridInterpolator
 from scipy.integrate import cumulative_trapezoid
 import matplotlib.pyplot as plt
 import time
+
+from group_derivatives import analyze_group
 
 console = Console()
 app = typer.Typer(help="Tau-sorting opacity binning tool")
@@ -1353,7 +1357,9 @@ def get_depth_at_tau_values_from_full_opacity(
         tau_values: List of optical depth values to find depths for
 
     Returns:
-        height_at_tau: Heights at specified tau values [km]
+        - height_at_tau_index: Indices of the atmospheric layers where tau values are reached
+            - shape: [nbins * nsubbins, len(tau_values)]
+        - height_at_tau: Heights at specified tau values [km]
             - shape: [nbins * nsubbins, len(tau_values)]
     """
     console.print(
@@ -1566,6 +1572,7 @@ def plot_tau_rosselend_at_tau_lambda_one_vs_wavelength(
     lambda_bin_edges: list[int | float],
     output_file: str = "tau_rosseland_at_tau_lambda_one.jpg",
     use_2d_histogram: bool = True,
+    band_index: NDArray[np.int32] | None = None,
 ) -> None:
     """
     Plot the Rosseland optical depth at the height where the optical depth
@@ -1578,6 +1585,9 @@ def plot_tau_rosselend_at_tau_lambda_one_vs_wavelength(
         lambda_bin_edges: Wavelength bin edges to plot
         output_file: Output filename for the plot
         use_2d_histogram: If True, plot as 2D histogram instead of scatter plot
+        band_index: Optional tau-bin assignment per sub-bin (same length as
+            tau_rosseland). If provided, the topmost (max -log10(τ)) and
+            lowermost (min -log10(τ)) sub-bin per tau-bin are circled in red.
     """
     console.print("\n[cyan]Plotting τ_Rosseland at τ_λ=1 vs Wavelength...[/cyan]")
     wavelength_grid = wavelength_grid_input * 1e8  # Angstrom
@@ -1608,6 +1618,37 @@ def plot_tau_rosselend_at_tau_lambda_one_vs_wavelength(
     for _, edge in enumerate(lambda_bin_edges):
         ax.axvline(edge, c="k")
 
+    if band_index is not None:
+        if band_index.shape[0] != tau_rosseland.shape[0]:
+            raise ValueError(
+                f"band_index length ({band_index.shape[0]}) must match "
+                f"tau_rosseland length ({tau_rosseland.shape[0]})"
+            )
+        n_bins = len(tau_bin_edges) - 1
+        sel_x: list[float] = []
+        sel_y: list[float] = []
+        for k in range(n_bins):
+            mask = band_index == k
+            if not np.any(mask):
+                continue
+            member_y = y_data[mask]
+            member_x = x_data[mask]
+            i_top = int(np.argmax(member_y))
+            i_bot = int(np.argmin(member_y))
+            sel_x.extend([float(member_x[i_top]), float(member_x[i_bot])])
+            sel_y.extend([float(member_y[i_top]), float(member_y[i_bot])])
+        ax.scatter(
+            sel_x,
+            sel_y,
+            s=120,
+            facecolors="none",
+            edgecolors="red",
+            linewidths=1.8,
+            zorder=5,
+            label="topmost / lowermost per tau-bin",
+        )
+        ax.legend(loc="upper right", fontsize=9)
+
     plt.tight_layout()
     plt.savefig(output_file, dpi=150, bbox_inches="tight")
     console.print(f"[green]✓ τ_Rosseland at τ_λ=1 plot saved to {output_file}[/green]")
@@ -1623,7 +1664,7 @@ def assign_tau_to_bin(
     Assign sub-bins to tau-wavelength bins.
 
     Args:
-        tau_rosseland_at_tau_lambda_one: Tau values at sub-bin wavelengths [n_bins*n_subbins]
+        tau_rosseland: Tau values at sub-bin wavelengths [n_bins*n_subbins]
         wavelength_grid_subbins_center: Wavelength at sub-bin centers. [n_bins*n_subbins]
         tau_bin_edges: Tau edges.
         lambda_bin_edges: Wavelength edges.
@@ -1658,6 +1699,288 @@ def assign_tau_to_bin(
     band_index[valid] = tau_idx[valid].astype(np.int32)
 
     return band_index
+
+
+def sort_weighted_opacity_per_tau_bin(
+    atm: AtmosphericData,
+    odf: ODFData,
+    interpolated_opacity: NDArray[np.float64],
+    tau_rosseland: NDArray[np.float64],
+    band_index: NDArray[np.int32],
+    tau_bin_edges: list[float],
+    wavelength_grid_subbins_centers: NDArray[np.float64],
+    max_height_idx: int,
+) -> dict[int, dict[str, NDArray[np.float64] | NDArray[np.int64] | float | int | bool]]:
+    r"""
+    For each tau-bin, locate the two atmospheric layers (top and bottom)
+    that bracket the bin's Rosseland-tau range, then build a sorted
+    distribution of weighted opacities at each (T, p) point.
+
+    Per tau-bin k:
+      1. tau_low = 10^(-tau_bin_edges[k+1]), tau_high = 10^(-tau_bin_edges[k])
+         (matches digitize(right=False) in assign_tau_to_bin).
+      2. j_top, j_bot = searchsorted(tau_full, tau_low/tau_high) on the
+         reversed-z tau profile;
+      3. For sub-bins with band_index == k, read opacities at
+         interpolated_opacity[i_top] and interpolated_opacity[i_bot].
+      4. Weight by Δλ_subbin × B_λ(λ_subbin, T) using the corresponding T.
+      5. argsort weighted_kappa.
+
+    Args:
+        atm: Atmospheric model.
+        odf: ODF table (uses .wavelength_grid edges and .subbin weights).
+        interpolated_opacity: ODF+continuum opacity on the atm T-p grid,
+            shape [n_layers, nbins, nsubbins], original atm ordering.
+        tau_rosseland: Rosseland tau profile, shape [n_layers - 1],
+            reversed-z ordering (heights = atm.z[::-1]).
+        band_index: Tau-bin assignment per sub-bin, shape [nbins*nsubbins],
+            values in [0, n_bins-1] or -1 for unassigned.
+        tau_bin_edges: -log10(τ_Ros) bin edges (increasing).
+        wavelength_grid_subbins_centers: Sub-bin center wavelengths [cm],
+            shape [nbins*nsubbins].
+
+    Returns:
+        Dict keyed by tau-bin index. Empty bins → {"empty": True, "members": 0}.
+        Non-empty bins contain T_top, p_top, i_top, T_bot, p_bot, i_bot,
+        member_indices, kappa_top, kappa_bot, weights_top, weights_bot,
+        weighted_kappa_top, weighted_kappa_bot, sort_idx_top, sort_idx_bot,
+        sorted_weighted_kappa_top, sorted_weighted_kappa_bot.
+    """
+    console.print(
+        "\n[cyan]Sorting weighted opacities per tau-bin at top/bot TP points...[/cyan]"
+    )
+
+    n_layers = atm.nlevels
+    n_bins = len(tau_bin_edges) - 1
+
+    if interpolated_opacity.shape[0] != n_layers:
+        raise ValueError(
+            f"interpolated_opacity has {interpolated_opacity.shape[0]} layers, "
+            f"expected {n_layers}"
+        )
+    if tau_rosseland.shape[0] != n_layers - 1:
+        raise ValueError(
+            f"tau_rosseland has {tau_rosseland.shape[0]} layers, "
+            f"expected {n_layers - 1}"
+        )
+    if odf.wavelength_grid is None or odf.subbin is None:
+        raise ValueError("ODF wavelength_grid and subbin weights are required.")
+
+    # tau_rosseland[j-1] is τ at heights[j] (heights = atm.z[::-1]) because
+    # compute_tau_rosseland used cumulative_trapezoid(initial=0)[1:] which
+    # strips the leading 0 at heights[0]. Re-prepend 0 so tau_full[j] is τ
+    # at heights[j].
+    tau_full = np.concatenate(([0.0], tau_rosseland))
+
+    bin_widths = np.diff(odf.wavelength_grid)[:, np.newaxis]
+    subbin_widths_flat = (bin_widths * odf.subbin).reshape(-1)
+
+    if subbin_widths_flat.shape[0] != wavelength_grid_subbins_centers.shape[0]:
+        raise ValueError(
+            f"sub-bin width ({subbin_widths_flat.shape[0]}) and center "
+            f"({wavelength_grid_subbins_centers.shape[0]}) lengths differ"
+        )
+    if band_index.shape[0] != subbin_widths_flat.shape[0]:
+        raise ValueError(
+            f"band_index length ({band_index.shape[0]}) does not match "
+            f"nbins*nsubbins ({subbin_widths_flat.shape[0]})"
+        )
+
+    results: dict[
+        int,
+        dict[str, NDArray[np.float64] | NDArray[np.int64] | float | int | bool],
+    ] = {}
+    
+    console.print(f"First and last 10 atm.T values: {atm.T[:10]} ... {atm.T[-10:]}")
+
+    tau_bin_edges[0] =  - np.log10(tau_rosseland[max_height_idx]+ 0.2) 
+
+    for k in range(n_bins):
+            
+        tau_low = 10.0 ** (-tau_bin_edges[k + 1])
+        tau_high = 10.0 ** (-tau_bin_edges[k])
+        
+        console.print(f"\nProcessing tau-bin {k}: -log10(tau) in [{tau_bin_edges[k]:.2f}, {tau_bin_edges[k+1]:.2f}] "
+                      f"→ tau in [{tau_low:.2e}, {tau_high:.2e}]")
+
+        j_top = int(
+            np.clip(
+                np.searchsorted(tau_full, tau_low, side="left"), 0, n_layers - 1
+            )
+        )
+        j_bot = int(
+            np.clip(
+                np.searchsorted(tau_full, tau_high, side="left"), 0, n_layers - 1
+            )
+        )
+        
+
+        # i_top = n_layers - 1 - j_top
+        # i_bot = n_layers - 1 - j_bot
+        i_top = j_top
+        i_bot = j_bot
+
+        member_idx = np.flatnonzero(band_index == k)
+        if member_idx.size == 0:
+            results[k] = {"empty": True, "members": 0}
+            continue
+
+        kappa_top = interpolated_opacity[i_top].reshape(-1)[member_idx]
+        kappa_bot = interpolated_opacity[i_bot].reshape(-1)[member_idx]
+        widths = subbin_widths_flat[member_idx]
+        lambdas = wavelength_grid_subbins_centers[member_idx]
+
+        T_top = float(atm.T[i_top])
+        T_bot = float(atm.T[i_bot])
+
+        weights_top = widths * planck_function(lambdas, T_top)
+        weights_bot = widths * planck_function(lambdas, T_bot)
+
+        weighted_top = kappa_top * weights_top
+        weighted_bot = kappa_bot * weights_bot
+
+        sort_idx_top = np.argsort(weighted_top)
+        sort_idx_bot = np.argsort(weighted_bot)
+
+        results[k] = {
+            "members": int(member_idx.size),
+            "T_top": T_top,
+            "p_top": float(atm.p[i_top]),
+            "i_top": i_top,
+            "T_bot": T_bot,
+            "p_bot": float(atm.p[i_bot]),
+            "i_bot": i_bot,
+            "member_indices": member_idx,
+            "kappa_top": kappa_top,
+            "kappa_bot": kappa_bot,
+            "weights_top": weights_top,
+            "weights_bot": weights_bot,
+            "weighted_kappa_top": weighted_top,
+            "weighted_kappa_bot": weighted_bot,
+            "sort_idx_top": sort_idx_top,
+            "sort_idx_bot": sort_idx_bot,
+            "sorted_weighted_kappa_top": weighted_top[sort_idx_top],
+            "sorted_weighted_kappa_bot": weighted_bot[sort_idx_bot],
+        }
+
+        debug_path = f"debug_tau_bin_{k}.json"
+        serializable = {
+            key: (val.tolist() if isinstance(val, np.ndarray) else val)
+            for key, val in results[k].items()
+        }
+        with open(debug_path, "w") as f:
+            json.dump(serializable, f, indent=2)
+
+    return results
+
+
+def plot_sorted_weighted_opacity_per_tau_bin(
+    sorted_per_bin: dict[int, dict],
+    tau_bin_edges: list[float],
+    output_file: str = "sorted_weighted_opacity_per_tau_bin.jpg",
+    smooth_window: int = 7,
+    overlay_breaks: bool = True,
+) -> None:
+    """
+    Plot sorted weighted opacities per tau-bin.
+
+    For each tau-bin, draw a subplot with both 'top' (smaller-τ edge of the
+    bin) and 'bot' (larger-τ edge) sorted κ·Δλ·B_λ curves on a log y-axis.
+    If overlay_breaks is True, run analyze_group on each curve and overlay
+    vertical lines at the segmentation break points (b1, b2, optional b_mid).
+
+    Args:
+        sorted_per_bin: Output of sort_weighted_opacity_per_tau_bin.
+        tau_bin_edges: -log10(τ_Ros) bin edges.
+        output_file: Output figure path.
+        smooth_window: Smoothing window passed to analyze_group.
+        overlay_breaks: If True, draw piecewise-linear break lines.
+    """
+    console.print(
+        "\n[cyan]Plotting sorted weighted opacities per tau-bin...[/cyan]"
+    )
+
+    n_bins = len(tau_bin_edges) - 1
+    ncols = int(np.ceil(np.sqrt(n_bins)))
+    nrows = int(np.ceil(n_bins / ncols))
+
+    fig, axes = plt.subplots(
+        nrows, ncols, figsize=(5 * ncols, 4 * nrows), squeeze=False
+    )
+    axes_flat = axes.flatten()
+
+    for k in range(n_bins):
+        ax = axes_flat[k]
+        r = sorted_per_bin.get(k, {})
+        edge_low = tau_bin_edges[k]
+        edge_high = tau_bin_edges[k + 1]
+        title = (
+            f"tau-bin {k}: "
+            rf"$-\log_{{10}}\tau_{{\rm Ros}} \in [{edge_low:.2f}, {edge_high:.2f}]$"
+        )
+
+        if r.get("empty", False):
+            ax.text(
+                0.5, 0.5, "empty",
+                ha="center", va="center", transform=ax.transAxes,
+            )
+            ax.set_title(title, fontsize=10, fontweight="bold")
+            continue
+
+        s_top = np.asarray(r["sorted_weighted_kappa_top"], dtype=np.float64)
+        s_bot = np.asarray(r["sorted_weighted_kappa_bot"], dtype=np.float64)
+        T_top = float(r["T_top"])
+        T_bot = float(r["T_bot"])
+        p_top = float(r["p_top"])
+        p_bot = float(r["p_bot"])
+        x = np.arange(s_top.size)
+
+        # Mask non-positive entries so semilogy doesn't blow up.
+        s_top_pos = np.where(s_top > 0, s_top, np.nan)
+        s_bot_pos = np.where(s_bot > 0, s_bot, np.nan)
+
+        ax.semilogy(
+            x, s_top_pos, "-", lw=1.0,
+            label=f"top  T={T_top:.0f}K, p={p_top:.2e}",
+            color="C0", 
+        )
+        ax.semilogy(
+            x, s_bot_pos, "-", lw=1.0,
+            label=f"bot  T={T_bot:.0f}K, p={p_bot:.2e}",
+            color="C1",
+        )
+
+
+
+        ax.set_xlabel("sorted sub-bin index", fontsize=10)
+        ax.set_ylabel(r"$\kappa \cdot \Delta\lambda \cdot B_\lambda$", fontsize=10)
+        ax.set_title(title, fontsize=10, fontweight="bold")
+        ax.grid(True, alpha=0.3, which="both")
+
+        if overlay_breaks and s_top.size > 10:
+            for series, color in [(s_top, "C0"), (s_bot, "C1")]:
+                try:
+                    res = analyze_group(series, smooth_window=smooth_window)
+                except Exception as e:  # pragma: no cover
+                    console.print(f"[yellow]bin {k} {color}: analyze_group failed: {e}[/yellow]")
+                    continue
+                seg = res["seg"]
+                ax.axvline(seg["b1"], color=color, ls=":", lw=1.0, alpha=0.9)
+                ax.axvline(seg["b2"], color=color, ls=":", lw=1.0, alpha=0.9)
+                if seg.get("split_mid", False):
+                    ax.axvline(seg["b_mid"], color=color, ls="--", lw=1.0, alpha=0.7)
+
+        ax.legend(fontsize=8, loc="lower right")
+
+    for k in range(n_bins, len(axes_flat)):
+        axes_flat[k].set_visible(False)
+
+    plt.tight_layout()
+    plt.savefig(output_file, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    console.print(
+        f"[green]✓ Sorted weighted opacity plot saved to {output_file}[/green]"
+    )
 
 
 def calculate_tau_bin_opacities(
@@ -1913,7 +2236,7 @@ def main(
             "--tau-bin-edges",
             help="List of optical depth bin edges to sort opacities at",
         ),
-    ] = [-99, -0.1, 1.5, 3.8, 7.0],
+    ] = [-2, -0.1, 1.5, 3.8, 7.0],
     lambda_bin_edges: Annotated[
         list[float],
         typer.Option(
@@ -2055,6 +2378,12 @@ def main(
         tau_values=tau_values,
     )
     console.print(f"height_at_tau shape: {height_at_tau.shape}")
+    select_tau_index = 1
+    max_height_idx = np.max(height_at_tau_index[:, select_tau_index])
+    console.print(f"first and last 10 of height_at_tau_index: {height_at_tau_index[:10, select_tau_index]} ... {height_at_tau_index[-10:, select_tau_index]}")
+    console.print(f"first and last 10 of height_at_tau: {height_at_tau[:10, select_tau_index]} ... {height_at_tau[-10:, select_tau_index]}")
+    console.print(f"max_height_idx is: {max_height_idx}")
+    
     t1 = time.perf_counter()
     console.print(
         f"[dim]⏱  get_depth_at_tau_values_from_full_opacity: {t1 - t0:.3f}s[/dim]"
@@ -2072,13 +2401,6 @@ def main(
 
     tau_rosseland_at_tau_lambda_one = tau_rosseland[height_at_tau_index[:, -1]]
 
-    plot_tau_rosselend_at_tau_lambda_one_vs_wavelength(
-        tau_rosseland_at_tau_lambda_one[skip_first_n_wavelengths:],
-        wavelength_grid_subbins_centers[skip_first_n_wavelengths:],
-        tau_bin_edges=tau_bin_edges,
-        lambda_bin_edges=lambda_bin_edges,
-    )
-
     console.print("\n[cyan]Calculating tau-binned opacities...[/cyan]")
 
     bin_number = assign_tau_to_bin(
@@ -2091,6 +2413,51 @@ def main(
     unassigned = int(np.sum(bin_number < 0))
     console.print(f"assigned bands: {unique_bins}")
     console.print(f"unassigned wavelength points: {unassigned}/{len(bin_number)}")
+
+    plot_tau_rosselend_at_tau_lambda_one_vs_wavelength(
+        tau_rosseland_at_tau_lambda_one[skip_first_n_wavelengths:],
+        wavelength_grid_subbins_centers[skip_first_n_wavelengths:],
+        tau_bin_edges=tau_bin_edges,
+        lambda_bin_edges=lambda_bin_edges,
+        band_index=bin_number[skip_first_n_wavelengths:],
+    )
+
+    t0 = time.perf_counter()
+    sorted_per_bin = sort_weighted_opacity_per_tau_bin(
+        atm=atm,
+        odf=odf,
+        interpolated_opacity=interpolated_opacity,
+        tau_rosseland=tau_rosseland,
+        band_index=bin_number,
+        tau_bin_edges=tau_bin_edges,
+        wavelength_grid_subbins_centers=wavelength_grid_subbins_centers,
+        max_height_idx=max_height_idx,
+    )
+    t1 = time.perf_counter()
+    n_nonempty = sum(1 for v in sorted_per_bin.values() if not v.get("empty", False))
+    console.print(
+        f"sorted opacity dist: {n_nonempty}/{len(sorted_per_bin)} non-empty tau-bins"
+    )
+    for k, r in sorted_per_bin.items():
+        if r.get("empty", False):
+            console.print(f"  bin {k}: empty")
+        else:
+            console.print(
+                f"  bin {k}: members={r['members']}, "
+                f"T_top={r['T_top']:.1f}K (i={r['i_top']}), "
+                f"T_bot={r['T_bot']:.1f}K (i={r['i_bot']})"
+            )
+    console.print(f"[dim]⏱  sort_weighted_opacity_per_tau_bin: {t1 - t0:.3f}s[/dim]")
+
+    t0 = time.perf_counter()
+    plot_sorted_weighted_opacity_per_tau_bin(
+        sorted_per_bin,
+        tau_bin_edges=tau_bin_edges,
+    )
+    t1 = time.perf_counter()
+    console.print(
+        f"[dim]⏱  plot_sorted_weighted_opacity_per_tau_bin: {t1 - t0:.3f}s[/dim]"
+    )
 
     t0 = time.perf_counter()
     tau_bin_results = calculate_tau_bin_opacities(
