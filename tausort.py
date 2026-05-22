@@ -1711,6 +1711,8 @@ def sort_weighted_opacity_per_tau_bin(
     tau_bin_edges: list[float],
     wavelength_grid_subbins_centers: NDArray[np.float64],
     max_height_idx: int,
+    write_debug_json: bool = True,
+    verbose: bool = True,
 ) -> dict[int, dict[str, NDArray[np.float64] | NDArray[np.int64] | float | int | bool]]:
     r"""
     For each tau-bin, locate the two atmospheric layers (top and bottom)
@@ -1747,9 +1749,10 @@ def sort_weighted_opacity_per_tau_bin(
         weighted_kappa_top, weighted_kappa_bot, sort_idx_top, sort_idx_bot,
         sorted_weighted_kappa_top, sorted_weighted_kappa_bot.
     """
-    console.print(
-        "\n[cyan]Sorting weighted opacities per tau-bin at top/bot TP points...[/cyan]"
-    )
+    if verbose:
+        console.print(
+            "\n[cyan]Sorting weighted opacities per tau-bin at top/bot TP points...[/cyan]"
+        )
 
     n_layers = atm.nlevels
     n_bins = len(tau_bin_edges) - 1
@@ -1792,17 +1795,19 @@ def sort_weighted_opacity_per_tau_bin(
         dict[str, NDArray[np.float64] | NDArray[np.int64] | float | int | bool],
     ] = {}
     
-    console.print(f"First and last 10 atm.T values: {atm.T[:10]} ... {atm.T[-10:]}")
+    if verbose:
+        console.print(f"First and last 10 atm.T values: {atm.T[:10]} ... {atm.T[-10:]}")
 
-    tau_bin_edges[0] =  - np.log10(tau_rosseland[max_height_idx]+ 0.2) 
+    tau_bin_edges[0] =  - np.log10(tau_rosseland[max_height_idx]+ 0.2)
 
     for k in range(n_bins):
-            
+
         tau_low = 10.0 ** (-tau_bin_edges[k + 1])
         tau_high = 10.0 ** (-tau_bin_edges[k])
-        
-        console.print(f"\nProcessing tau-bin {k}: -log10(tau) in [{tau_bin_edges[k]:.2f}, {tau_bin_edges[k+1]:.2f}] "
-                      f"→ tau in [{tau_low:.2e}, {tau_high:.2e}]")
+
+        if verbose:
+            console.print(f"\nProcessing tau-bin {k}: -log10(tau) in [{tau_bin_edges[k]:.2f}, {tau_bin_edges[k+1]:.2f}] "
+                          f"→ tau in [{tau_low:.2e}, {tau_high:.2e}]")
 
         j_top = int(
             np.clip(
@@ -1864,13 +1869,14 @@ def sort_weighted_opacity_per_tau_bin(
             "sorted_weighted_kappa_bot": weighted_bot[sort_idx_bot],
         }
 
-        debug_path = f"debug_tau_bin_{k}.json"
-        serializable = {
-            key: (val.tolist() if isinstance(val, np.ndarray) else val)
-            for key, val in results[k].items()
-        }
-        with open(debug_path, "w") as f:
-            json.dump(serializable, f, indent=2)
+        if write_debug_json:
+            debug_path = f"debug_tau_bin_{k}.json"
+            serializable = {
+                key: (val.tolist() if isinstance(val, np.ndarray) else val)
+                for key, val in results[k].items()
+            }
+            with open(debug_path, "w") as f:
+                json.dump(serializable, f, indent=2)
 
     return results
 
@@ -1988,6 +1994,8 @@ def compute_bot_segment_overlap_per_tau_bin(
     sorted_per_bin: dict[int, dict],
     tau_bin_edges: list[float],
     smooth_window: int = 7,
+    print_table: bool = True,
+    verbose: bool = True,
 ) -> dict[int, dict]:
     """
     Per tau-bin: run analyze_group on s_bot only, then reuse those break
@@ -2034,9 +2042,10 @@ def compute_bot_segment_overlap_per_tau_bin(
             continue
 
         try:
-            res = analyze_group(s_bot, smooth_window=smooth_window)
+            res = analyze_group(s_bot, smooth_window=smooth_window, max_tail_frac_high=.1)
         except Exception as e:
-            console.print(f"[yellow]bin {k}: analyze_group failed: {e}[/yellow]")
+            if verbose:
+                console.print(f"[yellow]bin {k}: analyze_group failed: {e}[/yellow]")
             table.add_row(str(k), tau_label, "—", str(n), "—", "—")
             overlaps[k] = {"failed": True, "error": str(e)}
             continue
@@ -2097,8 +2106,157 @@ def compute_bot_segment_overlap_per_tau_bin(
             "segments": bin_overlaps,
         }
 
-    console.print(table)
+    if print_table:
+        console.print(table)
     return overlaps
+
+
+def optimize_tau_bin_edges(
+    atm: AtmosphericData,
+    odf: ODFData,
+    interpolated_opacity: NDArray[np.float64],
+    tau_rosseland: NDArray[np.float64],
+    tau_rosseland_at_tau_lambda_one: NDArray[np.float64],
+    wavelength_grid_subbins_centers: NDArray[np.float64],
+    max_height_idx: int,
+    initial_tau_bin_edges: list[float],
+    lambda_bin_edges: list[int | float],
+    threshold: float = 0.70,
+    max_bins: int = 8,
+    adjust_steps: tuple[float, ...] = (0.10, 0.05, 0.02),
+    max_outer_iters: int = 50,
+    smooth_window: int = 7,
+) -> tuple[list[float], dict[int, dict], dict[int, dict]]:
+    """
+    Greedy adjust+insert search over tau_bin_edges to push the high-segment
+    overlap (from compute_bot_segment_overlap_per_tau_bin) above `threshold`
+    in every non-empty tau-bin. First nudges interior edges on a small step
+    grid; when no local nudge improves the minimum score, inserts a new edge
+    at the midpoint of the worst bin's tau range. Stops when all bins clear
+    the threshold, when no move improves and bin count is at `max_bins`, or
+    when `max_outer_iters` is reached.
+
+    Returns (final_edges, last_sorted_per_bin, last_overlaps).
+    """
+    threshold_pct = threshold * 100.0
+
+    def _evaluate(edges: list[float]) -> tuple[dict, dict]:
+        edges_copy = list(edges)
+        band_idx = assign_tau_to_bin(
+            tau_rosseland_at_tau_lambda_one,
+            wavelength_grid_subbins_centers,
+            tau_bin_edges=edges_copy,
+            lambda_bin_edges=lambda_bin_edges,
+        )
+        sorted_per_bin = sort_weighted_opacity_per_tau_bin(
+            atm=atm,
+            odf=odf,
+            interpolated_opacity=interpolated_opacity,
+            tau_rosseland=tau_rosseland,
+            band_index=band_idx,
+            tau_bin_edges=list(edges),
+            wavelength_grid_subbins_centers=wavelength_grid_subbins_centers,
+            max_height_idx=max_height_idx,
+            write_debug_json=False,
+            verbose=False,
+        )
+        overlaps = compute_bot_segment_overlap_per_tau_bin(
+            sorted_per_bin,
+            tau_bin_edges=list(edges),
+            smooth_window=smooth_window,
+            print_table=False,
+            verbose=False,
+        )
+        return sorted_per_bin, overlaps
+
+    def _high_score(overlaps: dict, k: int) -> float:
+        rec = overlaps.get(k, {})
+        segs = rec.get("segments")
+        if not segs or "high" not in segs:
+            return 0.0
+        return float(segs["high"]["overlap_pct"])
+
+    def _scores(edges: list[float], overlaps: dict) -> list[float]:
+        return [_high_score(overlaps, k) for k in range(len(edges) - 1)]
+
+    def _valid_monotone(edges: list[float]) -> bool:
+        return all(edges[i] < edges[i + 1] for i in range(len(edges) - 1))
+
+    console.print(
+        f"\n[cyan]Optimizing tau_bin_edges (threshold={threshold_pct:.1f}%, "
+        f"max_bins={max_bins})...[/cyan]"
+    )
+    edges = list(initial_tau_bin_edges)
+    sorted_per_bin, overlaps = _evaluate(edges)
+    scores = _scores(edges, overlaps)
+    min_score = min(scores) if scores else 0.0
+    console.print(
+        f"  iter   0: bins={len(edges)-1:2d}  min_high={min_score:6.2f}  "
+        f"scores={[f'{s:.1f}' for s in scores]}  action=start"
+    )
+
+    for it in range(1, max_outer_iters + 1):
+        if min_score >= threshold_pct:
+            console.print(f"[green]✓ converged at iter {it - 1}[/green]")
+            return edges, sorted_per_bin, overlaps
+
+        best_edges = None
+        best_sorted_per_bin = None
+        best_overlaps = None
+        best_min = min_score
+
+        for i in range(1, len(edges)):
+            for step in adjust_steps:
+                for direction in (-1.0, +1.0):
+                    cand = list(edges)
+                    cand[i] = edges[i] + direction * step
+                    if not _valid_monotone(cand):
+                        continue
+                    cand_sorted, cand_overlaps = _evaluate(cand)
+                    cand_scores = _scores(cand, cand_overlaps)
+                    cand_min = min(cand_scores) if cand_scores else 0.0
+                    if cand_min > best_min + 1e-9:
+                        best_min = cand_min
+                        best_edges = cand
+                        best_sorted_per_bin = cand_sorted
+                        best_overlaps = cand_overlaps
+
+        if best_edges is not None:
+            edges = best_edges
+            sorted_per_bin = best_sorted_per_bin
+            overlaps = best_overlaps
+            scores = _scores(edges, overlaps)
+            min_score = best_min
+            console.print(
+                f"  iter {it:3d}: bins={len(edges)-1:2d}  min_high={min_score:6.2f}  "
+                f"scores={[f'{s:.1f}' for s in scores]}  action=adjust"
+            )
+            continue
+
+        if len(edges) - 1 >= max_bins:
+            console.print(
+                f"[yellow]✗ stuck at cap (bins={len(edges)-1}, "
+                f"min_high={min_score:.2f}%)[/yellow]"
+            )
+            return edges, sorted_per_bin, overlaps
+
+        k_worst = int(np.argmin(scores))
+        new_edge = (edges[k_worst] + edges[k_worst + 1]) / 2.0
+        edges = list(edges[: k_worst + 1]) + [new_edge] + list(edges[k_worst + 1 :])
+        sorted_per_bin, overlaps = _evaluate(edges)
+        scores = _scores(edges, overlaps)
+        min_score = min(scores) if scores else 0.0
+        console.print(
+            f"  iter {it:3d}: bins={len(edges)-1:2d}  min_high={min_score:6.2f}  "
+            f"scores={[f'{s:.1f}' for s in scores]}  "
+            f"action=split@k={k_worst} new_edge={new_edge:.3f}"
+        )
+
+    console.print(
+        f"[yellow]✗ max_outer_iters={max_outer_iters} reached "
+        f"(min_high={min_score:.2f}%)[/yellow]"
+    )
+    return edges, sorted_per_bin, overlaps
 
 
 def calculate_tau_bin_opacities(
@@ -2354,7 +2512,8 @@ def main(
             "--tau-bin-edges",
             help="List of optical depth bin edges to sort opacities at",
         ),
-    ] = [-2, -0.1, 1.5, 3.8, 7.0],
+    # ] = [-.63, -0.3, .75, 1.5, 3.8, 7.0],
+    ] = [-0.63, -0.3, -0.15, -0.0, 0.25, 0.7, 1.5, 3.9, 7.0],
     lambda_bin_edges: Annotated[
         list[float],
         typer.Option(
@@ -2372,6 +2531,17 @@ def main(
         "tau_bin_opacities.npy",
         "--tau-bin-output",
         help="Output .npy file for tau-binned Planck/Rosseland/mixed opacities",
+    ),
+    optimize_high_overlap: bool = typer.Option(
+        False,
+        "--optimize-high-overlap",
+        help="Run greedy optimizer over tau_bin_edges until every bin's "
+             "high-segment overlap clears the threshold, then print and stop.",
+    ),
+    high_overlap_threshold: float = typer.Option(
+        0.70,
+        "--high-overlap-threshold",
+        help="Minimum acceptable high-segment overlap (0–1) for the optimizer.",
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
 ):
@@ -2518,6 +2688,34 @@ def main(
     console.print(f"[dim]⏱  plot_height_at_tau_values: {t1 - t0:.3f}s[/dim]")
 
     tau_rosseland_at_tau_lambda_one = tau_rosseland[height_at_tau_index[:, -1]]
+
+    if optimize_high_overlap:
+        t0 = time.perf_counter()
+        optimized_edges, final_sorted_per_bin, _ = optimize_tau_bin_edges(
+            atm=atm,
+            odf=odf,
+            interpolated_opacity=interpolated_opacity,
+            tau_rosseland=tau_rosseland,
+            tau_rosseland_at_tau_lambda_one=tau_rosseland_at_tau_lambda_one,
+            wavelength_grid_subbins_centers=wavelength_grid_subbins_centers,
+            max_height_idx=max_height_idx,
+            initial_tau_bin_edges=tau_bin_edges,
+            lambda_bin_edges=lambda_bin_edges,
+            threshold=high_overlap_threshold,
+            max_bins=8,
+        )
+        t1 = time.perf_counter()
+        console.print(f"[dim]⏱  optimize_tau_bin_edges: {t1 - t0:.3f}s[/dim]")
+        console.print(
+            f"[green]optimized tau_bin_edges = {[round(e, 4) for e in optimized_edges]}[/green]"
+        )
+        compute_bot_segment_overlap_per_tau_bin(
+            final_sorted_per_bin,
+            tau_bin_edges=list(optimized_edges),
+            print_table=True,
+            verbose=True,
+        )
+        return
 
     console.print("\n[cyan]Calculating tau-binned opacities...[/cyan]")
 
