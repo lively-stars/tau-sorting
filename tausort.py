@@ -1810,18 +1810,17 @@ def plot_sorted_weighted_opacity_per_tau_bin(
         ax.set_title(title, fontsize=10, fontweight="bold")
         ax.grid(True, alpha=0.3, which="both")
 
-        if overlay_breaks and s_top.size > 10:
-            for series, color in [(s_top, "C0"), (s_bot, "C1")]:
-                try:
-                    res = analyze_group(series, smooth_window=smooth_window, refine_mid=refine_mid)
-                except Exception as e:  # pragma: no cover
-                    console.print(f"[yellow]bin {k} {color}: analyze_group failed: {e}[/yellow]")
-                    continue
+        if overlay_breaks and s_bot.size > 10:
+            try:
+                res = analyze_group(s_bot, smooth_window=smooth_window, refine_mid=refine_mid)
+            except Exception as e:  # pragma: no cover
+                console.print(f"[yellow]bin {k} bot: analyze_group failed: {e}[/yellow]")
+            else:
                 seg = res["seg"]
-                ax.axvline(seg["b1"], color=color, ls=":", lw=1.0, alpha=0.9)
-                ax.axvline(seg["b2"], color=color, ls=":", lw=1.0, alpha=0.9)
+                ax.axvline(seg["b1"], color="C1", ls=":", lw=1.0, alpha=0.9)
+                ax.axvline(seg["b2"], color="C1", ls=":", lw=1.0, alpha=0.9)
                 if seg.get("split_mid", False):
-                    ax.axvline(seg["b_mid"], color=color, ls="--", lw=1.0, alpha=0.7)
+                    ax.axvline(seg["b_mid"], color="C1", ls="--", lw=1.0, alpha=0.7)
 
         ax.legend(fontsize=8, loc="lower right")
 
