@@ -37,6 +37,7 @@ from scipy.interpolate import RegularGridInterpolator
 from tqdm import tqdm
 
 from group_derivatives import analyze_group
+from kappa_band_reader import KappaBandComparison, write_kappa_4_band_comparison
 
 console = Console()
 app = typer.Typer(help="Tau-sorting opacity binning tool")
@@ -1432,7 +1433,7 @@ def plot_height_at_tau_values(
 def plot_tau_rosselend_at_tau_lambda_one_vs_wavelength(
     tau_rosseland: NDArray[np.float64],
     wavelength_grid_input: NDArray[np.float64],
-    tau_bin_edges: list[int | float],
+    tau_edges_per_lambda: list[list[float]],
     lambda_bin_edges: list[int | float],
     output_file: str = "tau_rosseland_at_tau_lambda_one.jpg",
     use_2d_histogram: bool = True,
@@ -1442,16 +1443,21 @@ def plot_tau_rosselend_at_tau_lambda_one_vs_wavelength(
     Plot the Rosseland optical depth at the height where the optical depth
     at each wavelength subbin is equal to one, as a function of wavelength.
 
+    The fixed lambda edges are drawn as vertical lines. The tau-group edges are
+    drawn *per lambda cell* as horizontal segments spanning only that cell's
+    wavelength window, so per-cell edges appear discontinuous (they "jump")
+    across the vertical lambda lines.
+
     Args:
         tau_rosseland: Rosseland optical depth profile [n_bins*n_subbins]
         wavelength_grid: Wavelength grid [Angstrom]
-        tau_bin_edges: Optical depth bin edges to plot
-        lambda_bin_edges: Wavelength bin edges to plot
+        tau_edges_per_lambda: Per-lambda-cell -log10(tau) edge lists.
+        lambda_bin_edges: Wavelength (log10 Angstrom) edges to plot.
         output_file: Output filename for the plot
         use_2d_histogram: If True, plot as 2D histogram instead of scatter plot
-        band_index: Optional tau-bin assignment per sub-bin (same length as
-            tau_rosseland). If provided, the topmost (max -log10(τ)) and
-            lowermost (min -log10(τ)) sub-bin per tau-bin are circled in red.
+        band_index: Optional (lambda cell, tau) group index per sub-bin (same
+            length as tau_rosseland). If provided, the topmost (max -log10(τ))
+            and lowermost (min -log10(τ)) sub-bin of each group are circled red.
     """
     console.print("\n[cyan]Plotting τ_Rosseland at τ_λ=1 vs Wavelength...[/cyan]")
     wavelength_grid = wavelength_grid_input * 1e8  # Angstrom
@@ -1477,21 +1483,27 @@ def plot_tau_rosselend_at_tau_lambda_one_vs_wavelength(
     ax.set_xlim(3, 5)
     ax.set_ylim(-1, 7)
 
-    for _, edge in enumerate(tau_bin_edges):
-        ax.axhline(edge, c="k")
-    for _, edge in enumerate(lambda_bin_edges):
+    lambda_edges = [float(e) for e in lambda_bin_edges]
+    for edge in lambda_edges:
         ax.axvline(edge, c="k")
+    # Per-cell tau edges: horizontal segments confined to each lambda window, so
+    # they are discontinuous across the vertical lambda lines.
+    for cell, cell_edges in enumerate(tau_edges_per_lambda):
+        x_lo = lambda_edges[cell]
+        x_hi = lambda_edges[cell + 1]
+        for edge in cell_edges:
+            ax.hlines(edge, xmin=x_lo, xmax=x_hi, color="k")
 
     if band_index is not None:
         if band_index.shape[0] != tau_rosseland.shape[0]:
             raise ValueError(
                 f"band_index length ({band_index.shape[0]}) must match tau_rosseland length ({tau_rosseland.shape[0]})"
             )
-        n_bins = len(tau_bin_edges) - 1
+        _o, n_groups, _g2c, _g2t = build_group_index_maps(tau_edges_per_lambda)
         sel_x: list[float] = []
         sel_y: list[float] = []
-        for k in range(n_bins):
-            mask = band_index == k
+        for g in range(n_groups):
+            mask = band_index == g
             if not np.any(mask):
                 continue
             member_y = y_data[mask]
@@ -1508,7 +1520,7 @@ def plot_tau_rosselend_at_tau_lambda_one_vs_wavelength(
             edgecolors="red",
             linewidths=1.8,
             zorder=5,
-            label="topmost / lowermost per tau-bin",
+            label="topmost / lowermost per (λ, τ) group",
         )
         ax.legend(loc="upper right", fontsize=9)
 
@@ -1517,46 +1529,98 @@ def plot_tau_rosselend_at_tau_lambda_one_vs_wavelength(
     console.print(f"[green]✓ τ_Rosseland at τ_λ=1 plot saved to {output_file}[/green]")
 
 
+def build_group_index_maps(
+    tau_edges_per_lambda: list[list[float]],
+) -> tuple[list[int], int, NDArray[np.int64], NDArray[np.int64]]:
+    """
+    Flatten per-lambda-cell tau-groups into a single group-index space.
+
+    Each lambda cell ``ell`` has its own list of tau edges (``nTau[ell] + 1`` of
+    them, possibly a different count per cell). Group ``g`` enumerates
+    ``(lambda cell, tau index)`` pairs in row-major order:
+    ``g = offsets[ell] + t`` with ``offsets[ell] = sum(nTau[:ell])``.
+
+    Returns:
+        offsets:       offsets[ell] = first group id of lambda cell ell.
+        n_groups:      total number of (cell, tau) groups = sum(nTau).
+        group_to_cell: [n_groups] lambda cell of each group.
+        group_to_tau:  [n_groups] tau index within its cell for each group.
+
+    With a single lambda cell, ``g == tau index`` (backward compatible with the
+    old tau-only band index).
+    """
+    offsets: list[int] = []
+    group_to_cell: list[int] = []
+    group_to_tau: list[int] = []
+    acc = 0
+    for cell, edges in enumerate(tau_edges_per_lambda):
+        offsets.append(acc)
+        n_tau = len(edges) - 1
+        for t in range(n_tau):
+            group_to_cell.append(cell)
+            group_to_tau.append(t)
+        acc += n_tau
+    return (
+        offsets,
+        acc,
+        np.asarray(group_to_cell, dtype=np.int64),
+        np.asarray(group_to_tau, dtype=np.int64),
+    )
+
+
 def assign_tau_to_bin(
     tau_rosseland: NDArray[np.float64],
     wavelength_grid_input: NDArray[np.float64],
-    tau_bin_edges: list[int | float],
+    tau_edges_per_lambda: list[list[float]],
     lambda_bin_edges: list[int | float],
 ) -> NDArray[np.int32]:
     """
-    Assign sub-bins to tau-wavelength bins.
+    Assign sub-bins to (lambda cell, tau group) groups.
+
+    Each sub-bin is first placed into a lambda cell by its wavelength, then into
+    a tau group using *that cell's* tau edges (edges may differ per cell). The
+    returned value is the flattened group index ``g = offsets[cell] + tau_idx``
+    (see build_group_index_maps), or -1 if the sub-bin falls outside the
+    configured lambda range or its cell's tau range.
 
     Args:
         tau_rosseland: Tau values at sub-bin wavelengths [n_bins*n_subbins]
-        wavelength_grid_subbins_center: Wavelength at sub-bin centers. [n_bins*n_subbins]
-        tau_bin_edges: Tau edges.
-        lambda_bin_edges: Wavelength edges.
+        wavelength_grid_input: Wavelength at sub-bin centers [cm]. [n_bins*n_subbins]
+        tau_edges_per_lambda: Per-lambda-cell -log10(tau) edge lists (length n_lambda).
+        lambda_bin_edges: Wavelength (log10 Angstrom) edges, length n_lambda+1.
 
     Returns:
-        Tau-bin index per sub-bin wavelength point.
-        Values are in [0, n_tau_bins-1], or -1 if out of configured ranges.
+        Group index per sub-bin wavelength point, in [0, n_groups-1] or -1.
     """
     wavelength_grid = wavelength_grid_input * 1e8  # Angstrom
     x_data = np.log10(wavelength_grid)
     # Prevent log10(0) when tau is numerically tiny.
     y_data = -np.log10(np.clip(tau_rosseland, 1.0e-300, None))
 
-    tau_edges = np.asarray(tau_bin_edges, dtype=np.float64)
     lambda_edges = np.asarray(lambda_bin_edges, dtype=np.float64)
-
     n_lambda_bins = len(lambda_edges) - 1
-    n_tau_bins = len(tau_edges) - 1
+    if len(tau_edges_per_lambda) != n_lambda_bins:
+        raise ValueError(
+            f"tau_edges_per_lambda has {len(tau_edges_per_lambda)} cells, expected n_lambda={n_lambda_bins}"
+        )
 
+    offsets, _n_groups, _g2cell, _g2tau = build_group_index_maps(tau_edges_per_lambda)
     lambda_idx = np.digitize(x_data, lambda_edges, right=False) - 1
-    tau_idx = np.digitize(y_data, tau_edges, right=False) - 1
 
-    valid = (lambda_idx >= 0) & (lambda_idx < n_lambda_bins) & (tau_idx >= 0) & (tau_idx < n_tau_bins)
+    group_index = np.full(x_data.shape, -1, dtype=np.int32)
+    for cell in range(n_lambda_bins):
+        in_cell = lambda_idx == cell
+        if not np.any(in_cell):
+            continue
+        tau_edges = np.asarray(tau_edges_per_lambda[cell], dtype=np.float64)
+        n_tau_bins = len(tau_edges) - 1
+        tau_idx = np.digitize(y_data[in_cell], tau_edges, right=False) - 1
+        valid = (tau_idx >= 0) & (tau_idx < n_tau_bins)
+        cell_groups = np.full(tau_idx.shape, -1, dtype=np.int32)
+        cell_groups[valid] = (offsets[cell] + tau_idx[valid]).astype(np.int32)
+        group_index[in_cell] = cell_groups
 
-    band_index = np.full(x_data.shape, -1, dtype=np.int32)
-    # We keep only tau-bin identity for band means (n_bins = n_tau_bins).
-    band_index[valid] = tau_idx[valid].astype(np.int32)
-
-    return band_index
+    return group_index
 
 
 def sort_weighted_opacity_per_tau_bin(
@@ -1565,19 +1629,20 @@ def sort_weighted_opacity_per_tau_bin(
     interpolated_opacity: NDArray[np.float64],
     tau_rosseland: NDArray[np.float64],
     band_index: NDArray[np.int32],
-    tau_bin_edges: list[float],
+    tau_edges_per_lambda: list[list[float]],
     wavelength_grid_subbins_centers: NDArray[np.float64],
     max_height_idx: int,
     write_debug_json: bool = True,
     verbose: bool = True,
 ) -> dict[int, dict[str, NDArray[np.float64] | NDArray[np.int64] | float | int | bool]]:
     r"""
-    For each tau-bin, locate the two atmospheric layers (top and bottom)
-    that bracket the bin's Rosseland-tau range, then build a sorted
-    distribution of weighted opacities at each (T, p) point.
+    For each (lambda cell, tau) group, locate the two atmospheric layers (top
+    and bottom) that bracket the group's Rosseland-tau range, then build a
+    sorted distribution of weighted opacities at each (T, p) point.
 
-    Per tau-bin k:
-      1. tau_low = 10^(-tau_bin_edges[k+1]), tau_high = 10^(-tau_bin_edges[k])
+    Per group g (decoded to lambda cell ``ell`` and tau index ``t`` via
+    build_group_index_maps), using that cell's edges ``e = tau_edges_per_lambda[ell]``:
+      1. tau_low = 10^(-e[t+1]), tau_high = 10^(-e[t])
          (matches digitize(right=False) in assign_tau_to_bin).
       2. j_top, j_bot = searchsorted(tau_full, tau_low/tau_high) on the
          reversed-z tau profile;
@@ -1610,7 +1675,7 @@ def sort_weighted_opacity_per_tau_bin(
         console.print("\n[cyan]Sorting weighted opacities per tau-bin at top/bot TP points...[/cyan]")
 
     n_layers = atm.nlevels
-    n_bins = len(tau_bin_edges) - 1
+    offsets, n_groups, group_to_cell, group_to_tau = build_group_index_maps(tau_edges_per_lambda)
 
     if interpolated_opacity.shape[0] != n_layers:
         raise ValueError(f"interpolated_opacity has {interpolated_opacity.shape[0]} layers, expected {n_layers}")
@@ -1646,15 +1711,23 @@ def sort_weighted_opacity_per_tau_bin(
     if verbose:
         console.print(f"First and last 10 atm.T values: {atm.T[:10]} ... {atm.T[-10:]}")
 
-    tau_bin_edges[0] = -np.log10(tau_rosseland[max_height_idx] + 0.2)
+    # Clamp the top (smallest -log10 tau) edge of every cell's first tau group to
+    # the atmosphere top, mirroring the original single-edge behavior per cell.
+    top_edge = -np.log10(tau_rosseland[max_height_idx] + 0.2)
+    for cell_edges in tau_edges_per_lambda:
+        cell_edges[0] = top_edge
 
-    for k in range(n_bins):
-        tau_low = 10.0 ** (-tau_bin_edges[k + 1])
-        tau_high = 10.0 ** (-tau_bin_edges[k])
+    for g in range(n_groups):
+        cell = int(group_to_cell[g])
+        t = int(group_to_tau[g])
+        edges = tau_edges_per_lambda[cell]
+        tau_low = 10.0 ** (-edges[t + 1])
+        tau_high = 10.0 ** (-edges[t])
 
         if verbose:
             console.print(
-                f"\nProcessing tau-bin {k}: -log10(tau) in [{tau_bin_edges[k]:.2f}, {tau_bin_edges[k + 1]:.2f}] "
+                f"\nProcessing group {g} (lambda cell {cell}, tau idx {t}): "
+                f"-log10(tau) in [{edges[t]:.2f}, {edges[t + 1]:.2f}] "
                 f"→ tau in [{tau_low:.2e}, {tau_high:.2e}]"
             )
 
@@ -1666,9 +1739,9 @@ def sort_weighted_opacity_per_tau_bin(
         i_top = j_top
         i_bot = j_bot
 
-        member_idx = np.flatnonzero(band_index == k)
+        member_idx = np.flatnonzero(band_index == g)
         if member_idx.size == 0:
-            results[k] = {"empty": True, "members": 0}
+            results[g] = {"empty": True, "members": 0}
             continue
 
         kappa_top = interpolated_opacity[i_top].reshape(-1)[member_idx]
@@ -1688,8 +1761,10 @@ def sort_weighted_opacity_per_tau_bin(
         sort_idx_top = np.argsort(weighted_top)
         sort_idx_bot = np.argsort(weighted_bot)
 
-        results[k] = {
+        results[g] = {
             "members": int(member_idx.size),
+            "lambda_cell": cell,
+            "tau_idx": t,
             "T_top": T_top,
             "p_top": float(atm.p[i_top]),
             "i_top": i_top,
@@ -1710,9 +1785,9 @@ def sort_weighted_opacity_per_tau_bin(
         }
 
         if write_debug_json:
-            debug_path = f"debug_tau_bin_{k}.json"
+            debug_path = f"debug_tau_bin_{g}.json"
             serializable = {
-                key: (val.tolist() if isinstance(val, np.ndarray) else val) for key, val in results[k].items()
+                key: (val.tolist() if isinstance(val, np.ndarray) else val) for key, val in results[g].items()
             }
             with open(debug_path, "w") as f:
                 json.dump(serializable, f, indent=2)
@@ -1722,45 +1797,48 @@ def sort_weighted_opacity_per_tau_bin(
 
 def plot_sorted_weighted_opacity_per_tau_bin(
     sorted_per_bin: dict[int, dict],
-    tau_bin_edges: list[float],
+    tau_edges_per_lambda: list[list[float]],
     output_file: str = "sorted_weighted_opacity_per_tau_bin.jpg",
     smooth_window: int = 7,
     overlay_breaks: bool = True,
     refine_mid: bool = True,
 ) -> None:
     """
-    Plot sorted weighted opacities per tau-bin.
+    Plot sorted weighted opacities per (lambda cell, tau) group.
 
-    For each tau-bin, draw a subplot with both 'top' (smaller-τ edge of the
-    bin) and 'bot' (larger-τ edge) sorted κ·Δλ·B_λ curves on a log y-axis.
+    For each group, draw a subplot with both 'top' (smaller-τ edge of the
+    group) and 'bot' (larger-τ edge) sorted κ·Δλ·B_λ curves on a log y-axis.
     If overlay_breaks is True, run analyze_group on each curve and overlay
     vertical lines at the segmentation break points (b1, b2, optional b_mid).
 
     Args:
-        sorted_per_bin: Output of sort_weighted_opacity_per_tau_bin.
-        tau_bin_edges: -log10(τ_Ros) bin edges.
+        sorted_per_bin: Output of sort_weighted_opacity_per_tau_bin (keyed by group g).
+        tau_edges_per_lambda: Per-lambda-cell -log10(τ_Ros) edge lists.
         output_file: Output figure path.
         smooth_window: Smoothing window passed to analyze_group.
         overlay_breaks: If True, draw piecewise-linear break lines.
         refine_mid: Forwarded to analyze_group (skip iterative b_mid refinement
             when False).
     """
-    console.print("\n[cyan]Plotting sorted weighted opacities per tau-bin...[/cyan]")
+    console.print("\n[cyan]Plotting sorted weighted opacities per (λ, τ) group...[/cyan]")
 
-    n_bins = len(tau_bin_edges) - 1
-    ncols = int(np.ceil(np.sqrt(n_bins)))
-    nrows = int(np.ceil(n_bins / ncols))
+    offsets, n_groups, group_to_cell, group_to_tau = build_group_index_maps(tau_edges_per_lambda)
+    ncols = int(np.ceil(np.sqrt(n_groups)))
+    nrows = int(np.ceil(n_groups / ncols))
 
     fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows), squeeze=False)
     axes_flat = axes.flatten()
 
-    for k in range(n_bins):
-        ax = axes_flat[k]
-        r = sorted_per_bin.get(k, {})
-        edge_low = tau_bin_edges[k]
-        edge_high = tau_bin_edges[k + 1]
+    for g in range(n_groups):
+        ax = axes_flat[g]
+        r = sorted_per_bin.get(g, {})
+        cell = int(group_to_cell[g])
+        t = int(group_to_tau[g])
+        edges = tau_edges_per_lambda[cell]
+        edge_low = edges[t]
+        edge_high = edges[t + 1]
         title = (
-            f"tau-bin {k}: "
+            f"grp {g} (λ{cell}, τ{t}): "
             rf"$-\log_{{10}}\tau_{{\rm Ros}} \in [{edge_low:.2f}, {edge_high:.2f}]$"
         )
 
@@ -1814,7 +1892,7 @@ def plot_sorted_weighted_opacity_per_tau_bin(
             try:
                 res = analyze_group(s_bot, smooth_window=smooth_window, refine_mid=refine_mid)
             except Exception as e:  # pragma: no cover
-                console.print(f"[yellow]bin {k} bot: analyze_group failed: {e}[/yellow]")
+                console.print(f"[yellow]group {g} bot: analyze_group failed: {e}[/yellow]")
             else:
                 seg = res["seg"]
                 ax.axvline(seg["b1"], color="C1", ls=":", lw=1.0, alpha=0.9)
@@ -1824,8 +1902,8 @@ def plot_sorted_weighted_opacity_per_tau_bin(
 
         ax.legend(fontsize=8, loc="lower right")
 
-    for k in range(n_bins, len(axes_flat)):
-        axes_flat[k].set_visible(False)
+    for j in range(n_groups, len(axes_flat)):
+        axes_flat[j].set_visible(False)
 
     plt.tight_layout()
     plt.savefig(output_file, dpi=150, bbox_inches="tight")
@@ -1833,45 +1911,76 @@ def plot_sorted_weighted_opacity_per_tau_bin(
     console.print(f"[green]✓ Sorted weighted opacity plot saved to {output_file}[/green]")
 
 
+def _segment_defs(
+    b1: int,
+    b2: int,
+    b_mid: int | None,
+    split_mid: bool,
+    n: int,
+) -> list[tuple[str, int, int]]:
+    """
+    Segment (name, lo, hi) ranges in sorted-index space from analyze_group breaks.
+
+    Returns 3 segments (low/mid/high) for the standard case, or 4
+    (low/mid1/mid2/high) when the middle was further split (split_mid=True). The
+    half-open ranges [lo, hi) index into a sorted-opacity curve of length n.
+    """
+    if split_mid:
+        return [
+            ("low", 0, b1 + 1),
+            ("mid1", b1 + 1, b_mid + 1),
+            ("mid2", b_mid + 1, b2),
+            ("high", b2, n),
+        ]
+    return [
+        ("low", 0, b1 + 1),
+        ("mid", b1 + 1, b2),
+        ("high", b2, n),
+    ]
+
+
 def compute_bot_segment_overlap_per_tau_bin(
     sorted_per_bin: dict[int, dict],
-    tau_bin_edges: list[float],
+    tau_edges_per_lambda: list[list[float]],
     smooth_window: int = 7,
     print_table: bool = True,
     verbose: bool = True,
     refine_mid: bool = True,
 ) -> dict[int, dict]:
     """
-    Per tau-bin: run analyze_group on s_bot only, then reuse those break
-    positions (b1, b2, optional b_mid) as segment boundaries in *sorted-index*
-    space for both s_top and s_bot. For each segment, build the set of
-    original sub-bin indices via sort_idx_top / sort_idx_bot and compute the
-    overlap between the top and bot sets. By construction both sets have the
+    Per (lambda cell, tau) group: run analyze_group on s_bot only, then reuse
+    those break positions (b1, b2, optional b_mid) as segment boundaries in
+    *sorted-index* space for both s_top and s_bot. For each segment, build the
+    set of original sub-bin indices via sort_idx_top / sort_idx_bot and compute
+    the overlap between the top and bot sets. By construction both sets have the
     same size (= segment length).
     """
-    n_bins = len(tau_bin_edges) - 1
+    offsets, n_groups, group_to_cell, group_to_tau = build_group_index_maps(tau_edges_per_lambda)
     overlaps: dict[int, dict] = {}
 
     table = Table(
-        title="Segment overlap (bot-derived breaks applied to top) per tau-bin",
+        title="Segment overlap (bot-derived breaks applied to top) per (λ cell, τ) group",
         show_lines=False,
     )
-    table.add_column("bin", justify="right")
+    table.add_column("grp", justify="right")
+    table.add_column("λ", justify="right")
     table.add_column("τ range", justify="center")
     table.add_column("segment", justify="left")
     table.add_column("|A|=|B|", justify="right")
     table.add_column("|A∩B|", justify="right")
     table.add_column("overlap %", justify="right")
 
-    for k in range(n_bins):
-        r = sorted_per_bin.get(k, {})
-        edge_low = tau_bin_edges[k]
-        edge_high = tau_bin_edges[k + 1]
-        tau_label = f"[{edge_low:.2f}, {edge_high:.2f}]"
+    for g in range(n_groups):
+        cell = int(group_to_cell[g])
+        t = int(group_to_tau[g])
+        edges = tau_edges_per_lambda[cell]
+        cell_label = str(cell)
+        tau_label = f"[{edges[t]:.2f}, {edges[t + 1]:.2f}]"
+        r = sorted_per_bin.get(g, {})
 
         if r.get("empty", False) or "sorted_weighted_kappa_bot" not in r:
-            table.add_row(str(k), tau_label, "—", "—", "—", "—")
-            overlaps[k] = {"empty": True}
+            table.add_row(str(g), cell_label, tau_label, "—", "—", "—", "—")
+            overlaps[g] = {"empty": True}
             continue
 
         s_bot = np.asarray(r["sorted_weighted_kappa_bot"], dtype=np.float64)
@@ -1881,8 +1990,8 @@ def compute_bot_segment_overlap_per_tau_bin(
         n = s_bot.size
 
         if n <= 10:
-            table.add_row(str(k), tau_label, "—", str(n), "—", "—")
-            overlaps[k] = {"too_small": True, "n": int(n)}
+            table.add_row(str(g), cell_label, tau_label, "—", str(n), "—", "—")
+            overlaps[g] = {"too_small": True, "n": int(n)}
             continue
 
         try:
@@ -1894,9 +2003,9 @@ def compute_bot_segment_overlap_per_tau_bin(
             )
         except Exception as e:
             if verbose:
-                console.print(f"[yellow]bin {k}: analyze_group failed: {e}[/yellow]")
-            table.add_row(str(k), tau_label, "—", str(n), "—", "—")
-            overlaps[k] = {"failed": True, "error": str(e)}
+                console.print(f"[yellow]group {g}: analyze_group failed: {e}[/yellow]")
+            table.add_row(str(g), cell_label, tau_label, "—", str(n), "—", "—")
+            overlaps[g] = {"failed": True, "error": str(e)}
             continue
 
         seg = res["seg"]
@@ -1905,19 +2014,7 @@ def compute_bot_segment_overlap_per_tau_bin(
         split_mid = bool(seg.get("split_mid", False))
         b_mid = int(seg["b_mid"]) if split_mid else None
 
-        if split_mid:
-            seg_defs = [
-                ("low", 0, b1 + 1),
-                ("mid1", b1 + 1, b_mid + 1),
-                ("mid2", b_mid + 1, b2),
-                ("high", b2, n),
-            ]
-        else:
-            seg_defs = [
-                ("low", 0, b1 + 1),
-                ("mid", b1 + 1, b2),
-                ("high", b2, n),
-            ]
+        seg_defs = _segment_defs(b1, b2, b_mid, split_mid, n)
 
         bin_overlaps: dict[str, dict] = {}
         for i, (name, lo, hi) in enumerate(seg_defs):
@@ -1939,7 +2036,8 @@ def compute_bot_segment_overlap_per_tau_bin(
             }
 
             table.add_row(
-                str(k) if i == 0 else "",
+                str(g) if i == 0 else "",
+                cell_label if i == 0 else "",
                 tau_label if i == 0 else "",
                 name,
                 str(size),
@@ -1947,7 +2045,7 @@ def compute_bot_segment_overlap_per_tau_bin(
                 f"{pct:.1f}",
             )
 
-        overlaps[k] = {
+        overlaps[g] = {
             "b1": b1,
             "b2": b2,
             "b_mid": b_mid,
@@ -1958,6 +2056,83 @@ def compute_bot_segment_overlap_per_tau_bin(
     if print_table:
         console.print(table)
     return overlaps
+
+
+def build_split_band_index(
+    sorted_per_bin: dict[int, dict],
+    n_subbin_points: int,
+    n_groups: int,
+    n_splits: int = 3,
+    smooth_window: int = 7,
+) -> NDArray[np.int32]:
+    """
+    Build a split-resolved band index from the per-group sorted-opacity curves.
+
+    Each group g (a (lambda cell, tau) pair; with a single lambda cell g is just
+    the tau index) is subdivided into ``n_splits`` opacity segments (low/mid/high)
+    by running analyze_group on its bot-sorted weighted-opacity curve with
+    ``refine_mid=False`` (so exactly 3 segments — no mid split). Every member
+    sub-bin of group g is assigned the combined band index ``g * n_splits + seg``,
+    where ``seg`` is its segment (0=low, 1=mid, 2=high) by rank in the bot-sorted
+    curve. Unassigned sub-bins stay -1.
+
+    The result is suitable as the ``band_index`` argument to
+    calculate_tau_bin_opacities with ``n_bins = n_groups * n_splits``, producing
+    a ``[nt, np, n_groups*n_splits]`` opacity table whose band axis factorizes as
+    ``band -> (g = band // n_splits, seg = band % n_splits)``.
+
+    Args:
+        sorted_per_bin: Output of sort_weighted_opacity_per_tau_bin (keyed by group g).
+        n_subbin_points: Total number of flattened wavelength sub-bins (nbins * nsubbins).
+        n_groups: Number of (lambda cell, tau) groups (= sum of tau-groups over cells).
+        n_splits: Number of opacity segments per group (fixed 3: low/mid/high).
+        smooth_window: Smoothing window forwarded to analyze_group.
+
+    Returns:
+        split_band_index: int32 array of shape [n_subbin_points], values in
+            [0, n_groups*n_splits) for assigned sub-bins, -1 otherwise.
+    """
+    split_band_index = np.full(n_subbin_points, -1, dtype=np.int32)
+
+    for g in range(n_groups):
+        r = sorted_per_bin.get(g, {})
+        if r.get("empty", False) or "sorted_weighted_kappa_bot" not in r:
+            continue
+
+        member_indices = np.asarray(r["member_indices"])
+        sort_idx_bot = np.asarray(r["sort_idx_bot"])
+        s_bot = np.asarray(r["sorted_weighted_kappa_bot"], dtype=np.float64)
+        n = s_bot.size
+
+        if n <= 10:
+            # Too few points to segment reliably: assign the whole group to split 0 (low).
+            split_band_index[member_indices] = g * n_splits
+            console.print(f"[yellow]group {g}: only {n} members (<=10); assigned all to split 0 (low).[/yellow]")
+            continue
+
+        try:
+            res = analyze_group(
+                s_bot,
+                smooth_window=smooth_window,
+                max_tail_frac_high=0.1,
+                refine_mid=False,
+            )
+        except Exception as e:
+            split_band_index[member_indices] = g * n_splits
+            console.print(f"[yellow]group {g}: analyze_group failed ({e}); assigned all to split 0 (low).[/yellow]")
+            continue
+
+        seg = res["seg"]
+        b1 = int(seg["b1"])
+        b2 = int(seg["b2"])
+        # refine_mid=False guarantees split_mid=False -> exactly n_splits (3) segments.
+        for seg_id, (_name, lo, hi) in enumerate(_segment_defs(b1, b2, None, False, n)):
+            if hi <= lo:
+                continue
+            members = member_indices[sort_idx_bot[lo:hi]]
+            split_band_index[members] = g * n_splits + seg_id
+
+    return split_band_index
 
 
 def optimize_tau_bin_edges(
@@ -1976,49 +2151,27 @@ def optimize_tau_bin_edges(
     max_outer_iters: int = 50,
     smooth_window: int = 7,
     refine_mid: bool = True,
-) -> tuple[list[float], dict[int, dict], dict[int, dict]]:
+) -> list[list[float]]:
     """
-    Greedy adjust+insert search over tau_bin_edges to push the high-segment
-    overlap (from compute_bot_segment_overlap_per_tau_bin) above `threshold`
-    in every non-empty tau-bin. First nudges interior edges on a small step
-    grid; when no local nudge improves the minimum score, inserts a new edge
-    at the midpoint of the worst bin's tau range. Stops when all bins clear
-    the threshold, when no move improves and bin count is at `max_bins`, or
-    when `max_outer_iters` is reached.
+    Greedy adjust+insert search over tau edges, run INDEPENDENTLY within each
+    lambda cell, to push the high-segment overlap (from
+    compute_bot_segment_overlap_per_tau_bin) above `threshold` in every
+    non-empty (cell, tau) group. Within a cell it nudges interior edges on a
+    small step grid; when no nudge improves the minimum score it inserts a new
+    edge at the midpoint of the worst tau group; it stops when all groups clear
+    the threshold, when stuck at `max_bins`, or at `max_outer_iters`.
 
-    Returns (final_edges, last_sorted_per_bin, last_overlaps).
+    The lambda edges stay fixed; only tau edges move, so each cell can end with
+    a different number of tau groups (the per-cell "jump").
+
+    Returns tau_edges_per_lambda: one optimized tau-edge list per lambda cell.
     """
     threshold_pct = threshold * 100.0
+    lambda_edges = [float(e) for e in lambda_bin_edges]
+    n_lambda = len(lambda_edges) - 1
 
-    def _evaluate(edges: list[float]) -> tuple[dict, dict]:
-        edges_copy = list(edges)
-        band_idx = assign_tau_to_bin(
-            tau_rosseland_at_tau_lambda_one,
-            wavelength_grid_subbins_centers,
-            tau_bin_edges=edges_copy,
-            lambda_bin_edges=lambda_bin_edges,
-        )
-        sorted_per_bin = sort_weighted_opacity_per_tau_bin(
-            atm=atm,
-            odf=odf,
-            interpolated_opacity=interpolated_opacity,
-            tau_rosseland=tau_rosseland,
-            band_index=band_idx,
-            tau_bin_edges=list(edges),
-            wavelength_grid_subbins_centers=wavelength_grid_subbins_centers,
-            max_height_idx=max_height_idx,
-            write_debug_json=False,
-            verbose=False,
-        )
-        overlaps = compute_bot_segment_overlap_per_tau_bin(
-            sorted_per_bin,
-            tau_bin_edges=list(edges),
-            smooth_window=smooth_window,
-            print_table=False,
-            verbose=False,
-            refine_mid=refine_mid,
-        )
-        return sorted_per_bin, overlaps
+    def _valid_monotone(edges: list[float]) -> bool:
+        return all(edges[i] < edges[i + 1] for i in range(len(edges) - 1))
 
     def _high_score(overlaps: dict, k: int) -> float:
         rec = overlaps.get(k, {})
@@ -2027,78 +2180,110 @@ def optimize_tau_bin_edges(
             return 0.0
         return float(segs["high"]["overlap_pct"])
 
-    def _scores(edges: list[float], overlaps: dict) -> list[float]:
-        return [_high_score(overlaps, k) for k in range(len(edges) - 1)]
-
-    def _valid_monotone(edges: list[float]) -> bool:
-        return all(edges[i] < edges[i + 1] for i in range(len(edges) - 1))
-
-    console.print(f"\n[cyan]Optimizing tau_bin_edges (threshold={threshold_pct:.1f}%, max_bins={max_bins})...[/cyan]")
-    edges = list(initial_tau_bin_edges)
-    sorted_per_bin, overlaps = _evaluate(edges)
-    scores = _scores(edges, overlaps)
-    min_score = min(scores) if scores else 0.0
-    console.print(
-        f"  iter   0: bins={len(edges) - 1:2d}  min_high={min_score:6.2f}  "
-        f"scores={[f'{s:.1f}' for s in scores]}  action=start"
-    )
-
-    for it in range(1, max_outer_iters + 1):
-        if min_score >= threshold_pct:
-            console.print(f"[green]✓ converged at iter {it - 1}[/green]")
-            return edges, sorted_per_bin, overlaps
-
-        best_edges = None
-        best_sorted_per_bin = None
-        best_overlaps = None
-        best_min = min_score
-
-        for i in range(1, len(edges)):
-            for step in adjust_steps:
-                for direction in (-1.0, +1.0):
-                    cand = list(edges)
-                    cand[i] = edges[i] + direction * step
-                    if not _valid_monotone(cand):
-                        continue
-                    cand_sorted, cand_overlaps = _evaluate(cand)
-                    cand_scores = _scores(cand, cand_overlaps)
-                    cand_min = min(cand_scores) if cand_scores else 0.0
-                    if cand_min > best_min + 1e-9:
-                        best_min = cand_min
-                        best_edges = cand
-                        best_sorted_per_bin = cand_sorted
-                        best_overlaps = cand_overlaps
-
-        if best_edges is not None:
-            edges = best_edges
-            sorted_per_bin = best_sorted_per_bin
-            overlaps = best_overlaps
-            scores = _scores(edges, overlaps)
-            min_score = best_min
-            console.print(
-                f"  iter {it:3d}: bins={len(edges) - 1:2d}  min_high={min_score:6.2f}  "
-                f"scores={[f'{s:.1f}' for s in scores]}  action=adjust"
+    def _optimize_one_lambda_cell(cell: int, window: list[float]) -> list[float]:
+        # Restrict to this lambda cell by passing a single-cell window, so only
+        # this column's sub-bins participate; groups are then just tau indices.
+        def _evaluate(edges: list[float]) -> dict:
+            band_idx = assign_tau_to_bin(
+                tau_rosseland_at_tau_lambda_one,
+                wavelength_grid_subbins_centers,
+                tau_edges_per_lambda=[list(edges)],
+                lambda_bin_edges=window,
             )
-            continue
+            sorted_per_bin = sort_weighted_opacity_per_tau_bin(
+                atm=atm,
+                odf=odf,
+                interpolated_opacity=interpolated_opacity,
+                tau_rosseland=tau_rosseland,
+                band_index=band_idx,
+                tau_edges_per_lambda=[list(edges)],
+                wavelength_grid_subbins_centers=wavelength_grid_subbins_centers,
+                max_height_idx=max_height_idx,
+                write_debug_json=False,
+                verbose=False,
+            )
+            return compute_bot_segment_overlap_per_tau_bin(
+                sorted_per_bin,
+                tau_edges_per_lambda=[list(edges)],
+                smooth_window=smooth_window,
+                print_table=False,
+                verbose=False,
+                refine_mid=refine_mid,
+            )
 
-        if len(edges) - 1 >= max_bins:
-            console.print(f"[yellow]✗ stuck at cap (bins={len(edges) - 1}, min_high={min_score:.2f}%)[/yellow]")
-            return edges, sorted_per_bin, overlaps
+        def _scores(edges: list[float], overlaps: dict) -> list[float]:
+            return [_high_score(overlaps, k) for k in range(len(edges) - 1)]
 
-        k_worst = int(np.argmin(scores))
-        new_edge = (edges[k_worst] + edges[k_worst + 1]) / 2.0
-        edges = list(edges[: k_worst + 1]) + [new_edge] + list(edges[k_worst + 1 :])
-        sorted_per_bin, overlaps = _evaluate(edges)
+        console.print(
+            f"\n[cyan]Optimizing tau edges for λ cell {cell} "
+            f"(λ∈[{window[0]}, {window[1]}], threshold={threshold_pct:.1f}%, max_bins={max_bins})...[/cyan]"
+        )
+        edges = list(initial_tau_bin_edges)
+        overlaps = _evaluate(edges)
         scores = _scores(edges, overlaps)
         min_score = min(scores) if scores else 0.0
-        console.print(
-            f"  iter {it:3d}: bins={len(edges) - 1:2d}  min_high={min_score:6.2f}  "
-            f"scores={[f'{s:.1f}' for s in scores]}  "
-            f"action=split@k={k_worst} new_edge={new_edge:.3f}"
-        )
+        console.print(f"  cell {cell} iter   0: bins={len(edges) - 1:2d}  min_high={min_score:6.2f}  action=start")
 
-    console.print(f"[yellow]✗ max_outer_iters={max_outer_iters} reached (min_high={min_score:.2f}%)[/yellow]")
-    return edges, sorted_per_bin, overlaps
+        for it in range(1, max_outer_iters + 1):
+            if min_score >= threshold_pct:
+                console.print(f"[green]✓ cell {cell} converged at iter {it - 1}[/green]")
+                return edges
+
+            best_edges = None
+            best_overlaps = None
+            best_min = min_score
+
+            for i in range(1, len(edges)):
+                for step in adjust_steps:
+                    for direction in (-1.0, +1.0):
+                        cand = list(edges)
+                        cand[i] = edges[i] + direction * step
+                        if not _valid_monotone(cand):
+                            continue
+                        cand_overlaps = _evaluate(cand)
+                        cand_scores = _scores(cand, cand_overlaps)
+                        cand_min = min(cand_scores) if cand_scores else 0.0
+                        if cand_min > best_min + 1e-9:
+                            best_min = cand_min
+                            best_edges = cand
+                            best_overlaps = cand_overlaps
+
+            if best_edges is not None:
+                edges = best_edges
+                scores = _scores(edges, best_overlaps)
+                min_score = best_min
+                console.print(
+                    f"  cell {cell} iter {it:3d}: bins={len(edges) - 1:2d}  min_high={min_score:6.2f}  action=adjust"
+                )
+                continue
+
+            if len(edges) - 1 >= max_bins:
+                console.print(
+                    f"[yellow]✗ cell {cell} stuck at cap (bins={len(edges) - 1}, min_high={min_score:.2f}%)[/yellow]"
+                )
+                return edges
+
+            k_worst = int(np.argmin(scores))
+            new_edge = (edges[k_worst] + edges[k_worst + 1]) / 2.0
+            edges = list(edges[: k_worst + 1]) + [new_edge] + list(edges[k_worst + 1 :])
+            overlaps = _evaluate(edges)
+            scores = _scores(edges, overlaps)
+            min_score = min(scores) if scores else 0.0
+            console.print(
+                f"  cell {cell} iter {it:3d}: bins={len(edges) - 1:2d}  min_high={min_score:6.2f}  "
+                f"action=split@k={k_worst} new_edge={new_edge:.3f}"
+            )
+
+        console.print(
+            f"[yellow]✗ cell {cell} max_outer_iters={max_outer_iters} reached (min_high={min_score:.2f}%)[/yellow]"
+        )
+        return edges
+
+    tau_edges_per_lambda: list[list[float]] = []
+    for cell in range(n_lambda):
+        window = [lambda_edges[cell], lambda_edges[cell + 1]]
+        tau_edges_per_lambda.append(_optimize_one_lambda_cell(cell, window))
+    return tau_edges_per_lambda
 
 
 def calculate_tau_bin_opacities(
@@ -2254,15 +2439,28 @@ def save_tau_bin_opacities_npy(
     tau_bin_results: dict[str, NDArray[np.float64] | NDArray[np.int32]],
     temperature_grid: NDArray[np.float64],
     pressure_grid: NDArray[np.float64],
+    n_splits: int = 1,
+    lambda_bin_edges: NDArray[np.float64] | list[float] | None = None,
+    tau_edges_per_lambda: list[list[float]] | None = None,
 ) -> None:
     """
     Save tau-binned opacity products to a structured .npy file.
 
-    The saved file can be loaded with:
+    The band axis (length n_bands) factorizes as ``n_bands = n_groups * n_splits``
+    with ``band -> (group = band // n_splits, split = band % n_splits)`` (split 0/1/2 =
+    low/mid/high), where a group is a (lambda cell, tau index) pair with
+    ``n_groups = sum_cell nTau[cell]``. The (ragged) factorization metadata is
+    stored alongside so a reader can recover the (lambda, tau, split) structure:
+
         data = np.load("tau_bin_opacities.npy")
-        mixed = data["mixed"]
-        temperature = data["T"]
-        pressure = data["p"]
+        mixed = data["mixed"]                      # [nt, np, n_bands]
+        n_splits = int(data["n_splits"])
+        lambda_bin_edges = data["lambda_bin_edges"]      # [n_lambda + 1]
+        n_tau_per_lambda = data["n_tau_per_lambda"]      # [n_lambda]
+        tau_edges_concat = data["tau_edges_concat"]      # sum(nTau[cell] + 1)
+        tau_bin_edges = data["tau_bin_edges"]            # cell-0 edges (single-cell convenience)
+
+    Split ``tau_edges_concat`` back per cell with offsets ``cumsum(n_tau_per_lambda + 1)``.
     """
     planck = np.asarray(tau_bin_results["kappa_planck"], dtype=np.float64)
     rosseland = np.asarray(tau_bin_results["kappa_rosseland"], dtype=np.float64)
@@ -2270,6 +2468,12 @@ def save_tau_bin_opacities_npy(
     members = np.asarray(tau_bin_results["members_per_band"], dtype=np.int32)
     temperature = np.asarray(temperature_grid, dtype=np.float64)
     pressure = np.asarray(pressure_grid, dtype=np.float64)
+
+    cells = list(tau_edges_per_lambda) if tau_edges_per_lambda is not None else []
+    lambda_edges = np.asarray([] if lambda_bin_edges is None else lambda_bin_edges, dtype=np.float64)
+    n_tau_per_lambda = np.asarray([len(e) - 1 for e in cells], dtype=np.int32)
+    tau_edges_concat = np.asarray([v for e in cells for v in e], dtype=np.float64)
+    tau_edges_cell0 = np.asarray(cells[0] if cells else [], dtype=np.float64)
 
     if not (planck.shape == rosseland.shape == mixed.shape):
         raise ValueError(
@@ -2286,6 +2490,11 @@ def save_tau_bin_opacities_npy(
         raise ValueError(f"temperature_grid shape must be ({nt},), got {temperature.shape}")
     if pressure.shape != (n_pressure,):
         raise ValueError(f"pressure_grid shape must be ({n_pressure},), got {pressure.shape}")
+    if n_splits <= 0 or n_bands % n_splits != 0:
+        raise ValueError(f"n_bands ({n_bands}) must be a positive multiple of n_splits ({n_splits}).")
+    n_groups = int(n_tau_per_lambda.sum()) if n_tau_per_lambda.size else n_bands // n_splits
+    if n_bands != n_splits * n_groups:
+        raise ValueError(f"n_bands ({n_bands}) must equal n_splits ({n_splits}) * sum(n_tau_per_lambda) ({n_groups}).")
 
     dtype = np.dtype(
         [
@@ -2295,6 +2504,11 @@ def save_tau_bin_opacities_npy(
             ("T", np.float64, (nt,)),
             ("p", np.float64, (n_pressure,)),
             ("members_per_band", np.int32, (n_bands,)),
+            ("n_splits", np.int32),
+            ("tau_bin_edges", np.float64, (tau_edges_cell0.size,)),
+            ("lambda_bin_edges", np.float64, (lambda_edges.size,)),
+            ("n_tau_per_lambda", np.int32, (n_tau_per_lambda.size,)),
+            ("tau_edges_concat", np.float64, (tau_edges_concat.size,)),
         ]
     )
 
@@ -2305,9 +2519,89 @@ def save_tau_bin_opacities_npy(
     packed["T"] = temperature
     packed["p"] = pressure
     packed["members_per_band"] = members
+    packed["n_splits"] = np.int32(n_splits)
+    packed["tau_bin_edges"] = tau_edges_cell0
+    packed["lambda_bin_edges"] = lambda_edges
+    packed["n_tau_per_lambda"] = n_tau_per_lambda
+    packed["tau_edges_concat"] = tau_edges_concat
 
     np.save(output_file, packed)
     console.print(f"[green]✓ Saved tau-bin opacities to {output_file}[/green]")
+
+
+def build_kappa_dat_filename(
+    nbands: int,
+    n_splits: int,
+    tau_edges_per_lambda: list[list[float]],
+    lambda_bin_edges: list[float],
+) -> str:
+    """
+    Build a .dat filename that encodes the binning parameters.
+
+    Single lambda cell (backward compatible) spells out the tau edges, e.g.
+    ``kappa_24band_tg8_sp3_tau_-0.6347_-0.4_..._7_lam_3_5.dat``. With multiple
+    lambda cells the per-cell tau edges are ragged and would make the name
+    unbounded, so only the lambda edges and per-cell tau-group counts are
+    encoded (the full edges live in the .npy), e.g.
+    ``kappa_30band_lm2_tg3-2_sp3_lam_3_4_5.dat``. Edges round to 4 decimals.
+    """
+
+    def _fmt(vals: list[float]) -> str:
+        return "_".join(f"{round(float(v), 4):g}" for v in vals)
+
+    n_tau = [len(e) - 1 for e in tau_edges_per_lambda]
+    if len(tau_edges_per_lambda) == 1:
+        return (
+            f"kappa_{nbands}band_tg{n_tau[0]}_sp{n_splits}"
+            f"_tau_{_fmt(tau_edges_per_lambda[0])}_lam_{_fmt(lambda_bin_edges)}.dat"
+        )
+    tg = "-".join(str(g) for g in n_tau)
+    return f"kappa_{nbands}band_lm{len(n_tau)}_tg{tg}_sp{n_splits}_lam_{_fmt(lambda_bin_edges)}.dat"
+
+
+def build_kappa_band_comparison(
+    tau_bin_results: dict[str, NDArray[np.float64] | NDArray[np.int32]],
+    odf: ODFData,
+) -> KappaBandComparison:
+    """
+    Pack tau-binned opacities into a KappaBandComparison in the C ``tausort``
+    convention, ready for write_kappa_4_band_comparison.
+
+    Matches the C ``output()`` writer (tausort.c): the merged opacity and the
+    band-integrated Planck term are stored as **natural logs**, the band axis is
+    leading (``[Nbands, NT, Np]`` / ``[Nbands, NT]``), and the T/p axes are
+    ``log10(T)`` / ``log10(p)`` (= ``odf.T`` / ``odf.P`` as stored). This is the
+    same ``ln(mixed)`` that plot_kap_mean_grid overlays against the .npy.
+
+    Empty bands (NaN / non-positive opacity) are written as NaN.
+    """
+    mixed = np.asarray(tau_bin_results["kappa_mixed"], dtype=np.float64)  # [NT, Np, Nbands]
+    b_band = np.asarray(tau_bin_results["B_band"], dtype=np.float64)  # [NT, Nbands]
+    nt, n_pressure, n_bands = mixed.shape
+
+    def _safe_log(arr: NDArray[np.float64]) -> NDArray[np.float64]:
+        return np.log(np.where(np.isfinite(arr) & (arr > 0.0), arr, np.nan))
+
+    kap_mean = np.ascontiguousarray(_safe_log(mixed).transpose(2, 0, 1))  # [Nbands, NT, Np]
+    b_band_log = np.ascontiguousarray(_safe_log(b_band).T)  # [Nbands, NT]
+
+    return KappaBandComparison(
+        tau5000bin=0,
+        NT=nt,
+        Np=n_pressure,
+        Nbands_out=n_bands,
+        pp_axis=0,
+        full_odf=0,
+        scatter_on=0,
+        back_heating=0,
+        tab_T=np.asarray(odf.T, dtype=np.float64),  # log10(T)
+        tab_p=np.asarray(odf.P, dtype=np.float64),  # log10(p)
+        kap_5000=None,
+        B_5000=None,
+        kap_mean=kap_mean,
+        B_band=b_band_log,
+        nuout=None,
+    )
 
 
 @app.command()
@@ -2335,6 +2629,7 @@ def main(
             help="List of optical depth bin edges to sort opacities at",
         ),
         # ] = [-.63, -0.3, .75, 1.5, 3.8, 7.0], # original
+        # ] = [-0.63, 7.0],  # original
         # ] = [-0.63, -0.3, -0.15, -0.0, 0.25, 0.7, 1.5, 3.9, 7.0], # refined with mid bin
     ] = [-0.63, -0.4, -0.2375, -0.075, 0.15, 0.7, 1.5, 3.8, 7.0],  # refined without mid
     lambda_bin_edges: Annotated[
@@ -2366,8 +2661,19 @@ def main(
         "--high-overlap-threshold",
         help="Minimum acceptable high-segment overlap (0–1) for the optimizer.",
     ),
+    max_bins: int = typer.Option(
+        8,
+        "--max-bins",
+        help="Cap on the number of tau groups --optimize-high-overlap may grow to.",
+    ),
+    save_after_optimize: bool = typer.Option(
+        False,
+        "--save-after-optimize/--no-save-after-optimize",
+        help="After --optimize-high-overlap finishes, continue the normal "
+        "pipeline with the optimized edges (saving .npy/.dat) instead of stopping.",
+    ),
     refine_mid: bool = typer.Option(
-        True,
+        False,
         "--refine-mid/--no-refine-mid",
         help="Forward to analyze_group: enable/disable iterative b_mid "
         "refinement when segmenting sorted-opacity curves.",
@@ -2510,9 +2816,11 @@ def main(
 
     tau_rosseland_at_tau_lambda_one = tau_rosseland[height_at_tau_index[:, -1]]
 
+    n_lambda = len(lambda_bin_edges) - 1
+
     if optimize_high_overlap:
         t0 = time.perf_counter()
-        optimized_edges, final_sorted_per_bin, _ = optimize_tau_bin_edges(
+        tau_edges_per_lambda = optimize_tau_bin_edges(
             atm=atm,
             odf=odf,
             interpolated_opacity=interpolated_opacity,
@@ -2523,38 +2831,70 @@ def main(
             initial_tau_bin_edges=tau_bin_edges,
             lambda_bin_edges=lambda_bin_edges,
             threshold=high_overlap_threshold,
-            max_bins=8,
+            max_bins=max_bins,
             refine_mid=refine_mid,
         )
         t1 = time.perf_counter()
         console.print(f"[dim]⏱  optimize_tau_bin_edges: {t1 - t0:.3f}s[/dim]")
-        console.print(f"[green]optimized tau_bin_edges = {[round(e, 4) for e in optimized_edges]}[/green]")
-        compute_bot_segment_overlap_per_tau_bin(
-            final_sorted_per_bin,
-            tau_bin_edges=list(optimized_edges),
-            print_table=True,
-            verbose=True,
-            refine_mid=refine_mid,
-        )
-        return
+        for cell, edges in enumerate(tau_edges_per_lambda):
+            console.print(
+                f"[green]λ cell {cell}: {len(edges) - 1} tau-groups, edges = {[round(e, 4) for e in edges]}[/green]"
+            )
+        if not save_after_optimize:
+            # Print-only: show the diagnostic overlap table for the optimized edges, then stop.
+            diag_bin_number = assign_tau_to_bin(
+                tau_rosseland_at_tau_lambda_one,
+                wavelength_grid_subbins_centers,
+                tau_edges_per_lambda=tau_edges_per_lambda,
+                lambda_bin_edges=lambda_bin_edges,
+            )
+            diag_sorted = sort_weighted_opacity_per_tau_bin(
+                atm=atm,
+                odf=odf,
+                interpolated_opacity=interpolated_opacity,
+                tau_rosseland=tau_rosseland,
+                band_index=diag_bin_number,
+                tau_edges_per_lambda=tau_edges_per_lambda,
+                wavelength_grid_subbins_centers=wavelength_grid_subbins_centers,
+                max_height_idx=max_height_idx,
+                write_debug_json=False,
+                verbose=False,
+            )
+            compute_bot_segment_overlap_per_tau_bin(
+                diag_sorted,
+                tau_edges_per_lambda=tau_edges_per_lambda,
+                print_table=True,
+                verbose=True,
+                refine_mid=refine_mid,
+            )
+            return
+        console.print("[cyan]--save-after-optimize: continuing pipeline with optimized per-cell edges[/cyan]")
+    else:
+        # No optimization: the same tau edges apply in every lambda cell.
+        tau_edges_per_lambda = [list(tau_bin_edges) for _ in range(n_lambda)]
 
     console.print("\n[cyan]Calculating tau-binned opacities...[/cyan]")
+
+    # A group is a (lambda cell, tau index) pair; with one lambda cell g == tau index.
+    _offsets, n_groups, _g2cell, _g2tau = build_group_index_maps(tau_edges_per_lambda)
+    n_splits = 3
+    n_bands = n_groups * n_splits
 
     bin_number = assign_tau_to_bin(
         tau_rosseland_at_tau_lambda_one,
         wavelength_grid_subbins_centers,
-        tau_bin_edges=tau_bin_edges,
+        tau_edges_per_lambda=tau_edges_per_lambda,
         lambda_bin_edges=lambda_bin_edges,
     )
     unique_bins = np.unique(bin_number[bin_number >= 0])
     unassigned = int(np.sum(bin_number < 0))
-    console.print(f"assigned bands: {unique_bins}")
+    console.print(f"assigned groups: {unique_bins}")
     console.print(f"unassigned wavelength points: {unassigned}/{len(bin_number)}")
 
     plot_tau_rosselend_at_tau_lambda_one_vs_wavelength(
         tau_rosseland_at_tau_lambda_one[skip_first_n_wavelengths:],
         wavelength_grid_subbins_centers[skip_first_n_wavelengths:],
-        tau_bin_edges=tau_bin_edges,
+        tau_edges_per_lambda=tau_edges_per_lambda,
         lambda_bin_edges=lambda_bin_edges,
         band_index=bin_number[skip_first_n_wavelengths:],
     )
@@ -2566,19 +2906,19 @@ def main(
         interpolated_opacity=interpolated_opacity,
         tau_rosseland=tau_rosseland,
         band_index=bin_number,
-        tau_bin_edges=tau_bin_edges,
+        tau_edges_per_lambda=tau_edges_per_lambda,
         wavelength_grid_subbins_centers=wavelength_grid_subbins_centers,
         max_height_idx=max_height_idx,
     )
     t1 = time.perf_counter()
     n_nonempty = sum(1 for v in sorted_per_bin.values() if not v.get("empty", False))
-    console.print(f"sorted opacity dist: {n_nonempty}/{len(sorted_per_bin)} non-empty tau-bins")
-    for k, r in sorted_per_bin.items():
+    console.print(f"sorted opacity dist: {n_nonempty}/{len(sorted_per_bin)} non-empty (λ,τ) groups")
+    for g, r in sorted_per_bin.items():
         if r.get("empty", False):
-            console.print(f"  bin {k}: empty")
+            console.print(f"  group {g}: empty")
         else:
             console.print(
-                f"  bin {k}: members={r['members']}, "
+                f"  group {g} (λ{r['lambda_cell']},τ{r['tau_idx']}): members={r['members']}, "
                 f"T_top={r['T_top']:.1f}K (i={r['i_top']}), "
                 f"T_bot={r['T_bot']:.1f}K (i={r['i_bot']})"
             )
@@ -2587,7 +2927,7 @@ def main(
     t0 = time.perf_counter()
     plot_sorted_weighted_opacity_per_tau_bin(
         sorted_per_bin,
-        tau_bin_edges=tau_bin_edges,
+        tau_edges_per_lambda=tau_edges_per_lambda,
         refine_mid=refine_mid,
     )
     t1 = time.perf_counter()
@@ -2596,18 +2936,38 @@ def main(
     t0 = time.perf_counter()
     compute_bot_segment_overlap_per_tau_bin(
         sorted_per_bin,
-        tau_bin_edges=tau_bin_edges,
+        tau_edges_per_lambda=tau_edges_per_lambda,
         refine_mid=refine_mid,
     )
     t1 = time.perf_counter()
     console.print(f"[dim]⏱  compute_bot_segment_overlap_per_tau_bin: {t1 - t0:.3f}s[/dim]")
 
+    # Subdivide each (lambda, tau) group into n_splits opacity segments (low/mid/high) and
+    # build a finer band index so the saved table resolves (lambda cell, tau group, split).
+    # The table is always 3 splits (analyze_group with refine_mid=False); the --refine-mid
+    # flag only affects the diagnostic overlap table / plot above. The band axis factorizes
+    # as band -> (group = band // n_splits, split = band % n_splits).
+    t0 = time.perf_counter()
+    split_band_index = build_split_band_index(
+        sorted_per_bin,
+        n_subbin_points=len(bin_number),
+        n_groups=n_groups,
+        n_splits=n_splits,
+    )
+    t1 = time.perf_counter()
+    n_assigned = int(np.sum(split_band_index >= 0))
+    console.print(
+        f"split band index: {n_assigned}/{len(split_band_index)} sub-bins assigned across "
+        f"{n_bands} bands ({n_groups} (λ,τ) groups x {n_splits} splits)"
+    )
+    console.print(f"[dim]⏱  build_split_band_index: {t1 - t0:.3f}s[/dim]")
+
     t0 = time.perf_counter()
     tau_bin_results = calculate_tau_bin_opacities(
         odf=odf,
         cont=cont,
-        band_index=bin_number,
-        n_bins=len(tau_bin_edges) - 1,
+        band_index=split_band_index,
+        n_bins=n_bands,
         tau_transition=0.35,
     )
     t1 = time.perf_counter()
@@ -2619,15 +2979,42 @@ def main(
     )
     console.print(f"[dim]⏱  calculate_tau_bin_opacities: {t1 - t0:.3f}s[/dim]")
 
+    # Mark empty (group, split) bands as NaN so they are distinguishable from genuine
+    # zero opacity (calculate_tau_bin_opacities leaves empty bands at 0.0).
+    members_per_band = np.asarray(tau_bin_results["members_per_band"])
+    empty_band_mask = members_per_band == 0
+    if np.any(empty_band_mask):
+        for key in ("kappa_planck", "kappa_rosseland", "kappa_mixed"):
+            tau_bin_results[key][:, :, empty_band_mask] = np.nan
+        console.print(f"[yellow]{int(np.sum(empty_band_mask))}/{n_bands} bands empty -> set to NaN[/yellow]")
+
     t0 = time.perf_counter()
     save_tau_bin_opacities_npy(
         tau_bin_output,
         tau_bin_results,
         temperature_grid=np.power(10.0, odf.T),
         pressure_grid=np.power(10.0, odf.P),
+        n_splits=n_splits,
+        lambda_bin_edges=lambda_bin_edges,
+        tau_edges_per_lambda=tau_edges_per_lambda,
     )
     t1 = time.perf_counter()
     console.print(f"[dim]⏱  save_tau_bin_opacities_npy: {t1 - t0:.3f}s[/dim]")
+
+    # Also save the C-format kappa_<N>_band comparison binary, under a filename that
+    # encodes the binning parameters so each run lands in a distinct, self-describing
+    # file. kap_mean = ln(mixed) in [Nbands, NT, Np], matching tausort.c output().
+    t0 = time.perf_counter()
+    kappa_dat_path = build_kappa_dat_filename(
+        nbands=n_bands,
+        n_splits=n_splits,
+        tau_edges_per_lambda=tau_edges_per_lambda,
+        lambda_bin_edges=lambda_bin_edges,
+    )
+    write_kappa_4_band_comparison(kappa_dat_path, build_kappa_band_comparison(tau_bin_results, odf))
+    t1 = time.perf_counter()
+    console.print(f"[green]✓ Saved kappa band comparison to {kappa_dat_path}[/green]")
+    console.print(f"[dim]⏱  write_kappa_4_band_comparison: {t1 - t0:.3f}s[/dim]")
 
 
 @app.command()
