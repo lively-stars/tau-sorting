@@ -6,7 +6,6 @@ This script visualizes the opacity distribution functions from the NetCDF file
 at 10 randomly selected temperature and pressure grid points.
 """
 
-
 import matplotlib.pyplot as plt
 import numpy as np
 from netCDF4 import Dataset

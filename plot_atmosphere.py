@@ -3,7 +3,6 @@
 Plot atmospheric height profiles from G2_1D.dat
 """
 
-
 import matplotlib.pyplot as plt
 import numpy as np
 
