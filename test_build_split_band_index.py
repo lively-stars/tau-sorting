@@ -9,7 +9,14 @@ import unittest
 
 import numpy as np
 
-from tausort import assign_tau_to_bin, build_group_index_maps, build_split_band_index
+from tausort import (
+    assign_split_lambda,
+    assign_tau_to_bin,
+    build_group_index_maps,
+    build_group_specs_split_lambda,
+    build_split_band_index,
+    parse_split_lambda,
+)
 
 
 def _make_group(member_indices, n):
@@ -134,6 +141,57 @@ class TestLambdaGrouping(unittest.TestCase):
         g = assign_tau_to_bin(tau, wl_cm, tau_edges_per_lambda=per_cell, lambda_bin_edges=[3.0, 5.0])
         self.assertEqual(g[0], -1)  # outside lambda range
         self.assertEqual(g[1], 0)  # cell 0, tau group 0
+
+
+class TestSplitLambdaFlags(unittest.TestCase):
+    def test_group_specs_count_and_order(self):
+        # 3 tau groups, 2 lambda cells, flags [True, False, True] -> 5 groups slot-major.
+        tau = [-0.1, 0.5, 1.0, 1.5]
+        lam = [3.0, 4.0, 5.0]
+        gt, gl, s2cg, s2sg = build_group_specs_split_lambda(tau, lam, [True, False, True])
+        self.assertEqual(gt.shape, (5, 2))
+        self.assertEqual(gl.shape, (5, 2))
+        # slot-major: k0 split (g0,g1), k1 single (g2), k2 split (g3,g4)
+        np.testing.assert_array_equal(s2cg, [[0, 1], [-1, -1], [3, 4]])
+        np.testing.assert_array_equal(s2sg, [-1, 2, -1])
+        # unsplit group spans the whole lambda range; split groups are confined to a cell.
+        np.testing.assert_allclose(gl[2], [3.0, 5.0])
+        np.testing.assert_allclose(gl[0], [3.0, 4.0])
+        np.testing.assert_allclose(gl[1], [4.0, 5.0])
+        # tau ranges follow the shared edges.
+        np.testing.assert_allclose(gt[2], [0.5, 1.0])
+
+    def test_assign_split_vs_unsplit(self):
+        tau_edges = [-0.1, 0.5, 1.0, 1.5]
+        lam = [3.0, 4.0, 5.0]
+        _gt, _gl, s2cg, s2sg = build_group_specs_split_lambda(tau_edges, lam, [True, False, True])
+        # wavelengths: cell0 (~10^3.5 A), cell1 (~10^4.5 A); tau slots k1 (unsplit), k0 (split)
+        wl_cm = np.array([3162.0, 31623.0, 3162.0, 31623.0]) * 1e-8
+        tau = 10.0 ** (-np.array([0.7, 0.7, 0.2, 0.2]))  # k1, k1, k0, k0
+        g = assign_split_lambda(tau, wl_cm, tau_edges, lam, s2cg, s2sg)
+        # unsplit slot k1 -> both lambda cells collapse to group 2; split slot k0 -> 0 / 1
+        np.testing.assert_array_equal(g, [2, 2, 0, 1])
+
+    def test_all_true_matches_uniform_count(self):
+        # All-True flags reproduce the uniform-split group count (n_tau * n_lambda).
+        tau = [-0.1, 0.5, 1.0, 1.5]
+        lam = [3.0, 4.0, 5.0]
+        gt, _gl, _s2cg, _s2sg = build_group_specs_split_lambda(tau, lam, [True, True, True])
+        self.assertEqual(gt.shape[0], 3 * 2)
+
+    def test_all_false_is_one_per_tau(self):
+        tau = [-0.1, 0.5, 1.0, 1.5]
+        lam = [3.0, 4.0, 5.0]
+        gt, gl, _s2cg, s2sg = build_group_specs_split_lambda(tau, lam, [False, False, False])
+        self.assertEqual(gt.shape[0], 3)
+        # every group spans the full lambda range
+        self.assertTrue(np.all(gl[:, 0] == 3.0) and np.all(gl[:, 1] == 5.0))
+        np.testing.assert_array_equal(s2sg, [0, 1, 2])
+
+    def test_parse_split_lambda(self):
+        self.assertEqual(parse_split_lambda("00111100"), [False, False, True, True, True, True, False, False])
+        self.assertEqual(parse_split_lambda("true,false,1,0"), [True, False, True, False])
+        self.assertEqual(parse_split_lambda("T F t f"), [True, False, True, False])
 
 
 if __name__ == "__main__":

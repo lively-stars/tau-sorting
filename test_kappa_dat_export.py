@@ -30,7 +30,7 @@ class TestKappaDatExport(unittest.TestCase):
     def test_filename_encodes_params(self):
         # Single lambda cell: full tau edges are spelled out (backward compatible).
         edges = [-0.6347, -0.4, -0.2375, -0.075, 0.15, 0.7, 1.5, 3.8, 7.0]  # 8 tau groups
-        fn = build_kappa_dat_filename(24, 3, [edges], [3.0, 5.0])
+        fn = build_kappa_dat_filename(24, 3, [3.0, 5.0], tau_edges_per_lambda=[edges])
         self.assertTrue(fn.startswith("kappa_24band_tg8_sp3_tau_"))
         self.assertIn("-0.6347", fn)  # negative + decimals survive
         self.assertIn("_lam_3_5.dat", fn)  # trailing zeros dropped (3.0 -> 3)
@@ -38,9 +38,17 @@ class TestKappaDatExport(unittest.TestCase):
     def test_filename_multi_lambda(self):
         # Multiple lambda cells: ragged tau edges -> encode counts, not full edges.
         per_cell = [[-0.63, 0.5, 1.2, 7.0], [-0.63, 2.0, 7.0]]  # 3 and 2 tau groups
-        fn = build_kappa_dat_filename(15, 3, per_cell, [3.0, 4.0, 5.0])
+        fn = build_kappa_dat_filename(15, 3, [3.0, 4.0, 5.0], tau_edges_per_lambda=per_cell)
         self.assertTrue(fn.startswith("kappa_15band_lm2_tg3-2_sp3_"))
         self.assertIn("_lam_3_4_5.dat", fn)
+
+    def test_filename_split_lambda(self):
+        # Split-flag mode: shared tau edges + per-group flags encoded as 1/0.
+        tau = [-0.63, 0.15, 1.5, 7.0]  # 3 tau groups
+        flags = [True, False, True]  # nBands = 3*(2 + 1 + 2) = 15
+        fn = build_kappa_dat_filename(15, 3, [3.0, 3.8, 5.0], tau_bin_edges=tau, split_along_lambda=flags)
+        self.assertTrue(fn.startswith("kappa_15band_lm2_sl101_sp3_tau_"))
+        self.assertIn("_lam_3_3.8_5.dat", fn)
 
     def test_pack_shapes_logs_axes(self):
         nt, npr, nb = 5, 4, 6
