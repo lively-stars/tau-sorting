@@ -86,6 +86,9 @@ precommit = ["util", "exec", "--", "bash", "-c", "./scripts/precommit.sh"]
 - **`kappa_band_reader.py`** — Reads/writes the C-format binary (`kappa_*.dat`). `read_kappa_4_band_comparison` parses the 8-int header and reshapes the opacity arrays into a `KappaBandComparison`; `write_kappa_4_band_comparison` is its exact inverse and is what `tausort.py main` calls to emit the parametrized `.dat` (via `build_kappa_band_comparison`).
 - **`plot_kap_mean_grid.py`** — Generates grid plots of band-averaged mean opacities.
 - **`convert_odf_to_npy.py`** — Converts the large `.dat` opacity files to `.npy` format for faster loading.
+- **`rte.py`** — Standalone 1D radiative-transfer solver: `Solver` (short-characteristics formal solution, returns intensity/`J`/`F` and a blended heating rate `get_Q`), `compute_tau`, `ParallelSolver`. Only depends on numpy + multiprocessing.
+- **`compare_Qrad_from_kappa.py`** — Q_rad validation/analysis (the *analyze* half, now in-repo). Reads kappa tables via `read_kappa_4_band_comparison`, interpolates onto a `models/` STAGGER atmosphere, solves the RTE with `rte.Solver`, and plots Q_rad vs the full-ODF reference (`Qrad_comparison.png`). Auto-discovers `kappa_*band_*.dat` in the repo root; `SELECT`/`LABELS` restrict the plotted cases. See README "Radiative-transfer Q_rad comparison".
+- **`models/`** — STAGGER 1D model atmospheres (`F/G/K/M_SSD`, binary float32) used by `compare_Qrad_from_kappa.py`.
 - **`tausort.c` / `global_tau.h`** — Original C reference implementation. The `diff_binning/` directory has alternative `global_tau.h` configs for different bin counts.
 
 ## Data Files (not in git, see .gitignore)

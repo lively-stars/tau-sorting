@@ -43,6 +43,9 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Allow `from x import *` and unused imports in notebooks/quick scripts if added later.
 "test_*.py" = ["F401"]
+# rte.py uses the radiative-transfer naming convention I / J / F (intensity, mean
+# intensity, flux) for its Solver properties.
+"rte.py" = ["E743"]
 
 [tool.pyright]
 # Consumed by basedpyright (drop-in compatible with Pyright config).

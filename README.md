@@ -169,3 +169,36 @@ uv run python tausort.py main \
 
 Each run writes `sorted_weighted_opacity_per_tau_bin.jpg` to the CWD;
 rename/move it into `plots/` to reproduce the files above.
+
+## Radiative-transfer Q_rad comparison
+
+`compare_Qrad_from_kappa.py` validates the binned-opacity tables by computing the
+radiative heating rate Q_rad from each table and comparing it against the full-ODF
+reference. It is **self-contained** in this repo — the RT solver (`rte.py`) and the
+1D model atmospheres (`models/`) live here, no external dependencies.
+
+```bash
+uv run python compare_Qrad_from_kappa.py
+```
+
+For each opacity table it:
+
+1. reads the table with `kappa_band_reader.read_kappa_4_band_comparison`,
+2. interpolates `ln κ` / `ln B` onto a 1D STAGGER atmosphere (`models/G_SSD`),
+3. solves the 1D RTE per band (short characteristics, `rte.Solver`),
+4. sums the per-band heating rate to Q_rad and plots `Q/ρ` and the residual
+   `(Q − Q_full)/ρ` vs `log10 τ_ross`, writing `Qrad_comparison.png`.
+
+Inputs it expects (all gitignored — provide or regenerate them):
+
+- `data/kappa_grey.dat`, `data/kappa_fullodf.dat`, `data/kappa_12_band.dat` — the
+  gray / full-ODF / C-12-band reference tables (full-ODF is the residual baseline).
+- `kappa_<…>band_…_lam_….dat` in the repo root — any tables emitted by
+  `tausort.py main`; they are auto-discovered and labelled by their binning
+  (`tg…` single-cell, `lm…_tg…` per-cell λ-split, `lm…_sl…` split-flag).
+
+Restrict/relabel the plotted cases via the `SELECT` / `LABELS` lists near the top of
+the script (empty `SELECT` plots gray, full, 12band, and every discovered table).
+
+Relevant files: `compare_Qrad_from_kappa.py` (driver), `rte.py` (RT solver),
+`models/{F,G,K,M}_SSD` (STAGGER 1D atmospheres).
