@@ -13,11 +13,14 @@ wheels/
 # Virtual environments
 .venv
 
-# Plots
+# Plots (transient run outputs). Curated figures referenced by the README live in
+# plots/ and are tracked via the negations below; everything else stays ignored.
 *.jpg
 *.jpeg
 *.png
 *.pdf
+!plots/*.jpg
+!plots/*.png
 
 # Data
 *.dat

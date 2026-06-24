@@ -118,8 +118,12 @@ KAPPA_FILES = {
 # SELECT restricts the plot to specific case labels, in this order; empty -> plot
 # gray/full/12band plus every discovered kappa table. LABELS overrides the legend
 # text for any case.
-SELECT: list[str] = []
-LABELS: dict[str, str] = {}
+SELECT: list[str] = ["gray", "full", "12band", "tg8", "lm2_sl1111@3.8", "lm2_sl1000@3.8"]
+LABELS: dict[str, str] = {
+    "tg8": "8τ, no λ-split (24 band)",
+    "lm2_sl1111@3.8": "4τ × λ@3.8, all split (24 band)",
+    "lm2_sl1000@3.8": "4τ × λ@3.8, group 0 only (15 band)",
+}
 
 if SELECT:
     CASES = [c for c in SELECT if c in KAPPA_FILES]

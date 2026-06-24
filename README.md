@@ -1,6 +1,109 @@
 # Readme
 
-This repository contains the source code and documentation for tau-sorting.
+Tau-sorting is an opacity-binning tool for stellar-atmosphere radiative transfer. It reads
+opacity distribution functions (ODFs), continuum opacities and a 1D atmosphere, sorts opacity
+sub-bins into tau (and optionally wavelength) groups, computes band-averaged Planck/Rosseland
+mean opacities, and writes opacity tables. A companion radiative-transfer step validates those
+tables by comparing the heating rate Q_rad against the full-ODF reference. The original C
+implementation lives alongside the Python port.
+
+## Setup
+
+Python 3.12+ managed with [uv](https://docs.astral.sh/uv/) (not pip/conda):
+
+```bash
+uv sync                 # install dependencies into .venv
+```
+
+Every command below runs through `uv run` so it uses that environment.
+
+## Usage
+
+### 1. Generate opacity tables — `tausort.py main`
+
+Reads `ODF_nc_format.nc`, `continuumabs.dat` and `G2_1D.dat` (see [Data files](#data-files))
+and writes:
+
+- `tau_bin_opacities.npy` — structured table with `planck`/`rosseland`/`mixed` each
+  `[nT, nP, nBands]` (linear) plus the grouping descriptor (see `CLAUDE.md` → "Outputs").
+- `kappa_<…>band_<…>.dat` — C-format binary; the filename encodes the binning, and it reads
+  back with `kappa_band_reader.read_kappa_4_band_comparison`.
+- diagnostics: `tau_rosseland_at_tau_lambda_one.jpg`, `sorted_weighted_opacity_per_tau_bin.jpg`,
+  `height_at_tau_values.pdf`.
+
+```bash
+# Default: 8 tau-groups, single wavelength bin
+uv run python tausort.py main
+
+# Custom tau-group edges (use = so negatives aren't parsed as flags)
+uv run python tausort.py main --tau-bin-edges=-0.63 --tau-bin-edges=1.5 --tau-bin-edges=7.0
+
+# Wavelength split: every tau-group subdivides into 2 lambda cells at log10(lambda) = 3.8
+uv run python tausort.py main --lambda-bin-edges 3 --lambda-bin-edges 3.8 --lambda-bin-edges 5
+
+# Selective wavelength split: shared tau binning + a 0/1 flag per tau-group (8 groups here,
+# only groups 2-5 split along lambda) -> fewer bands, spent where wavelength matters
+uv run python tausort.py main --lambda-bin-edges 3 --lambda-bin-edges 3.8 --lambda-bin-edges 5 \
+    --split-lambda 00111100
+
+# Optimize tau edges (greedy high-segment-overlap search); print only
+uv run python tausort.py main --optimize-high-overlap
+# ...and save the table (grows per lambda cell up to --max-bins; threshold > 1 is unreachable
+# so it always grows to the cap)
+uv run python tausort.py main --optimize-high-overlap --save-after-optimize --max-bins 4 \
+    --high-overlap-threshold 1.01 --tau-bin-edges=-0.63 --tau-bin-edges=7.0
+
+uv run python tausort.py main --help        # all options
+```
+
+Key flags: `--tau-bin-edges` (repeat once per edge), `--lambda-bin-edges` (log10 Å; ≥3 edges
+turns on the wavelength dimension), `--split-lambda` (a 0/1 string, one digit per tau-group;
+mutually exclusive with `--optimize-high-overlap`), `--optimize-high-overlap` /
+`--save-after-optimize` / `--max-bins` / `--high-overlap-threshold`, and
+`--refine-mid/--no-refine-mid`. See [Tau-bin edge optimization and segmentation
+flags](#tau-bin-edge-optimization-and-segmentation-flags) below for detail.
+
+### 2. Validate tables — `compare_Qrad_from_kappa.py`
+
+Computes Q_rad from each kappa table and compares against the full-ODF reference (full detail in
+[Radiative-transfer Q_rad comparison](#radiative-transfer-q_rad-comparison) below):
+
+```bash
+uv run python compare_Qrad_from_kappa.py        # writes Qrad_comparison.png
+```
+
+### 3. Utility & plotting scripts
+
+| Command | Reads | Writes / does |
+| --- | --- | --- |
+| `uv run python tausort.py verify-planck` | — | `planck_verification.pdf` (Planck function + derivative checks) |
+| `uv run python planck.py` | — | Planck function / derivative verification plot |
+| `uv run python plot_atmosphere.py` | `G2_1D.dat` | `atmosphere_profiles.jpg` (height / ρ / p / T profiles) |
+| `uv run python plot_odf_samples.py` | `ODF_nc_format.nc` | `odf_samples.png` (sample ODF curves) |
+| `uv run python plot_kap_mean_grid.py --input <kappa.dat> [--comparison tau_bin_opacities.npy]` | a kappa `.dat` (+ optional `.npy`) | `kap_mean_grid_4x3.png` (band-mean opacity grid) |
+| `uv run python convert_odf_to_npy.py -i ODF_nc_format.nc -o ODF_format.npy` | ODF NetCDF | `.npy` (faster loading) |
+| `uv run python group_derivatives.py <grouped-column-file>` | a grouped column file | opacity-group derivative / segmentation analysis |
+
+`rte.py` (RT solver) and `kappa_band_reader.py` (C-binary read/write) are libraries imported by
+the scripts above — no CLI of their own.
+
+### 4. C reference implementation
+
+```bash
+make            # builds tausort.x from tausort.c / global_tau.h
+make clean
+```
+
+`diff_binning/` holds alternative `global_tau.h` configs for different bin counts.
+
+### 5. Tests & dev
+
+```bash
+uv run python -m unittest test_build_split_band_index test_kappa_dat_export \
+    test_kappa_band_reader test_plot_kap_mean_grid
+uv run python test_derivatives.py     # quick script, not unittest-based
+./scripts/precommit.sh                # ruff format + check + whitespace (run before committing)
+```
 
 ## Data files
 
@@ -199,6 +302,70 @@ Inputs it expects (all gitignored — provide or regenerate them):
 
 Restrict/relabel the plotted cases via the `SELECT` / `LABELS` lists near the top of
 the script (empty `SELECT` plots gray, full, 12band, and every discovered table).
+
+### Worked example: how the binning choice affects Q_rad
+
+**What we'll do.** Bin the opacity three ways at (roughly) the same band budget, then check
+which best reproduces the radiative heating rate Q_rad against the full-ODF line-by-line
+reference:
+
+| binning | groups | bands |
+| --- | --- | --- |
+| 8 τ-groups, no wavelength split | 8 τ × 1 λ | 24 |
+| 4 τ-groups, **all** split in λ at log₁₀λ = 3.8 | 4 τ × 2 λ | 24 |
+| 4 τ-groups, **only the first** split in λ | (3 τ × 1 λ) + (1 τ × 2 λ) | 15 |
+
+The two 24-band tables let us ask "spend the budget on τ depth, or on wavelength?", and the
+15-band one asks "do we even need to split every τ-group?". (The 4-group τ-edges below were
+found earlier with `--optimize-high-overlap`; you can also let the optimizer pick them.)
+
+**Commands.**
+
+```bash
+# 1) reference binnings + the three tables under test (each writes a kappa_*.dat)
+uv run python tausort.py main                          # 8 tau-groups, no lambda split (24 band)
+
+TAU4="--tau-bin-edges=-0.63 --tau-bin-edges=0.3488 --tau-bin-edges=1.2275 --tau-bin-edges=2.885 --tau-bin-edges=7.0"
+LAM="--lambda-bin-edges 3 --lambda-bin-edges 3.8 --lambda-bin-edges 5"
+
+uv run python tausort.py main $TAU4 $LAM --split-lambda 1111   # 4 tau x 2 lambda, all split (24 band)
+uv run python tausort.py main $TAU4 $LAM --split-lambda 1000   # split only group 0   (15 band)
+
+# 2) compare Q_rad (needs data/kappa_grey.dat, kappa_fullodf.dat, kappa_12_band.dat as references).
+#    The shipped SELECT/LABELS in compare_Qrad_from_kappa.py already pick exactly these cases.
+uv run python compare_Qrad_from_kappa.py               # writes Qrad_comparison.png
+```
+
+Each `tausort.py main` run also writes `tau_rosseland_at_tau_lambda_one.jpg` — the binning
+diagram below is the one from the `--split-lambda 1111` run.
+
+**The binning.** Each sub-bin is placed by its wavelength (x) and the Rosseland optical depth
+reached where that sub-bin becomes optically thick (y). Horizontal lines are the shared τ-group
+edges; the vertical line is the λ cut at log₁₀λ = 3.8; red circles mark the topmost/lowermost
+member of each (λ, τ) group.
+
+![lambda-split binning diagram](plots/binning_lambda_split.jpg)
+
+**The effect on Q_rad.** Top: total `Q/ρ` (all binnings reproduce the photospheric cooling
+peak). Bottom: residual vs the full-ODF reference — this is what matters.
+
+![Q_rad comparison](plots/qrad_comparison.png)
+
+Reading the residual panel (rms over log₁₀τ ∈ [−5, 4], lower is better):
+
+| binning | bands | rms `ΔQ/ρ` | vs full |
+| --- | --- | --- | --- |
+| gray (1 Rosseland mean) | 1 | 6.9e8 | −3e9 trough at the cooling peak |
+| C 12-band reference | 12 | 2.8e8 | broad bias in the upper atmosphere |
+| 8 τ, no λ-split | 24 | 2.1e8 | ±1e9 swing right at τ ≈ 1 |
+| 4 τ × λ, all split | 24 | **8.0e7** | hugs zero everywhere |
+| 4 τ × λ, group 0 only | 15 | 8.3e7 | as good as all-split, 9 fewer bands |
+
+Takeaways: at the same 24-band budget, splitting in **wavelength** (4 τ × 2 λ) beats spending
+it all on τ depth (8 τ) by ~2.5× in rms; and the split only pays off in the
+**sub-photospheric** τ-group (group 0, τ ≈ 0.4–4) where the cooling peak forms — splitting only
+that one group recovers nearly the full benefit at 15 bands. That is exactly what
+`--split-lambda` is for: spend wavelength resolution only where it matters.
 
 Relevant files: `compare_Qrad_from_kappa.py` (driver), `rte.py` (RT solver),
 `models/{F,G,K,M}_SSD` (STAGGER 1D atmospheres).
