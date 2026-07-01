@@ -111,8 +111,10 @@ class _Cfg:
     min_gap_tau: float = MIN_GAP_TAU
     min_gap_lam: float = MIN_GAP_LAM
     adjust_steps: tuple = ADJUST_STEPS
-    max_sweeps: int = 6
-    max_block_rounds: int = 4
+    # Few sweeps per tau visit + many rounds => the expensive tau block yields, so the
+    # cheap flags/lambda blocks aren't starved of budget (they interleave each round).
+    max_sweeps: int = 2
+    max_block_rounds: int = 12
     block_tol: float = 1e-4  # relative improvement to keep iterating blocks
 
 
@@ -253,22 +255,24 @@ def _block_fixed_point(tau, lam, flags, evaluate, *, opt_tau, opt_lambda, opt_fl
     best = evaluate(tau, lam, flags)[0]
     for _ in range(cfg.max_block_rounds):
         start = best
-        if opt_tau:
-            tau, best = _optimize_positions(
-                tau, lambda e: evaluate(e, lam, flags)[0], cfg=cfg, min_gap=cfg.min_gap_tau, budget=budget
-            )
-            if report:
-                report("tau", best, len(tau) - 1)
-        if opt_flags and n_lambda > 1:
-            flags, best = _flag_search(tau, lam, flags, lambda t, ll, f: evaluate(t, ll, f)[0], budget=budget)
-            if report:
-                report("flags", best, len(tau) - 1)
+        # Cheap blocks first (few evals each) so they always run before the expensive
+        # tau block; tau is capped to `max_sweeps` per visit and revisited over rounds.
         if opt_lambda and len(lam) > 2:
             lam, best = _optimize_positions(
                 lam, lambda e: evaluate(tau, e, flags)[0], cfg=cfg, min_gap=cfg.min_gap_lam, budget=budget
             )
             if report:
                 report("lambda", best, len(tau) - 1)
+        if opt_flags and n_lambda > 1:
+            flags, best = _flag_search(tau, lam, flags, lambda t, ll, f: evaluate(t, ll, f)[0], budget=budget)
+            if report:
+                report("flags", best, len(tau) - 1)
+        if opt_tau:
+            tau, best = _optimize_positions(
+                tau, lambda e: evaluate(e, lam, flags)[0], cfg=cfg, min_gap=cfg.min_gap_tau, budget=budget
+            )
+            if report:
+                report("tau", best, len(tau) - 1)
         if budget.exhausted() or (start - best) <= cfg.block_tol * max(abs(start), 1.0):
             break
     return tau, lam, flags, best
