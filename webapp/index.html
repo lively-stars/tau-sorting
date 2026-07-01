@@ -27,8 +27,9 @@
     border:1px solid var(--line); border-radius:8px; font:inherit;
   }
   input[type=text]:focus, select:focus { outline:none; border-color:var(--accent); }
-  #flags { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+  #flags, #qvars { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
   #flags.disabled { opacity:.4; pointer-events:none; }
+  #qcancel { display:none; margin-left:8px; color:var(--accent); font-weight:600; }
   .flag { display:inline-flex; align-items:center; gap:5px; background:#0e1420; border:1px solid var(--line);
           border-radius:7px; padding:5px 8px; font-size:12px; cursor:pointer; user-select:none; }
   .flag input { accent-color:var(--accent); }
@@ -84,6 +85,20 @@
     <div id="flags"></div>
     <div class="hint">Only matters with &gt;1 &lambda; cell. Off = that group stays one band over all &lambda;.</div>
 
+    <label>Optimize for Q_rad &nbsp;<span class="hint">(direct &mdash; slow)</span></label>
+    <div id="qvars">
+      <label class="flag"><input type="checkbox" id="qv_tau" checked> &tau;</label>
+      <label class="flag"><input type="checkbox" id="qv_lam" checked> &lambda;</label>
+      <label class="flag"><input type="checkbox" id="qv_flags" checked> flags</label>
+      <label class="flag"><input type="checkbox" id="qv_grow" checked> grow N</label>
+    </div>
+    <div class="opt-row">
+      <button id="qopt" class="secondary">Optimize Q_rad &rarr;</button>
+      <span class="opt-n"><input type="number" id="qbudget" min="20" max="1800" value="180" /> s</span>
+    </div>
+    <div class="hint">Minimizes the Q_rad residual <em>directly</em> (full RTE per step, ~2.5&nbsp;s). Warm-starts
+       from the current binning and loads the result when done.<a href="#" id="qcancel">cancel</a></div>
+
     <button id="go">Compute Q_rad</button>
     <div id="status"></div>
 
@@ -116,6 +131,11 @@ async function init() {
   $('tau').value = d.default_tau_edges.join(', ');
   $('lambda').value = d.default_lambda_edges.join(', ');
   buildFlags();
+  // resume a Q_rad optimization that's already running (e.g. after a page reload)
+  try {
+    const s = await (await fetch('/api/optimize_qrad_status')).json();
+    if (s.running) { qoptBusy(true); $('qcancel').style.display='inline'; QPOLL = setInterval(qoptPoll, 1500); return; }
+  } catch(e){}
   compute();
 }
 
@@ -176,6 +196,65 @@ async function optimize() {
     await compute();
   } catch(e){ setStatus(e.message, true); }
   finally { $('opt').disabled = false; $('go').disabled = false; }
+}
+
+// --- Q_rad optimizer: start a background job, poll it, apply the result ---
+let QPOLL = null;
+
+function qoptBusy(on){ $('qopt').disabled=on; $('go').disabled=on; $('opt').disabled=on; }
+
+async function qoptStart() {
+  let tau, lam;
+  try { tau = parseEdges($('tau').value); lam = parseEdges($('lambda').value); }
+  catch(e){ return setStatus('could not parse edges', true); }
+  if (tau.length<2 || lam.length<2) return setStatus('need ≥2 τ and ≥2 λ edges', true);
+  const split = [...document.querySelectorAll('#flags input')].map(c=>c.checked);
+  const body = {
+    tau_edges: tau, lambda_edges: lam, split_lambda: split, star: $('star').value,
+    opt_tau: $('qv_tau').checked, opt_lambda: $('qv_lam').checked,
+    opt_flags: $('qv_flags').checked, grow: $('qv_grow').checked,
+    max_seconds: Math.max(20, Math.min(1800, parseInt($('qbudget').value,10)||180)),
+  };
+  qoptBusy(true); setStatus('starting Q_rad optimization…');
+  try {
+    const r = await fetch('/api/optimize_qrad', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error||'could not start');
+    $('qcancel').style.display = 'inline';
+    QPOLL = setInterval(qoptPoll, 1500);
+  } catch(e){ setStatus(e.message, true); qoptBusy(false); }
+}
+
+async function qoptPoll() {
+  let d;
+  try { d = await (await fetch('/api/optimize_qrad_status')).json(); }
+  catch(e){ return; }  // transient network hiccup; keep polling
+  if (d.error) { setStatus('optimize error: ' + d.error, true); return qoptFinish(null); }
+  if (!d.running) return qoptFinish(d.result);
+  const imp = (d.rms0 && d.best) ? ` (−${(100*(d.rms0-d.best)/d.rms0).toFixed(1)}%)` : '';
+  const best = d.best ? d.best.toExponential(2) : '…';
+  setStatus(`optimizing Q_rad… ${d.n_evals} evals · rms ${best}${imp} · ${d.groups} groups · ${Math.round(d.elapsed)}s`);
+}
+
+function qoptFinish(result) {
+  if (QPOLL) { clearInterval(QPOLL); QPOLL = null; }
+  $('qcancel').style.display = 'none';
+  qoptBusy(false);
+  if (!result) return;
+  $('tau').value = result.tau_edges.join(', ');
+  $('lambda').value = result.lambda_edges.join(', ');
+  buildFlags();
+  const boxes = [...document.querySelectorAll('#flags input')];
+  result.flags.forEach((f,i)=>{ if(boxes[i]) boxes[i].checked = f; });
+  const imp = (100*(result.rms0-result.rms)/result.rms0).toFixed(1);
+  setStatus(`Q_rad optimized: rms ${result.rms0.toExponential(2)} → ${result.rms.toExponential(2)} (−${imp}%) · computing…`);
+  compute();
+}
+
+async function qoptCancel(e){
+  if (e) e.preventDefault();
+  setStatus('cancelling — keeping the best binning found so far…');
+  try { await fetch('/api/optimize_qrad_cancel', {method:'POST'}); } catch(_){}
 }
 
 function setMetrics(d){
@@ -245,6 +324,8 @@ $('tau').addEventListener('input', buildFlags);
 $('lambda').addEventListener('input', buildFlags);
 $('go').addEventListener('click', compute);
 $('opt').addEventListener('click', optimize);
+$('qopt').addEventListener('click', qoptStart);
+$('qcancel').addEventListener('click', qoptCancel);
 ['tau','lambda'].forEach(id=>$(id).addEventListener('keydown', e=>{ if(e.key==='Enter') compute(); }));
 init();
 </script>

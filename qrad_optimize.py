@@ -64,7 +64,7 @@ def _check_feasible(edges, min_gap: float, name: str) -> None:
 
 
 # --- objective ------------------------------------------------------------------
-def make_evaluator(star, *, metric="rms", empty_penalty=EMPTY_PENALTY, score_fn=None):
+def make_evaluator(star, *, metric="rms", empty_penalty=EMPTY_PENALTY, score_fn=None, on_eval=None):
     """Return (evaluate, state). `evaluate(tau, lam, flags) -> (cost, raw_dict)`.
 
     cost = base_metric * (1 + empty_penalty * n_empty). The multiplicative empty-band
@@ -72,6 +72,8 @@ def make_evaluator(star, *, metric="rms", empty_penalty=EMPTY_PENALTY, score_fn=
     (which would otherwise *lower* rms and let the search collapse groups). `score_fn`
     is dependency-injected (defaults to qrad_core.score_binning) so the search logic is
     unit-testable against an analytic objective with no ODF. `state["n_evals"]` counts calls.
+    `on_eval(n_evals, cost, raw_dict)` (optional) fires after every evaluation — used by the
+    webapp for a live progress ticker.
     """
     score = score_fn if score_fn is not None else qrad_core.score_binning
     state = {"n_evals": 0}
@@ -82,6 +84,8 @@ def make_evaluator(star, *, metric="rms", empty_penalty=EMPTY_PENALTY, score_fn=
         base = abs(float(r[_key]))
         cost = base * (1.0 + empty_penalty * int(r.get("n_empty", 0)))
         state["n_evals"] += 1
+        if on_eval is not None:
+            on_eval(state["n_evals"], cost, r)
         return cost, r
 
     return evaluate, state
@@ -93,8 +97,11 @@ class _Budget:
     max_seconds: float
     state: dict
     t0: float
+    should_stop: object = None  # optional callable -> True to abort at the next check
 
     def exhausted(self) -> bool:
+        if self.should_stop is not None and self.should_stop():
+            return True
         return self.state["n_evals"] >= self.max_evals or (time.perf_counter() - self.t0) >= self.max_seconds
 
 
@@ -126,6 +133,8 @@ def _coord_descent(edges, cost, *, adjust_steps, min_gap, max_sweeps, budget):
             for step in adjust_steps:
                 for d in (-1.0, +1.0):
                     if budget.exhausted():
+                        if best_cand is not None:  # don't discard a found improvement on cutoff
+                            edges, best = best_cand, best_cost
                         return edges, best
                     cand = list(edges)
                     cand[i] += d * step
@@ -213,6 +222,8 @@ def _flag_search(tau, lam, flags, cost3, *, budget):
         best_cand, best_cost = None, best
         for i in range(len(flags)):
             if budget.exhausted():
+                if best_cand is not None:  # commit a found flip on cutoff
+                    flags, best = best_cand, best_cost
                 return flags, best
             cand = list(flags)
             cand[i] = not cand[i]
@@ -286,6 +297,8 @@ def optimize_qrad(
     grow_tol=None,
     score_fn=None,
     on_progress=None,
+    on_eval=None,
+    should_stop=None,
 ) -> dict:
     """Minimize the Q_rad residual over the binning. Returns a result dict with the
     optimized `tau_edges`/`lambda_edges`/`flags`, `rms`/`rms0`, `n_evals`, `elapsed`,
@@ -294,6 +307,10 @@ def optimize_qrad(
     Warm-starts from the passed binning. Blocks are individually toggleable via
     opt_tau/opt_lambda/opt_flags, and `grow` enables inserting tau groups (accepted
     only when rms improves by > grow_tol, default 1% of the current rms).
+
+    `on_eval(n_evals, cost, raw_dict)` fires after every evaluation and `should_stop() -> bool`
+    is polled at each budget check — both let a caller (e.g. the webapp) show live progress
+    and abort a long run gracefully, returning the best binning found so far.
     """
     tau_edges = [float(e) for e in tau_edges]
     lambda_edges = [float(e) for e in lambda_edges]
@@ -305,8 +322,10 @@ def optimize_qrad(
     _check_feasible(lambda_edges, min_gap_lam, "lambda")
 
     t0 = time.perf_counter()
-    evaluate, state = make_evaluator(star, metric=metric, empty_penalty=empty_penalty, score_fn=score_fn)
-    budget = _Budget(max_evals=max_evals, max_seconds=max_seconds, state=state, t0=t0)
+    evaluate, state = make_evaluator(
+        star, metric=metric, empty_penalty=empty_penalty, score_fn=score_fn, on_eval=on_eval
+    )
+    budget = _Budget(max_evals=max_evals, max_seconds=max_seconds, state=state, t0=t0, should_stop=should_stop)
     cfg = _Cfg(method=method, min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam, adjust_steps=tuple(adjust_steps))
 
     history: list[dict] = []

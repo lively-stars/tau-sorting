@@ -29,6 +29,7 @@ _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO))
 
 import qrad_core as qc  # noqa: E402
+import qrad_optimize as qopt  # noqa: E402
 import tausort as ts  # noqa: E402
 
 PORT = 8771
@@ -36,6 +37,69 @@ SKIP = qc.SKIP
 WINDOW = qc.WINDOW
 
 _LOCK = threading.Lock()
+
+# --- Q_rad optimizer: one background job at a time, polled by the UI ---
+_QOPT_LOCK = threading.Lock()
+_QOPT: dict = {
+    "running": False,
+    "cancel": False,
+    "history": [],
+    "result": None,
+    "error": None,
+    "t0": 0.0,
+    "n_evals": 0,
+    "best": None,
+    "rms0": None,
+    "groups": 0,
+    "star": "",
+}
+
+
+def _run_qrad_opt(tau_edges, lambda_edges, flags, star, opt):
+    """Thread target: run the Q_rad optimizer, streaming progress into _QOPT."""
+
+    def on_eval(n, cost, r):
+        _QOPT["n_evals"] = n
+        _QOPT["groups"] = int(r.get("n_groups", 0))
+        rms = float(r["rms"])
+        if _QOPT["best"] is None or rms < _QOPT["best"]:
+            _QOPT["best"] = rms
+
+    def on_progress(tag, value, groups, n):
+        if tag == "start":
+            _QOPT["rms0"] = float(value)
+        _QOPT["history"].append(
+            {
+                "tag": tag,
+                "rms": float(value),
+                "groups": int(groups),
+                "n_evals": int(n),
+                "t": round(time.perf_counter() - _QOPT["t0"], 1),
+            }
+        )
+
+    try:
+        _QOPT["result"] = qopt.optimize_qrad(
+            tau_edges,
+            lambda_edges,
+            flags=flags,
+            star=star,
+            opt_tau=opt["opt_tau"],
+            opt_lambda=opt["opt_lambda"],
+            opt_flags=opt["opt_flags"],
+            grow=opt["grow"],
+            method=opt["method"],
+            max_seconds=opt["max_seconds"],
+            max_evals=opt["max_evals"],
+            on_eval=on_eval,
+            on_progress=on_progress,
+            should_stop=lambda: _QOPT["cancel"],
+        )
+    except Exception as e:
+        traceback.print_exc()
+        _QOPT["error"] = f"{type(e).__name__}: {e}"
+    finally:
+        _QOPT["running"] = False
 
 
 def compute(tau_edges, lambda_edges, split_lambda, star):
@@ -138,11 +202,32 @@ class Handler(BaseHTTPRequestHandler):
                     }
                 ),
             )
+        elif self.path == "/api/optimize_qrad_status":
+            self._send(
+                200,
+                json.dumps(
+                    {
+                        "running": _QOPT["running"],
+                        "n_evals": _QOPT["n_evals"],
+                        "best": _QOPT["best"],
+                        "rms0": _QOPT["rms0"],
+                        "groups": _QOPT["groups"],
+                        "elapsed": round(time.perf_counter() - _QOPT["t0"], 1) if _QOPT["t0"] else 0.0,
+                        "history": _QOPT["history"][-12:],
+                        "result": _QOPT["result"],
+                        "error": _QOPT["error"],
+                    }
+                ),
+            )
         else:
             self._send(404, json.dumps({"error": "not found"}))
 
     def do_POST(self):
-        if self.path not in ("/api/compute", "/api/optimize"):
+        if self.path == "/api/optimize_qrad_cancel":
+            _QOPT["cancel"] = True
+            self._send(200, json.dumps({"cancelled": True}))
+            return
+        if self.path not in ("/api/compute", "/api/optimize", "/api/optimize_qrad"):
             self._send(404, json.dumps({"error": "not found"}))
             return
         try:
@@ -167,6 +252,44 @@ class Handler(BaseHTTPRequestHandler):
                 edges = optimize_edges(tau_edges, lambda_edges, max_bins, threshold=1.01)
                 out = {"tau_edges": edges, "elapsed": round(time.perf_counter() - t0, 2)}
                 self._send(200, json.dumps(out))
+                return
+            if self.path == "/api/optimize_qrad":
+                star = req.get("star") or "G_SSD"
+                with _QOPT_LOCK:
+                    if _QOPT["running"]:
+                        raise ValueError("a Q_rad optimization is already running")
+                    _QOPT.update(
+                        running=True,
+                        cancel=False,
+                        history=[],
+                        result=None,
+                        error=None,
+                        t0=time.perf_counter(),
+                        n_evals=0,
+                        best=None,
+                        rms0=None,
+                        groups=0,
+                        star=star,
+                    )
+                try:
+                    flags = qc.resolve_flags(req.get("split_lambda") or None, len(tau_edges) - 1)
+                    qc.reference_for_star(star)  # warm before threading (avoid REF_CACHE races)
+                    opt = {
+                        "opt_tau": bool(req.get("opt_tau", True)),
+                        "opt_lambda": bool(req.get("opt_lambda", True)),
+                        "opt_flags": bool(req.get("opt_flags", True)),
+                        "grow": bool(req.get("grow", True)),
+                        "method": req.get("method", "cd"),
+                        "max_seconds": float(req.get("max_seconds", 300.0)),
+                        "max_evals": int(req.get("max_evals", 5000)),
+                    }
+                    threading.Thread(
+                        target=_run_qrad_opt, args=(tau_edges, lambda_edges, flags, star, opt), daemon=True
+                    ).start()
+                except Exception:
+                    _QOPT["running"] = False
+                    raise
+                self._send(200, json.dumps({"started": True}))
                 return
             split_lambda = req.get("split_lambda") or None
             star = req.get("star") or "G_SSD"

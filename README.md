@@ -97,6 +97,12 @@ whole λ range, fills the τ box, and recomputes — a one-click way to get good
 (It maximizes high-segment *overlap*, a binning-quality proxy, so more groups need not lower the
 Q_rad residual — the tool lets you see that.)
 
+**Optimize for Q_rad** runs the direct optimizer (§2c) as a background job, warm-started from the
+current binning: tick which of τ / λ / flags / grow-N to vary, set a time budget, and watch the rms
+tick down live (with a **cancel** that keeps the best binning found so far). When it finishes it
+loads the optimized edges + flags and recomputes. This minimizes the residual *directly*, so it
+typically beats the high-overlap button — at the cost of a full RTE solve per step (~2.5 s).
+
 Needs the same inputs as `compare_Qrad_from_kappa.py` (the `data/` reference tables + `models/`
 atmospheres). Pure stdlib server (no extra dependencies).
 
