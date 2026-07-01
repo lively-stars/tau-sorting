@@ -35,6 +35,12 @@
   button { margin-top:16px; width:100%; padding:11px; font:inherit; font-weight:650; color:#0e1420;
            background:var(--accent); border:none; border-radius:9px; cursor:pointer; }
   button:disabled { opacity:.55; cursor:default; }
+  button.secondary { color:var(--ink); background:#26324a; border:1px solid var(--line); font-weight:600; margin-top:0; }
+  .opt-row { display:flex; gap:8px; align-items:center; margin-top:6px; }
+  .opt-row button { flex:1; padding:9px; }
+  .opt-row .opt-n { display:flex; align-items:center; gap:6px; margin:0; font-weight:500; white-space:nowrap; font-size:13px; }
+  .opt-row input[type=number] { width:48px; padding:6px 7px; background:#0e1420; color:var(--ink);
+           border:1px solid var(--line); border-radius:8px; font:inherit; }
   .metrics { margin-top:16px; border-top:1px solid var(--line); padding-top:14px; }
   .metrics table { width:100%; border-collapse:collapse; }
   .metrics td { padding:4px 0; font-size:13px; }
@@ -42,7 +48,7 @@
   .metrics .big { font-size:16px; }
   #status { margin-top:10px; font-size:12.5px; color:var(--muted); min-height:1.2em; }
   #status.err { color:var(--bad); }
-  #chart { width:100%; height:640px; }
+  #chart { width:100%; height:860px; }
 </style>
 </head>
 <body>
@@ -61,6 +67,14 @@
     <label>&tau;-group edges &nbsp;<span class="hint">(&minus;log₁₀&tau;<sub>Ros</sub>, increasing)</span></label>
     <input type="text" id="tau" />
     <div class="hint">N edges → N&minus;1 tau groups. e.g. <code>-0.63, 0.35, 1.23, 2.89, 7</code></div>
+
+    <label>Optimize &tau; edges &nbsp;<span class="hint">(greedy high-overlap)</span></label>
+    <div class="opt-row">
+      <button id="opt" class="secondary">Optimize &rarr;</button>
+      <span class="opt-n">to <input type="number" id="maxbins" min="2" max="12" value="4" /> &tau; groups</span>
+    </div>
+    <div class="hint">Grows to N optimally-placed &tau; groups over the whole &lambda; range (keeps the outer window),
+       then fills the box above and recomputes.</div>
 
     <label>&lambda; cell edges &nbsp;<span class="hint">(log₁₀ &lambda;/Å, increasing)</span></label>
     <input type="text" id="lambda" />
@@ -142,6 +156,28 @@ async function compute() {
   finally { $('go').disabled = false; }
 }
 
+async function optimize() {
+  let tau, lam;
+  try { tau = parseEdges($('tau').value); lam = parseEdges($('lambda').value); }
+  catch(e){ return setStatus('could not parse edges', true); }
+  if (tau.length<2) return setStatus('need ≥2 τ edges for the window', true);
+  if (lam.length<2) return setStatus('need ≥2 λ edges', true);
+  const maxbins = Math.max(2, Math.min(12, parseInt($('maxbins').value,10)||4));
+  $('opt').disabled = $('go').disabled = true;
+  setStatus(`optimizing τ edges → ${maxbins} groups… (greedy search, a few seconds)`);
+  try {
+    const r = await fetch('/api/optimize', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({tau_edges:tau, lambda_edges:lam, max_bins:maxbins})});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error||'optimize failed');
+    $('tau').value = d.tau_edges.join(', ');
+    buildFlags();
+    setStatus(`optimized to ${d.tau_edges.length-1} τ groups in ${d.elapsed}s · computing Q_rad…`);
+    await compute();
+  } catch(e){ setStatus(e.message, true); }
+  finally { $('opt').disabled = false; $('go').disabled = false; }
+}
+
 function setMetrics(d){
   $('m_bands').textContent = d.n_bands;
   $('m_groups').textContent = d.n_groups;
@@ -152,27 +188,54 @@ function setMetrics(d){
   $('m_time').textContent = d.elapsed + 's';
 }
 
+// distinct per-group palette (cycled); unassigned sub-bins fall back to gray.
+const PAL = ['#ff9d3c','#3ecf8e','#5b9bd5','#e2555b','#b083f0','#f7c948','#4dd0e1',
+             '#f06292','#a3be8c','#d0876f','#88c0d0','#ebcb8b','#c0a0ff','#7ec4ff',
+             '#ffd479','#9ad1a0'];
+const groupColor = g => g>=0 ? PAL[g % PAL.length] : 'rgba(140,150,170,0.30)';
+
 function render(d){
   const grayResid = d.q_gray_over_rho.map((g,i)=>g - d.q_full_over_rho[i]);
   const C = {full:'#3ecf8e', gray:'#5b9bd5', cur:'#ff9d3c', bad:'#e2555b'};
+
+  // --- top panel: binning diagram (log10 λ vs -log10 τ_Ros), sub-bins colored by group ---
+  const ptColor = d.bin_group.map(groupColor);
+  const binScatter = {
+    x:d.bin_x, y:d.bin_y, mode:'markers', type:'scattergl',
+    marker:{size:3, color:ptColor, opacity:0.8}, hoverinfo:'skip', showlegend:false,
+    xaxis:'x', yaxis:'y',
+  };
+  const shapes = d.group_tau_edges.map((te,g)=>{
+    const le = d.group_lam_edges[g];
+    return {type:'rect', xref:'x', yref:'y', x0:le[0], x1:le[1], y0:te[0], y1:te[1],
+            line:{color:'rgba(240,244,250,0.7)', width:1}, fillcolor:'rgba(0,0,0,0)', layer:'above'};
+  });
+
+  // --- Q_rad panels (unchanged content, moved to x2/y2 and x3/y3) ---
   const base = {x:d.ltau, mode:'lines', type:'scatter'};
   const data = [
-    {...base, y:d.q_full_over_rho, name:'full ODF (reference)', line:{color:C.full,width:2}, xaxis:'x',yaxis:'y'},
-    {...base, y:d.q_gray_over_rho, name:'gray', line:{color:C.gray,width:1.5,dash:'dot'}, xaxis:'x',yaxis:'y'},
-    {...base, y:d.q_over_rho, name:'this binning', line:{color:C.cur,width:2.5}, xaxis:'x',yaxis:'y'},
-    {...base, y:grayResid, name:'gray − full', line:{color:C.gray,width:1.5,dash:'dot'}, xaxis:'x2',yaxis:'y2', showlegend:false},
-    {...base, y:d.residual, name:'this − full', line:{color:C.cur,width:2.5}, xaxis:'x2',yaxis:'y2', showlegend:false},
+    binScatter,
+    {...base, y:d.q_full_over_rho, name:'full ODF (reference)', line:{color:C.full,width:2}, xaxis:'x2',yaxis:'y2'},
+    {...base, y:d.q_gray_over_rho, name:'gray', line:{color:C.gray,width:1.5,dash:'dot'}, xaxis:'x2',yaxis:'y2'},
+    {...base, y:d.q_over_rho, name:'this binning', line:{color:C.cur,width:2.5}, xaxis:'x2',yaxis:'y2'},
+    {...base, y:grayResid, name:'gray − full', line:{color:C.gray,width:1.5,dash:'dot'}, xaxis:'x3',yaxis:'y3', showlegend:false},
+    {...base, y:d.residual, name:'this − full', line:{color:C.cur,width:2.5}, xaxis:'x3',yaxis:'y3', showlegend:false},
   ];
   const font={color:'#cdd6e5'}; const grid='#2b3547';
   const layout = {
-    paper_bgcolor:'#1a2130', plot_bgcolor:'#121826', font,
-    margin:{l:70,r:16,t:26,b:46}, showlegend:true,
-    legend:{orientation:'h', y:1.08, x:0, font:{size:12}},
-    grid:{rows:2, columns:1, pattern:'independent', roworder:'top to bottom'},
-    xaxis:{title:'', range:[4,-5], gridcolor:grid, zeroline:false, domain:[0,1], anchor:'y'},
-    yaxis:{title:'Q/ρ [erg/g/s]', gridcolor:grid, zeroline:true, zerolinecolor:'#40506a', domain:[0.56,1]},
-    xaxis2:{title:'log₁₀ τ_Ros', range:[4,-5], gridcolor:grid, zeroline:false, domain:[0,1], anchor:'y2'},
-    yaxis2:{title:'(Q − Q_full)/ρ', gridcolor:grid, zeroline:true, zerolinecolor:'#40506a', domain:[0,0.44]},
+    paper_bgcolor:'#1a2130', plot_bgcolor:'#121826', font, shapes,
+    margin:{l:70,r:16,t:22,b:46}, showlegend:true,
+    legend:{orientation:'h', y:1.06, x:0, yanchor:'bottom', font:{size:11}},
+    // top: binning diagram (its own λ x-axis)
+    xaxis:{title:'log₁₀ λ [Å]', range:[3,5], gridcolor:grid, zeroline:false, domain:[0,1], anchor:'y'},
+    yaxis:{title:'−log₁₀ τ_Ros(τ_λ=1)', range:[-1,7], gridcolor:grid, zeroline:false, domain:[0.70,0.99]},
+    // middle: Q/ρ (τ x-axis, shared with residual)
+    xaxis2:{range:[4,-5], gridcolor:grid, zeroline:false, domain:[0,1], anchor:'y2',
+            matches:'x3', showticklabels:false},
+    yaxis2:{title:'Q/ρ [erg/g/s]', gridcolor:grid, zeroline:true, zerolinecolor:'#40506a', domain:[0.37,0.62]},
+    // bottom: residual
+    xaxis3:{title:'log₁₀ τ_Ros', range:[4,-5], gridcolor:grid, zeroline:false, domain:[0,1], anchor:'y3'},
+    yaxis3:{title:'(Q − Q_full)/ρ', gridcolor:grid, zeroline:true, zerolinecolor:'#40506a', domain:[0,0.28]},
   };
   Plotly.react('chart', data, layout, {responsive:true, displayModeBar:false});
   LAST = d;
@@ -181,6 +244,7 @@ function render(d){
 $('tau').addEventListener('input', buildFlags);
 $('lambda').addEventListener('input', buildFlags);
 $('go').addEventListener('click', compute);
+$('opt').addEventListener('click', optimize);
 ['tau','lambda'].forEach(id=>$(id).addEventListener('keydown', e=>{ if(e.key==='Enter') compute(); }));
 init();
 </script>

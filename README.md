@@ -84,9 +84,21 @@ uv run python webapp/server.py        # then open the printed http://localhost:<
 ```
 
 Pick the model atmosphere, type τ-edges and λ-edges, toggle which τ-groups split along λ, and the
-Q/ρ curve + residual-vs-full-ODF and the rms metric update. Needs the same inputs as
-`compare_Qrad_from_kappa.py` (the `data/` reference tables + `models/` atmospheres). Pure stdlib
-server (no extra dependencies).
+plot updates live. Three stacked panels:
+
+- **Binning diagram** (top) — the same view as `tau_rosseland_at_tau_lambda_one.jpg`: every
+  wavelength sub-bin plotted at (log₁₀ λ, −log₁₀ τ_Ros(τ_λ=1)), colored by which (λ, τ) group it
+  lands in, with the group boxes drawn on top. Shows *how the current edges carve up the sub-bins*.
+- **Q/ρ** (middle) and **residual vs full ODF** (bottom), with the rms / max / ∫Q metrics.
+
+**Optimize τ edges** runs the greedy high-overlap optimizer (same as
+`tausort.py main --optimize-high-overlap`): it grows to *N* optimally-placed τ groups over the
+whole λ range, fills the τ box, and recomputes — a one-click way to get good edges to start from.
+(It maximizes high-segment *overlap*, a binning-quality proxy, so more groups need not lower the
+Q_rad residual — the tool lets you see that.)
+
+Needs the same inputs as `compare_Qrad_from_kappa.py` (the `data/` reference tables + `models/`
+atmospheres). Pure stdlib server (no extra dependencies).
 
 ### 3. Utility & plotting scripts
 

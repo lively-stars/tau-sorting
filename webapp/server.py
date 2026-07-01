@@ -42,6 +42,7 @@ PORT = 8771
 DZ = 1.0e6  # STAGGER grid spacing [cm]
 NMU = 4
 WINDOW = (-5.0, 4.0)  # log10(tau_ross) window for the rms metric
+SKIP = 1440  # skip the first N (far-UV) sub-bins in the binning scatter, matching tausort's plot
 
 _LOCK = threading.Lock()
 INV: dict = {}  # edge-independent invariants
@@ -141,6 +142,11 @@ def precompute():
     max_height_idx = int(np.max(h_idx[:, 1]))
     tau_at_lam1 = tau_ross[h_idx[:, -1]]
 
+    # binning-diagram coordinates (edge-independent): per sub-bin log10 lambda[A]
+    # and -log10 tau_Ros(tau_lambda=1), matching plot_tau_rosselend_at_tau_lambda_one.
+    bin_x_all = np.log10(np.asarray(wl_centers) * 1e8)
+    bin_y_all = -np.log10(np.clip(tau_at_lam1, 1e-300, None))
+
     INV.update(
         atm=atm,
         odf=odf,
@@ -150,6 +156,8 @@ def precompute():
         wl_centers=wl_centers,
         max_height_idx=max_height_idx,
         tau_at_lam1=tau_at_lam1,
+        bin_x_all=bin_x_all,
+        bin_y_all=bin_y_all,
         n_subbins=len(wl_centers),
     )
     # warm the default STAGGER atmosphere reference
@@ -225,6 +233,9 @@ def compute(tau_edges, lambda_edges, split_lambda, star):
         lo = ltau[order]
         disp = (lo >= WINDOW[0] - 1.0) & (lo <= WINDOW[1] + 1.0)
         idx = order[disp]
+
+        # binning diagram: sub-bin scatter (colored by group downstream) + group boxes
+        bg = band_index[SKIP:]
         return {
             "ltau": ltau[idx].tolist(),
             "q_over_rho": (q[idx] / rho[idx]).tolist(),
@@ -239,7 +250,44 @@ def compute(tau_edges, lambda_edges, split_lambda, star):
             "int_q_pct": (int_q - int_full) / int_full * 100.0,
             "assigned": int((band_index >= 0).sum()),
             "total_subbins": int(len(band_index)),
+            # binning diagram (log10 lambda[A] vs -log10 tau_Ros); scatter is invariant,
+            # bin_group + boxes track the current edges.
+            "bin_x": INV["bin_x_all"][SKIP:].tolist(),
+            "bin_y": INV["bin_y_all"][SKIP:].tolist(),
+            "bin_group": bg.astype(int).tolist(),
+            "group_tau_edges": group_tau_edges.tolist(),
+            "group_lam_edges": group_lam_edges.tolist(),
         }
+
+
+def optimize_edges(tau_window, lambda_edges, max_bins, threshold):
+    """Greedy high-overlap optimizer -> an optimized *shared* tau binning.
+
+    Runs tausort's optimizer over a single lambda cell spanning the whole given
+    lambda range, so it returns one tau-edge list (not per-cell) that the webapp's
+    shared-tau + split-flag model can consume directly. Starts from the outer
+    [top, bottom] window and grows interior edges up to `max_bins` groups, nudging
+    them to maximize the worst group's high-segment overlap. With threshold >= ~1
+    (unreachable) it always grows to exactly `max_bins` optimally-placed groups.
+    """
+    with _LOCK:
+        window_lambda = [float(lambda_edges[0]), float(lambda_edges[-1])]
+        outer = [float(tau_window[0]), float(tau_window[-1])]
+        per_cell = ts.optimize_tau_bin_edges(
+            atm=INV["atm"],
+            odf=INV["odf"],
+            interpolated_opacity=INV["interpolated_opacity"],
+            tau_rosseland=INV["tau_ross"],
+            tau_rosseland_at_tau_lambda_one=INV["tau_at_lam1"],
+            wavelength_grid_subbins_centers=INV["wl_centers"],
+            max_height_idx=INV["max_height_idx"],
+            initial_tau_bin_edges=outer,
+            lambda_bin_edges=window_lambda,
+            threshold=float(threshold),
+            max_bins=int(max_bins),
+            refine_mid=False,
+        )
+        return [round(float(e), 4) for e in per_cell[0]]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -274,7 +322,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, json.dumps({"error": "not found"}))
 
     def do_POST(self):
-        if self.path != "/api/compute":
+        if self.path not in ("/api/compute", "/api/optimize"):
             self._send(404, json.dumps({"error": "not found"}))
             return
         try:
@@ -282,8 +330,6 @@ class Handler(BaseHTTPRequestHandler):
             req = json.loads(self.rfile.read(n) or b"{}")
             tau_edges = [float(x) for x in req["tau_edges"]]
             lambda_edges = [float(x) for x in req["lambda_edges"]]
-            split_lambda = req.get("split_lambda") or None
-            star = req.get("star") or "G_SSD"
             if len(tau_edges) < 2:
                 raise ValueError("need at least 2 tau edges")
             if len(lambda_edges) < 2:
@@ -293,6 +339,17 @@ class Handler(BaseHTTPRequestHandler):
             if any(lambda_edges[i] >= lambda_edges[i + 1] for i in range(len(lambda_edges) - 1)):
                 raise ValueError("lambda edges must be strictly increasing")
             t0 = time.perf_counter()
+            if self.path == "/api/optimize":
+                max_bins = int(req.get("max_bins", 4))
+                if not 2 <= max_bins <= 12:
+                    raise ValueError("target tau groups must be between 2 and 12")
+                # unreachable threshold -> grow to exactly max_bins, optimally placed
+                edges = optimize_edges(tau_edges, lambda_edges, max_bins, threshold=1.01)
+                out = {"tau_edges": edges, "elapsed": round(time.perf_counter() - t0, 2)}
+                self._send(200, json.dumps(out))
+                return
+            split_lambda = req.get("split_lambda") or None
+            star = req.get("star") or "G_SSD"
             out = compute(tau_edges, lambda_edges, split_lambda, star)
             out["elapsed"] = round(time.perf_counter() - t0, 2)
             self._send(200, json.dumps(out))
