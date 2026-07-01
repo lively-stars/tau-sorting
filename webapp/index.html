@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Q_rad explorer — tau / lambda binning</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+<style>
+  :root {
+    --bg:#0f1420; --panel:#1a2130; --ink:#e8edf5; --muted:#93a1b5; --line:#2b3547;
+    --accent:#ff9d3c; --full:#3ecf8e; --gray:#5b9bd5; --bad:#e2555b;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.45 -apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:16px 22px; border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:18px; font-weight:650; }
+  header p { margin:4px 0 0; color:var(--muted); font-size:13px; }
+  .wrap { display:flex; gap:18px; padding:18px 22px; align-items:flex-start; flex-wrap:wrap; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 18px; }
+  .controls { width:312px; flex:0 0 312px; }
+  .plot { flex:1 1 460px; min-width:420px; }
+  label { display:block; font-weight:600; margin:14px 0 5px; font-size:13px; }
+  label:first-of-type { margin-top:0; }
+  .hint { color:var(--muted); font-weight:400; font-size:12px; margin-top:3px; }
+  input[type=text], select {
+    width:100%; padding:8px 10px; background:#0e1420; color:var(--ink);
+    border:1px solid var(--line); border-radius:8px; font:inherit;
+  }
+  input[type=text]:focus, select:focus { outline:none; border-color:var(--accent); }
+  #flags { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+  #flags.disabled { opacity:.4; pointer-events:none; }
+  .flag { display:inline-flex; align-items:center; gap:5px; background:#0e1420; border:1px solid var(--line);
+          border-radius:7px; padding:5px 8px; font-size:12px; cursor:pointer; user-select:none; }
+  .flag input { accent-color:var(--accent); }
+  button { margin-top:16px; width:100%; padding:11px; font:inherit; font-weight:650; color:#0e1420;
+           background:var(--accent); border:none; border-radius:9px; cursor:pointer; }
+  button:disabled { opacity:.55; cursor:default; }
+  .metrics { margin-top:16px; border-top:1px solid var(--line); padding-top:14px; }
+  .metrics table { width:100%; border-collapse:collapse; }
+  .metrics td { padding:4px 0; font-size:13px; }
+  .metrics td:last-child { text-align:right; font-variant-numeric:tabular-nums; font-weight:600; }
+  .metrics .big { font-size:16px; }
+  #status { margin-top:10px; font-size:12.5px; color:var(--muted); min-height:1.2em; }
+  #status.err { color:var(--bad); }
+  #chart { width:100%; height:640px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Q<sub>rad</sub> explorer</h1>
+  <p>Bin the opacity by optical depth &amp; wavelength, then see how well the resulting table
+     reproduces the radiative heating rate against the full-ODF reference. Lower residual = better.</p>
+</header>
+
+<div class="wrap">
+  <div class="panel controls">
+    <label>Model atmosphere (RT)</label>
+    <select id="star"></select>
+    <div class="hint">STAGGER 1D atmosphere the radiative transfer is solved on.</div>
+
+    <label>&tau;-group edges &nbsp;<span class="hint">(&minus;log₁₀&tau;<sub>Ros</sub>, increasing)</span></label>
+    <input type="text" id="tau" />
+    <div class="hint">N edges → N&minus;1 tau groups. e.g. <code>-0.63, 0.35, 1.23, 2.89, 7</code></div>
+
+    <label>&lambda; cell edges &nbsp;<span class="hint">(log₁₀ &lambda;/Å, increasing)</span></label>
+    <input type="text" id="lambda" />
+    <div class="hint">2 edges = one cell (no wavelength split). Add an interior edge (e.g. 3.8) to split.</div>
+
+    <label>Split which &tau;-groups along &lambda;?</label>
+    <div id="flags"></div>
+    <div class="hint">Only matters with &gt;1 &lambda; cell. Off = that group stays one band over all &lambda;.</div>
+
+    <button id="go">Compute Q_rad</button>
+    <div id="status"></div>
+
+    <div class="metrics">
+      <table>
+        <tr><td>bands</td><td id="m_bands">—</td></tr>
+        <tr><td>(&lambda;,&tau;) groups</td><td id="m_groups">—</td></tr>
+        <tr><td class="big">rms residual</td><td class="big" id="m_rms">—</td></tr>
+        <tr><td>max |&Delta;Q/&rho;|</td><td id="m_max">—</td></tr>
+        <tr><td>&int;Q error</td><td id="m_intq">—</td></tr>
+        <tr><td>assigned sub-bins</td><td id="m_assigned">—</td></tr>
+        <tr><td>compute time</td><td id="m_time">—</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel plot">
+    <div id="chart"></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const parseEdges = s => s.split(/[,\s]+/).map(t=>t.trim()).filter(Boolean).map(Number);
+let LAST = null;
+
+async function init() {
+  const r = await fetch('/api/init'); const d = await r.json();
+  $('star').innerHTML = d.stars.map(s=>`<option ${s===d.default_star?'selected':''}>${s}</option>`).join('');
+  $('tau').value = d.default_tau_edges.join(', ');
+  $('lambda').value = d.default_lambda_edges.join(', ');
+  buildFlags();
+  compute();
+}
+
+function buildFlags() {
+  const tau = parseEdges($('tau').value);
+  const nGroups = Math.max(tau.length - 1, 0);
+  const nLambda = Math.max(parseEdges($('lambda').value).length - 1, 0);
+  const prev = [...document.querySelectorAll('#flags input')].map(c=>c.checked);
+  const box = $('flags'); box.innerHTML = '';
+  for (let k=0;k<nGroups;k++) {
+    const checked = prev.length===nGroups ? prev[k] : true;
+    const lo = tau[k], hi = tau[k+1];
+    const el = document.createElement('label'); el.className='flag';
+    el.innerHTML = `<input type="checkbox" ${checked?'checked':''}> τ${k} <span class="hint">[${(+lo).toFixed(2)},${(+hi).toFixed(2)}]</span>`;
+    box.appendChild(el);
+  }
+  box.classList.toggle('disabled', nLambda < 2);
+}
+
+function setStatus(msg, err=false){ const s=$('status'); s.textContent=msg; s.className=err?'err':''; }
+
+async function compute() {
+  let tau, lam;
+  try { tau = parseEdges($('tau').value); lam = parseEdges($('lambda').value); }
+  catch(e){ return setStatus('could not parse edges', true); }
+  if (tau.length<2) return setStatus('need ≥2 tau edges', true);
+  if (lam.length<2) return setStatus('need ≥2 lambda edges', true);
+  const split = [...document.querySelectorAll('#flags input')].map(c=>c.checked);
+  $('go').disabled = true; setStatus('computing… (binning + radiative transfer)');
+  try {
+    const r = await fetch('/api/compute', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({tau_edges:tau, lambda_edges:lam, split_lambda:split, star:$('star').value})});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error||'server error');
+    render(d); setMetrics(d);
+    setStatus(`done in ${d.elapsed}s · ${d.assigned}/${d.total_subbins} sub-bins assigned` + (d.n_empty?` · ${d.n_empty} empty bands`:''));
+  } catch(e){ setStatus(e.message, true); }
+  finally { $('go').disabled = false; }
+}
+
+function setMetrics(d){
+  $('m_bands').textContent = d.n_bands;
+  $('m_groups').textContent = d.n_groups;
+  $('m_rms').textContent = d.rms.toExponential(2);
+  $('m_max').textContent = d.max_abs.toExponential(2);
+  $('m_intq').textContent = (d.int_q_pct>=0?'+':'') + d.int_q_pct.toFixed(2) + '%';
+  $('m_assigned').textContent = d.assigned;
+  $('m_time').textContent = d.elapsed + 's';
+}
+
+function render(d){
+  const grayResid = d.q_gray_over_rho.map((g,i)=>g - d.q_full_over_rho[i]);
+  const C = {full:'#3ecf8e', gray:'#5b9bd5', cur:'#ff9d3c', bad:'#e2555b'};
+  const base = {x:d.ltau, mode:'lines', type:'scatter'};
+  const data = [
+    {...base, y:d.q_full_over_rho, name:'full ODF (reference)', line:{color:C.full,width:2}, xaxis:'x',yaxis:'y'},
+    {...base, y:d.q_gray_over_rho, name:'gray', line:{color:C.gray,width:1.5,dash:'dot'}, xaxis:'x',yaxis:'y'},
+    {...base, y:d.q_over_rho, name:'this binning', line:{color:C.cur,width:2.5}, xaxis:'x',yaxis:'y'},
+    {...base, y:grayResid, name:'gray − full', line:{color:C.gray,width:1.5,dash:'dot'}, xaxis:'x2',yaxis:'y2', showlegend:false},
+    {...base, y:d.residual, name:'this − full', line:{color:C.cur,width:2.5}, xaxis:'x2',yaxis:'y2', showlegend:false},
+  ];
+  const font={color:'#cdd6e5'}; const grid='#2b3547';
+  const layout = {
+    paper_bgcolor:'#1a2130', plot_bgcolor:'#121826', font,
+    margin:{l:70,r:16,t:26,b:46}, showlegend:true,
+    legend:{orientation:'h', y:1.08, x:0, font:{size:12}},
+    grid:{rows:2, columns:1, pattern:'independent', roworder:'top to bottom'},
+    xaxis:{title:'', range:[4,-5], gridcolor:grid, zeroline:false, domain:[0,1], anchor:'y'},
+    yaxis:{title:'Q/ρ [erg/g/s]', gridcolor:grid, zeroline:true, zerolinecolor:'#40506a', domain:[0.56,1]},
+    xaxis2:{title:'log₁₀ τ_Ros', range:[4,-5], gridcolor:grid, zeroline:false, domain:[0,1], anchor:'y2'},
+    yaxis2:{title:'(Q − Q_full)/ρ', gridcolor:grid, zeroline:true, zerolinecolor:'#40506a', domain:[0,0.44]},
+  };
+  Plotly.react('chart', data, layout, {responsive:true, displayModeBar:false});
+  LAST = d;
+}
+
+$('tau').addEventListener('input', buildFlags);
+$('lambda').addEventListener('input', buildFlags);
+$('go').addEventListener('click', compute);
+['tau','lambda'].forEach(id=>$(id).addEventListener('keydown', e=>{ if(e.key==='Enter') compute(); }));
+init();
+</script>
+</body>
+</html>

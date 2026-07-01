@@ -72,6 +72,22 @@ Computes Q_rad from each kappa table and compares against the full-ODF reference
 uv run python compare_Qrad_from_kappa.py        # writes Qrad_comparison.png
 ```
 
+### 2b. Interactive explorer — `webapp/`
+
+A small local web app to play with the τ / λ bin edges (and per-τ-group λ-split flags) and see the
+effect on Q_rad live, instead of regenerating tables by hand. It precomputes the expensive,
+edge-independent work once at startup, then each edge change re-runs only the cheap
+binning + RTE (~3 s):
+
+```bash
+uv run python webapp/server.py        # then open the printed http://localhost:<port>
+```
+
+Pick the model atmosphere, type τ-edges and λ-edges, toggle which τ-groups split along λ, and the
+Q/ρ curve + residual-vs-full-ODF and the rms metric update. Needs the same inputs as
+`compare_Qrad_from_kappa.py` (the `data/` reference tables + `models/` atmospheres). Pure stdlib
+server (no extra dependencies).
+
 ### 3. Utility & plotting scripts
 
 | Command | Reads | Writes / does |
