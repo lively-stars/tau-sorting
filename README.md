@@ -100,6 +100,46 @@ Q_rad residual — the tool lets you see that.)
 Needs the same inputs as `compare_Qrad_from_kappa.py` (the `data/` reference tables + `models/`
 atmospheres). Pure stdlib server (no extra dependencies).
 
+### 2c. Q_rad-driven optimizer — `qrad_optimize.py`
+
+The webapp's "Optimize τ edges" button and `tausort.py main --optimize-high-overlap` both maximize
+a *proxy* (per-group high-segment overlap). This optimizer instead **minimizes the Q_rad rms
+residual directly** — the metric that actually matters — searching over the τ edges, the λ-cell
+edge positions, the per-τ-group split flags, and (optionally) the number of τ groups, for a chosen
+star:
+
+```bash
+# reposition the 4 τ edges to minimize the single-cell rms (fast, ~5 min)
+uv run python qrad_optimize.py \
+    --tau-bin-edges=-0.63 --tau-bin-edges=0.35 --tau-bin-edges=1.23 --tau-bin-edges=2.885 --tau-bin-edges=7 \
+    --lambda-bin-edges 3 --lambda-bin-edges 5 --no-opt-lambda --no-opt-flags --no-grow
+
+# full scope: also move λ edges, flip split flags, and grow the τ-group count (~20-30 min)
+uv run python qrad_optimize.py \
+    --tau-bin-edges=-0.63 --tau-bin-edges=0.35 --tau-bin-edges=1.23 --tau-bin-edges=2.885 --tau-bin-edges=7 \
+    --lambda-bin-edges 3 --lambda-bin-edges 3.8 --lambda-bin-edges 5 --split-lambda 1111 \
+    --grow --max-seconds 1500 --save-plot plots/qrad_before_after.png
+```
+
+Search is **block-coordinate**: alternate coordinate descent on τ edges, greedy split-flag flips,
+and coordinate descent on λ edges to a fixed point, then optionally grow the τ-group count (a new
+edge is accepted only if rms improves past a tolerance). Each evaluation is a full RTE solve
+(~2.5 s via the shared `qrad_core.score_binning`), so it is a **run-and-wait / batch tool**, bounded
+by `--max-evals` / `--max-seconds`; it logs progress and prints the before/after rms + edges + flags.
+Guardrails keep edges strictly increasing and above a per-axis min-gap, and an empty-band penalty
+stops the search from collapsing groups. Toggle blocks with `--no-opt-tau/--no-opt-lambda/--no-opt-flags/--no-grow`;
+pick the objective with `--metric rms|maxabs|int_q` and the position search with `--method cd|nm`
+(Nelder-Mead over a monotone reparameterization). Because Q_rad is atmosphere-specific, a binning
+tuned to one `--star` may not transfer.
+
+On `G_SSD`, the full-scope run above takes the overlap-optimized 24-band baseline (rms **8.04e7**)
+down to rms **4.77e7 (−41%)** — ending at 5 τ groups with split flags `11110` — by trading the
+uniform 4×2 split for fewer, better-placed τ groups and a smarter split pattern. The
+upper-atmosphere residual (log₁₀τ from −2 to −5) tightens noticeably, and it beats the
+high-overlap proxy on the metric that matters:
+
+![Q_rad before/after optimization](plots/qrad_before_after.png)
+
 ### 3. Utility & plotting scripts
 
 | Command | Reads | Writes / does |
