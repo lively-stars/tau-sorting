@@ -36,6 +36,10 @@ import tausort as ts  # noqa: E402
 
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8771"))
+# Cap how many tau-groups the Q_rad optimizer may grow to. Each extra group enlarges the
+# per-eval opacity arrays; on RAM-constrained hosts lower this (e.g. 5) to keep the peak in
+# budget. Env-tunable so it can be changed via compose without rebuilding the image.
+MAX_GROUPS = int(os.environ.get("QRAD_MAX_GROUPS", "8"))
 SKIP = qc.SKIP
 WINDOW = qc.WINDOW
 
@@ -105,6 +109,7 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
             method=opt["method"],
             max_seconds=opt["max_seconds"],
             max_evals=opt["max_evals"],
+            max_groups=opt["max_groups"],
             per_group_lambda=opt["per_group_lambda"],
             lambda_edges_per_tau=opt["lambda_edges_per_tau"],
             on_eval=on_eval,
@@ -326,6 +331,7 @@ class Handler(BaseHTTPRequestHandler):
                         "method": req.get("method", "cd"),
                         "max_seconds": float(req.get("max_seconds", 300.0)),
                         "max_evals": int(req.get("max_evals", 5000)),
+                        "max_groups": MAX_GROUPS,
                     }
                     threading.Thread(
                         target=_run_qrad_opt, args=(tau_edges, lambda_edges, flags, model, opt), daemon=True

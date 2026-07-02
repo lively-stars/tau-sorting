@@ -561,6 +561,16 @@ Use `ODF_nc_format.nc` instead of `ODF_format.npy` if you only have the netCDF i
 container serves on `0.0.0.0` inside the image (via the `HOST` env var, default `127.0.0.1`
 outside Docker) so the published port is reachable; override `HOST` / `PORT` if needed.
 
+**Running on a RAM-constrained host.** Precompute holds the ODF (~1.4 GB) and a compute peaks
+~3 GB; the Q_rad optimizer's evals peak higher as it grows tau-groups. On a tight box, set these
+env vars in your compose/run:
+
+- `MALLOC_ARENA_MAX=2` and `MALLOC_TRIM_THRESHOLD_=0` — stop glibc from retaining freed numpy
+  memory, so repeated computes don't ratchet RSS up (without these, back-to-back computes leak
+  toward OOM).
+- `QRAD_MAX_GROUPS=5` (default 8) — cap how many tau-groups the optimizer may grow to; each extra
+  group enlarges the per-eval opacity arrays. Lower it if the optimizer OOMs.
+
 CI (`.github/workflows/docker-publish.yml`) auto-builds and publishes to GHCR
 (`ghcr.io/lively-stars/tau-sorting`) on every push to `main` (tagged `latest` + branch + commit
 sha) and on `v*` tags (semver tags); it can also be triggered manually via *workflow_dispatch*.
