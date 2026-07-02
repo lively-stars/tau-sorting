@@ -214,6 +214,7 @@ high-overlap proxy on the metric that matters:
 | `uv run python plot_kap_mean_grid.py --input <kappa.dat> [--comparison tau_bin_opacities.npy]` | a kappa `.dat` (+ optional `.npy`) | `kap_mean_grid_4x3.png` (band-mean opacity grid) |
 | `uv run python tausort.py convert-odf ODF_nc_format.nc ODF_format.npy` | ODF NetCDF | `ODF_format.npy` (the fast cache `main` reads; also available standalone as `convert_odf_to_npy.py -i … -o …`) |
 | `uv run python tausort.py convert-continuum continuumabs.dat continuumabs.npy` | `continuumabs.dat` | `continuumabs.npy` (the fast cache `main` reads; ~75× faster than the ASCII `.dat`) |
+| `uv run python tausort.py convert-model models/G_SSD models/G_SSD.dat` | a binary STAGGER model | ASCII `.dat` in G2_1D.dat's 4-column `z ρ p T` format (a drop-in `--atm`; `models/{F,G,K,M}_SSD.dat` are pre-generated) |
 | `uv run python group_derivatives.py <grouped-column-file>` | a grouped column file | opacity-group derivative / segmentation analysis |
 
 `rte.py` (RT solver) and `kappa_band_reader.py` (C-binary read/write) are libraries imported by

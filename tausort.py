@@ -3486,5 +3486,33 @@ def convert_odf(
     console.print(f"[green]✓ {input_file} -> {out}[/green]")
 
 
+@app.command("convert-model")
+def convert_model(
+    input_file: Path = typer.Argument(..., help="Input binary STAGGER model atmosphere, e.g. models/G_SSD."),
+    output: str = typer.Argument("", help="Output ASCII .dat (default: the input name with .dat appended)."),
+):
+    """
+    Convert a binary STAGGER model atmosphere to G2_1D.dat's ASCII 4-column format.
+
+    Usage: `convert-model INPUT [OUTPUT.dat]`. Reads the float32 STAGGER dump (a 4-float header
+    then density/·/pressure/temperature rows; z is the uniform 1e6 cm grid), and writes columns
+    `z[cm] density[g/cm^3] pressure[dyn/cm^2] temperature[K]` ordered top-of-atmosphere first
+    (z descending, cool→hot) to match G2_1D.dat, so the result is a drop-in `--atm` input.
+    """
+    if not input_file.exists():
+        raise typer.BadParameter(f"{input_file} not found")
+    dz = 1.0e6  # STAGGER grid spacing [cm]
+    tvar = np.fromfile(str(input_file), dtype=np.float32)
+    tvar = tvar[4:].reshape([int(tvar[0]), int(tvar[1])])  # skip 4-float header -> (nvars, nz)
+    nz = tvar.shape[-1]
+    # rows 0/2/3 are density/pressure/temperature; flip to cool(top)->hot(bottom), and give the
+    # cool top the largest height so z runs 4.99e8 -> 0 like G2_1D.dat.
+    z = np.flip(np.arange(nz) * dz)
+    rho, pre, tem = np.flip(tvar[0]), np.flip(tvar[2]), np.flip(tvar[3])
+    out = Path(output) if output else Path(str(input_file) + ".dat")
+    np.savetxt(out, np.column_stack([z, rho, pre, tem]), fmt="%e")
+    console.print(f"[green]✓ {input_file} -> {out}  ({nz} levels; T {tem.min():.0f}..{tem.max():.0f} K)[/green]")
+
+
 if __name__ == "__main__":
     app()

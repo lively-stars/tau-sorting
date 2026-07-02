@@ -24,8 +24,9 @@ wheels/
 
 # Data
 *.dat
-# but track the small 1D atmospheric model input so the tools run out-of-the-box
+# but track the small ASCII 1D atmospheric models so the tools run out-of-the-box
 !G2_1D.dat
+!models/*.dat
 diff_binning
 *.nc
 *.tar
