@@ -532,3 +532,37 @@ that one group recovers nearly the full benefit at 15 bands. That is exactly wha
 
 Relevant files: `compare_Qrad_from_kappa.py` (driver), `rte.py` (RT solver),
 `models/G2_1D.dat` (the 1D atmosphere).
+
+## Docker
+
+The interactive explorer (`webapp/server.py`, port `8771`) ships as a container image. The
+image bundles the code and the tracked `models/G2_1D.dat`, but **not** the large gitignored
+inputs (the ODF, `continuumabs.dat`, and the `data/` reference tables, ~2.8 GB) — those are
+bind-mounted at run time.
+
+Build locally:
+
+```bash
+docker build -t tau-sorting .
+```
+
+Run it, mounting the required inputs read-only (see [Data files](#data-files) for what each is):
+
+```bash
+docker run --rm -p 8771:8771 \
+    -v "$PWD/ODF_format.npy:/app/ODF_format.npy:ro" \
+    -v "$PWD/continuumabs.dat:/app/continuumabs.dat:ro" \
+    -v "$PWD/data:/app/data:ro" \
+    ghcr.io/lively-stars/tau-sorting:latest
+# then open http://localhost:8771
+```
+
+Use `ODF_nc_format.nc` instead of `ODF_format.npy` if you only have the netCDF input. The
+container serves on `0.0.0.0` inside the image (via the `HOST` env var, default `127.0.0.1`
+outside Docker) so the published port is reachable; override `HOST` / `PORT` if needed.
+
+CI (`.github/workflows/docker-publish.yml`) auto-builds and publishes to GHCR
+(`ghcr.io/lively-stars/tau-sorting`) on every push to `main` (tagged `latest` + branch + commit
+sha) and on `v*` tags (semver tags); it can also be triggered manually via *workflow_dispatch*.
+The published package is **private by default** — flip its visibility in the GHCR package
+settings if you want it public.

@@ -34,7 +34,8 @@ import qrad_core as qc  # noqa: E402
 import qrad_optimize as qopt  # noqa: E402
 import tausort as ts  # noqa: E402
 
-PORT = 8771
+HOST = os.environ.get("HOST", "127.0.0.1")
+PORT = int(os.environ.get("PORT", "8771"))
 SKIP = qc.SKIP
 WINDOW = qc.WINDOW
 
@@ -369,7 +370,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     print("[startup] precomputing invariants (reads the ODF; ~10-30s)...")
     qc.precompute()
-    srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    srv = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"[ready] Q_rad explorer at http://localhost:{PORT}")
     srv.serve_forever()
 

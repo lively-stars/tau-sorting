@@ -1,0 +1,56 @@
+# Build-context excludes — keep the image lean and the ~2.8 GB of gitignored runtime
+# data out of the context. .dockerignore uses .gitignore-like syntax with last-match-
+# wins, so the models/G2_1D.dat re-include below MUST stay after the *.dat rules.
+
+# Version control / CI / tooling
+.git
+.jj
+.github
+.venv
+.ruff_cache
+.pytest_cache
+.mplconfig
+__pycache__
+**/__pycache__
+*.pyc
+*.py[oc]
+*.swp
+.DS_Store
+.python-version
+
+# Webapp runtime state (make start/stop)
+webapp.log
+.webapp.pid
+
+# Big runtime inputs — provided via bind mounts, never baked into the image
+ODF_format.npy
+ODF_nc_format.nc
+continuumabs.dat
+continuumscat.dat
+continuumall.dat
+data/
+**/*.npy
+**/*.nc
+
+# Generated tables / debug dumps left in the repo root
+kappa_*.dat
+tau_bin_opacities.npy
+debug_tau_bin_*.json
+
+# Blanket-ignore opacity .dat files, then re-include the tracked default atmosphere.
+# models/G2_1D.dat is a HARD requirement in the image — it is the default 1D model.
+**/*.dat
+!models/G2_1D.dat
+
+# Figures / archives / transient outputs (not needed at runtime)
+plots/
+*.jpg
+*.jpeg
+*.png
+*.pdf
+*.tar
+*.zst
+
+# C build artifacts
+*.o
+tausort.x
