@@ -43,8 +43,11 @@ def convert_odf_netcdf_to_npy(
 
             print(f"  Dimensions: nt={nt_dim}, np={np_dim}, nbins={nbins}, nsubbins={nsubbins}")
 
-            # Read variables
-            odf_data = 10 ** (nc.variables["ODF"][:] / 1000)  # Convert from short integer
+            # Read variables. The ODF is stored as a short integer and reconstructed as
+            # 10**(short/1000), so its true precision is ~0.23% — float32 (~1e-7 relative) is
+            # far finer than the source, so we store it as float32 to halve memory + disk with
+            # no meaningful precision loss. (float32 also halves the conversion-time temporary.)
+            odf_data = (10 ** (nc.variables["ODF"][:] / 1000)).astype(np.float32)  # short-int source
             wavelength_grid = nc.variables["FreqG"][:]
             pressure = nc.variables["P"][:]
             temperature = nc.variables["T"][:]
@@ -69,7 +72,7 @@ def convert_odf_netcdf_to_npy(
     # Create a single structured array element
     dtype = np.dtype(
         [
-            ("ODF", f"({nt_dim},{np_dim},{nbins},{nsubbins})f8"),
+            ("ODF", f"({nt_dim},{np_dim},{nbins},{nsubbins})f4"),  # float32: source is ~0.23% precise
             ("wavelength_grid", f"({numfp},)f8"),
             ("P", f"({np_dim},)f8"),
             ("T", f"({nt_dim},)f8"),

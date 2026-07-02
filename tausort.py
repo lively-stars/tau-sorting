@@ -260,7 +260,9 @@ def read_odf_netcdf(filepath: Path) -> ODFData:
             console.print(f"  Dimensions: nt={odf.nt}, np={odf.np}, nbins={odf.nbins}, nsubbins={odf.nsubbins}")
 
             # Read variables
-            odf.ODF = 10 ** (nc.variables["ODF"][:] / 1000)  # short integer, convert: 10^(ODF/1000)
+            # float32: source is a short integer (~0.23% precision), matches the .npy fast path
+            # and avoids double-materializing a 1.4 GB float64 intermediate on this fallback.
+            odf.ODF = (10 ** (nc.variables["ODF"][:] / 1000)).astype(np.float32)  # 10^(short/1000)
             odf.wavelength_grid = nc.variables["FreqG"][:] * 1e-7
             odf.P = nc.variables["P"][:]
             odf.T = nc.variables["T"][:]
@@ -2619,8 +2621,14 @@ def calculate_tau_bin_opacities(
     subbin_widths = subbin_widths_2d.reshape(-1)
     subbin_centers = subbin_centers_2d.reshape(-1)
 
-    total_kappa = odf.ODF + cont.kappa_abs[..., np.newaxis]
-    opacity_flat = total_kappa.reshape(odf.nt, odf.np, -1)
+    # Opacity per (T, p, sub-bin) = line ODF + continuum (per wavelength bin). We do NOT
+    # materialize the full (nt, np, nbins, nsubbins) sum (~1.4 GB temporary): odf.ODF is
+    # C-contiguous so .reshape is a free view, and the band loop below gathers only that
+    # band's member columns and adds the continuum for each member's bin. This reproduces
+    # `(odf.ODF + cont.kappa_abs[..., None]).reshape(nt, np, -1)[:, :, member_mask]` exactly
+    # (C-order flatten: sub-bin index k -> bin k // nsubbins), with no full-grid allocation.
+    odf_flat = odf.ODF.reshape(odf.nt, odf.np, -1)
+    bin_of_subbin = np.arange(n_subbin_points) // odf.nsubbins
 
     # ODF tables store log10(T), convert to K for Planck weighting.
     temperature_1d = np.power(10.0, odf.T)
@@ -2642,19 +2650,28 @@ def calculate_tau_bin_opacities(
         if members_per_band[band] == 0:
             continue
 
-        widths = subbin_widths[member_mask]
-        B_sel = B_lambda[:, member_mask]
-        dB_dT_sel = dB_dT[:, member_mask]
-        kappa_sel = opacity_flat[:, :, member_mask]
-        safe_kappa = np.clip(kappa_sel, 1.0e-300, None)
+        member_idx = np.flatnonzero(member_mask)
+        widths = subbin_widths[member_idx]
+        B_sel = B_lambda[:, member_idx]
+        dB_dT_sel = dB_dT[:, member_idx]
+        # Gather only this band's members: ODF columns + continuum for each member's bin.
+        kappa_sel = odf_flat[:, :, member_idx] + cont.kappa_abs[:, :, bin_of_subbin[member_idx]]
 
         weighted_B = B_sel * widths[np.newaxis, :]
         weighted_dBdT = dB_dT_sel * widths[np.newaxis, :]
 
         B_sum = np.sum(weighted_B, axis=1)
         dBdT_sum = np.sum(weighted_dBdT, axis=1)
+        # Planck numerator uses the UNCLIPPED opacity; then clip in place and reuse that same
+        # buffer as the Rosseland (harmonic-mean) denominator — avoids a second full-size copy.
         planck_num = np.sum(kappa_sel * weighted_B[:, np.newaxis, :], axis=2)
-        rosseland_denom = np.sum(weighted_dBdT[:, np.newaxis, :] / safe_kappa, axis=2)
+        # Floor before the harmonic mean's 1/kappa. 1e-300 underflows to 0 in float32 (min
+        # normal ~1.2e-38); use 1e-30 there (a no-op for real opacities, which are >= ~1e-12,
+        # but guards against 1/0). float64 keeps 1e-300 so its result stays bit-identical.
+        # The division below promotes to float64 (weighted_dBdT is float64), so the Rosseland
+        # accumulation is float64 regardless of kappa's dtype.
+        np.clip(kappa_sel, 1.0e-30 if kappa_sel.dtype == np.float32 else 1.0e-300, None, out=kappa_sel)
+        rosseland_denom = np.sum(weighted_dBdT[:, np.newaxis, :] / kappa_sel, axis=2)
 
         B_band[:, band] = B_sum
         dBdT_band[:, band] = dBdT_sum
@@ -3468,9 +3485,11 @@ def convert_continuum(
             f"({nt}*{n_pressure}*{nbins}); pass --nt/--np/--nbins to match your file."
         )
     # .dat is (lambda, T, P) C-order -> (nbins, nt, np); transpose to (nt, np, nbins).
-    kappa = data.reshape((nbins, nt, n_pressure)).transpose(1, 2, 0)
+    # Store float32 (same source-precision argument as the ODF) so the continuum matches the
+    # ODF dtype — a float32+float64 add would re-promote to float64 and defeat the saving.
+    kappa = data.reshape((nbins, nt, n_pressure)).transpose(1, 2, 0).astype(np.float32)
     out = Path(output) if output else Path(str(abs_file).replace(".dat", ".npy"))
-    np.save(out, kappa)
+    np.save(out, np.ascontiguousarray(kappa))
     console.print(f"[green]✓ {abs_file} -> {out}  shape={kappa.shape}  ({kappa.min():.2e} … {kappa.max():.2e})[/green]")
 
 

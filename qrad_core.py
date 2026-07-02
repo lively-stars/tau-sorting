@@ -248,7 +248,11 @@ def precompute(model=None) -> dict:
         npy = _REPO / "ODF_format.npy"
         odf = ts.read_odf_npy(npy) if npy.exists() else ts.read_odf_netcdf(_REPO / "ODF_nc_format.nc")
         cont = ts.read_continuum_data(_REPO / "continuumabs.dat", odf.nbins, odf.nt, odf.np)
-        interpolated_opacity = ts.interpolate_kappa_to_atmosphere(odf, cont, atm)
+        # Upcast to float64 (only ~16 MB) so the tau integration / Rosseland-mean reference /
+        # RTE path stays float64 even when the ODF+continuum are stored as float32 — cumulative
+        # sums there are precision-sensitive. The big float32 win is in the band-averaging path
+        # (calculate_tau_bin_opacities), which reads odf.ODF/cont directly and accumulates in float64.
+        interpolated_opacity = np.asarray(ts.interpolate_kappa_to_atmosphere(odf, cont, atm), dtype=np.float64)
         kappa_on_atm, wl_centers = ts.calculate_reference_opacities_from_custom_tp_grid(
             atm, interpolated_opacity, odf.wavelength_grid, odf.subbin, odf.nbins, odf.nsubbins, kind="rosseland"
         )
