@@ -1715,6 +1715,92 @@ def assign_split_lambda(
     return group_index
 
 
+def build_group_specs_per_tau(
+    tau_bin_edges: list[float],
+    lambda_edges_per_tau: list[list[float]],
+) -> tuple[NDArray[np.float64], NDArray[np.float64], list[int]]:
+    """
+    Shared-tau binning where each tau group carries its *own* lambda edges.
+
+    A single set of tau edges defines N tau groups (same tau ranges at all
+    wavelengths). Tau group k subdivides into ``len(lambda_edges_per_tau[k]) - 1``
+    lambda sub-cells using that group's own lambda edges — so the wavelength split
+    can differ (or be absent) per tau group, generalizing the shared-lambda +
+    split-flag model (a group with edges ``[lam_min, lam_max]`` is unsplit; a group
+    reusing the shared edges reproduces a flag=True group). Groups are enumerated
+    tau-major: ``g = offsets[k] + j`` for lambda sub-cell j of tau group k.
+
+    All groups must share the same outer lambda window (``lambda_edges_per_tau[k][0]``
+    and ``[-1]`` equal for every k); only the interior cuts vary.
+
+    Returns:
+        group_tau_edges: [n_groups, 2] -log10(tau) (lo, hi).
+        group_lam_edges: [n_groups, 2] log10(lambda/A) (lo, hi).
+        offsets:         offsets[k] = first group id of tau group k.
+    """
+    tau = [float(e) for e in tau_bin_edges]
+    n_tau = len(tau) - 1
+    if len(lambda_edges_per_tau) != n_tau:
+        raise ValueError(f"lambda_edges_per_tau has {len(lambda_edges_per_tau)} entries, expected n_tau={n_tau}")
+
+    tau_rows: list[tuple[float, float]] = []
+    lam_rows: list[tuple[float, float]] = []
+    offsets: list[int] = []
+    g = 0
+    for k in range(n_tau):
+        offsets.append(g)
+        lam = [float(e) for e in lambda_edges_per_tau[k]]
+        if len(lam) < 2:
+            raise ValueError(f"tau group {k} needs >= 2 lambda edges, got {lam}")
+        for j in range(len(lam) - 1):
+            tau_rows.append((tau[k], tau[k + 1]))
+            lam_rows.append((lam[j], lam[j + 1]))
+            g += 1
+    return (
+        np.asarray(tau_rows, dtype=np.float64).reshape(-1, 2),
+        np.asarray(lam_rows, dtype=np.float64).reshape(-1, 2),
+        offsets,
+    )
+
+
+def assign_per_tau_lambda(
+    tau_rosseland: NDArray[np.float64],
+    wavelength_grid_input: NDArray[np.float64],
+    tau_bin_edges: list[float],
+    lambda_edges_per_tau: list[list[float]],
+    offsets: list[int],
+) -> NDArray[np.int32]:
+    """
+    Assign sub-bins to (tau group, that group's lambda sub-cell) groups.
+
+    A sub-bin is placed by its shared tau slot k, then by its lambda sub-cell within
+    tau group k's *own* lambda edges. Sub-bins outside the tau range, or outside a
+    group's lambda window, are -1. Mirrors the digitize(right=False) convention of
+    assign_split_lambda / assign_tau_to_bin.
+    """
+    x_data = np.log10(wavelength_grid_input * 1e8)  # log10 lambda [Angstrom]
+    y_data = -np.log10(np.clip(tau_rosseland, 1.0e-300, None))  # -log10 tau
+    tau_edges = np.asarray(tau_bin_edges, dtype=np.float64)
+    n_tau = len(tau_edges) - 1
+    if len(lambda_edges_per_tau) != n_tau:
+        raise ValueError(f"lambda_edges_per_tau has {len(lambda_edges_per_tau)} entries, expected n_tau={n_tau}")
+
+    k_all = np.digitize(y_data, tau_edges, right=False) - 1
+    group_index = np.full(x_data.shape, -1, dtype=np.int32)
+    for k in range(n_tau):
+        in_k = k_all == k
+        if not np.any(in_k):
+            continue
+        lam = np.asarray(lambda_edges_per_tau[k], dtype=np.float64)
+        n_l = len(lam) - 1
+        j = np.digitize(x_data[in_k], lam, right=False) - 1
+        valid = (j >= 0) & (j < n_l)
+        cell_groups = np.full(j.shape, -1, dtype=np.int32)
+        cell_groups[valid] = (offsets[k] + j[valid]).astype(np.int32)
+        group_index[in_k] = cell_groups
+    return group_index
+
+
 def assign_tau_to_bin(
     tau_rosseland: NDArray[np.float64],
     wavelength_grid_input: NDArray[np.float64],

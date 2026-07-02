@@ -167,25 +167,35 @@ def precompute():
     print(f"[precompute] ready in {time.perf_counter() - t0:.1f}s (odf {odf.nt}x{odf.np}, {INV['n_subbins']} sub-bins)")
 
 
-def score_binning(tau_edges, lambda_edges, flags, star, *, n_splits=3) -> dict:
+def score_binning(tau_edges, lambda_edges, flags, star, *, n_splits=3, lambda_edges_per_tau=None) -> dict:
     """Map a binning to Q_rad + residual metrics against the full-ODF reference.
 
-    Requires `precompute()` to have run. `flags` must already be resolved (one bool
-    per tau group; use `resolve_flags`). Returns raw full-length arrays (`q`, `resid`,
-    `ltau`, `rho`, `q_full`, `q_gray`) plus scalar metrics and the descriptor/membership
-    the binning diagram needs. This is the exact former `webapp.compute()` core, minus
-    the display windowing and the HTTP lock.
+    Requires `precompute()` to have run. Two grouping modes:
+      - shared lambda + flags (default): `flags` resolved (one bool per tau group).
+      - per-tau-group lambda: pass `lambda_edges_per_tau` (one lambda-edge list per tau
+        group); `lambda_edges`/`flags` are then ignored. Each tau group gets its own
+        wavelength split (see `build_group_specs_per_tau`).
+
+    Returns raw full-length arrays (`q`, `resid`, `ltau`, `rho`, `q_full`, `q_gray`) plus
+    scalar metrics and the descriptor/membership the binning diagram needs.
     """
     odf, cont, atm = INV["odf"], INV["cont"], INV["atm"]
     ref = reference_for_star(star)
-
-    # membership from the un-clamped edges
-    _gt0, _gl0, s2cg, s2sg = ts.build_group_specs_split_lambda(tau_edges, lambda_edges, flags)
-    band_index = ts.assign_split_lambda(INV["tau_at_lam1"], INV["wl_centers"], tau_edges, lambda_edges, s2cg, s2sg)
-    # atmosphere-top clamp on the first tau edge for the descriptor used downstream
     clamped = list(tau_edges)
     clamped[0] = float(-np.log10(INV["tau_ross"][INV["max_height_idx"]] + 0.2))
-    group_tau_edges, group_lam_edges, _a, _b = ts.build_group_specs_split_lambda(clamped, lambda_edges, flags)
+
+    if lambda_edges_per_tau is not None:
+        # per-tau-group lambda: membership from un-clamped tau, descriptor from clamped
+        _gt0, _gl0, offs = ts.build_group_specs_per_tau(tau_edges, lambda_edges_per_tau)
+        band_index = ts.assign_per_tau_lambda(
+            INV["tau_at_lam1"], INV["wl_centers"], tau_edges, lambda_edges_per_tau, offs
+        )
+        group_tau_edges, group_lam_edges, _offc = ts.build_group_specs_per_tau(clamped, lambda_edges_per_tau)
+    else:
+        # shared-tau + per-group split flags
+        _gt0, _gl0, s2cg, s2sg = ts.build_group_specs_split_lambda(tau_edges, lambda_edges, flags)
+        band_index = ts.assign_split_lambda(INV["tau_at_lam1"], INV["wl_centers"], tau_edges, lambda_edges, s2cg, s2sg)
+        group_tau_edges, group_lam_edges, _a, _b = ts.build_group_specs_split_lambda(clamped, lambda_edges, flags)
     n_groups = int(group_tau_edges.shape[0])
 
     sorted_per_bin = ts.sort_weighted_opacity_per_tau_bin(

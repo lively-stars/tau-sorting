@@ -12,6 +12,7 @@ import unittest
 import numpy as np
 
 import qrad_optimize as qo
+import tausort as ts
 
 
 def bowl(target_interior, *, reward_groups=False, flag_target=None):
@@ -174,6 +175,77 @@ class TestEmptyPenalty(unittest.TestCase):
         c0 = ev0([-0.63, 7.0], [3.0, 5.0], [True])[0]
         c1 = ev1([-0.63, 7.0], [3.0, 5.0], [True])[0]
         self.assertGreater(c1, c0)
+
+
+class TestPerTauGroupLambdaCore(unittest.TestCase):
+    def test_equivalence_with_split_flags(self):
+        # a flags-equivalent per-tau lambda must reproduce the split-flag grouping exactly
+        tau = [-0.63, 0.35, 1.23, 2.89, 7.0]
+        lam = [3.0, 3.8, 5.0]
+        flags = [True, False, True, True]
+        lpt = [lam if f else [lam[0], lam[-1]] for f in flags]
+        gt_s, gl_s, s2c, s2s = ts.build_group_specs_split_lambda(tau, lam, flags)
+        gt_p, gl_p, offs = ts.build_group_specs_per_tau(tau, lpt)
+        self.assertTrue(np.allclose(gt_s, gt_p))
+        self.assertTrue(np.allclose(gl_s, gl_p))
+        rng = np.random.default_rng(1)
+        n = 3000
+        tv = 10.0 ** (-rng.uniform(-1, 7, n))
+        wl = 10.0 ** (rng.uniform(3, 5, n)) / 1e8
+        bi_s = ts.assign_split_lambda(tv, wl, tau, lam, s2c, s2s)
+        bi_p = ts.assign_per_tau_lambda(tv, wl, tau, lpt, offs)
+        self.assertTrue(np.array_equal(bi_s, bi_p))
+
+    def test_per_group_specs_and_offsets(self):
+        tau = [-0.63, 1.0, 7.0]
+        lpt = [[3.0, 3.5, 5.0], [3.0, 5.0]]  # group0 split, group1 unsplit
+        gt, gl, offs = ts.build_group_specs_per_tau(tau, lpt)
+        self.assertEqual(gt.shape[0], 3)  # 2 cells + 1 cell
+        self.assertEqual(offs, [0, 2])
+        self.assertTrue(np.allclose(gl, [[3.0, 3.5], [3.5, 5.0], [3.0, 5.0]]))
+
+
+class TestPerGroupLambdaOptimizer(unittest.TestCase):
+    def test_each_group_finds_its_own_split(self):
+        targets = [3.5, None, 4.2, 3.9]  # group1 should NOT split; others split at these cuts
+
+        def score(tau, lam, flags, star, *, lambda_edges_per_tau=None):
+            lpt = lambda_edges_per_tau
+            rms = 1e8
+            for k, tgt in enumerate(targets):
+                lk = lpt[k]
+                split = len(lk) >= 3
+                if tgt is None:
+                    rms += 0.0 if not split else 6e6
+                else:
+                    rms += 1e7 * (lk[1] - tgt) ** 2 if split else 8e6
+            return {
+                "rms": rms,
+                "max_abs": 2 * rms,
+                "int_q_pct": 0.1,
+                "n_empty": 0,
+                "n_groups": sum(len(x) - 1 for x in lpt),
+            }
+
+        res = qo.optimize_qrad(
+            [-0.63, 0.35, 1.23, 2.89, 7.0],
+            [3.0, 3.8, 5.0],
+            flags=[True] * 4,
+            star="X",
+            per_group_lambda=True,
+            opt_tau=False,
+            grow=False,
+            method="cd",
+            score_fn=score,
+            max_evals=3000,
+        )
+        self.assertTrue(res["per_group_lambda"])
+        self.assertLess(res["rms"], res["rms0"])
+        got = res["lambda_edges_per_tau"]
+        self.assertEqual(len(got[1]), 2)  # group 1 unsplit
+        for k in (0, 2, 3):
+            self.assertEqual(len(got[k]), 3)  # group k split (one interior cut)
+            self.assertAlmostEqual(got[k][1], targets[k], delta=0.05)
 
 
 if __name__ == "__main__":

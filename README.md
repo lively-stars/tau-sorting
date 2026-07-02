@@ -103,6 +103,10 @@ tick down live (with a **cancel** that keeps the best binning found so far). Whe
 loads the optimized edges + flags and recomputes. This minimizes the residual *directly*, so it
 typically beats the high-overlap button — at the cost of a full RTE solve per step (~2.5 s).
 
+Tick **per-group λ** to let *each τ group choose its own wavelength split* (its own cut position, or
+none) instead of one shared cut + on/off flags. The binning diagram then shows the λ cuts "jumping"
+per τ band; a summary lists each group's cut. (Editing the τ/λ boxes by hand reverts to shared-λ.)
+
 Needs the same inputs as `compare_Qrad_from_kappa.py` (the `data/` reference tables + `models/`
 atmospheres). Pure stdlib server (no extra dependencies).
 
@@ -125,6 +129,11 @@ uv run python qrad_optimize.py \
     --tau-bin-edges=-0.63 --tau-bin-edges=0.35 --tau-bin-edges=1.23 --tau-bin-edges=2.885 --tau-bin-edges=7 \
     --lambda-bin-edges 3 --lambda-bin-edges 3.8 --lambda-bin-edges 5 --split-lambda 1111 \
     --grow --max-seconds 1500 --save-plot plots/qrad_before_after.png
+
+# per-group λ: each τ group picks its own wavelength split (its own cut, or none)
+uv run python qrad_optimize.py \
+    --tau-bin-edges=-0.63 --tau-bin-edges=0.35 --tau-bin-edges=1.23 --tau-bin-edges=2.885 --tau-bin-edges=7 \
+    --lambda-bin-edges 3 --lambda-bin-edges 5 --per-group-lambda --max-seconds 300
 ```
 
 Search is **block-coordinate**: alternate coordinate descent on τ edges, greedy split-flag flips,
@@ -137,6 +146,11 @@ stops the search from collapsing groups. Toggle blocks with `--no-opt-tau/--no-o
 pick the objective with `--metric rms|maxabs|int_q` and the position search with `--method cd|nm`
 (Nelder-Mead over a monotone reparameterization). Because Q_rad is atmosphere-specific, a binning
 tuned to one `--star` may not transfer.
+
+With `--per-group-lambda`, the shared cut + flags are replaced by a **per-τ-group** λ binning: for
+each τ group the search keeps the better of *no split* or a *single λ cut* (its position optimized),
+so the wavelength split can differ (or be absent) per τ group — the "jumping" cuts. It prints each
+group's cut and (with `--save-plot`) the before/after.
 
 On `G_SSD`, the full-scope run above takes the overlap-optimized 24-band baseline (rms **8.04e7**)
 down to rms **4.77e7 (−41%)** — ending at 5 τ groups with split flags `11110` — by trading the

@@ -91,6 +91,7 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, star, opt):
             method=opt["method"],
             max_seconds=opt["max_seconds"],
             max_evals=opt["max_evals"],
+            per_group_lambda=opt["per_group_lambda"],
             on_eval=on_eval,
             on_progress=on_progress,
             should_stop=lambda: _QOPT["cancel"],
@@ -102,11 +103,18 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, star, opt):
         _QOPT["running"] = False
 
 
-def compute(tau_edges, lambda_edges, split_lambda, star):
-    """Run the per-edge pipeline (via qrad_core) and shape the Q_rad curves + metrics for the UI."""
+def compute(tau_edges, lambda_edges, split_lambda, star, lambda_edges_per_tau=None):
+    """Run the per-edge pipeline (via qrad_core) and shape the Q_rad curves + metrics for the UI.
+
+    If `lambda_edges_per_tau` is given (one lambda-edge list per tau group), each tau group
+    uses its own wavelength split; otherwise the shared-lambda + split-flag model is used.
+    """
     with _LOCK:
-        flags = qc.resolve_flags(split_lambda, len(tau_edges) - 1)
-        r = qc.score_binning(tau_edges, lambda_edges, flags, star)
+        if lambda_edges_per_tau is not None:
+            r = qc.score_binning(tau_edges, None, None, star, lambda_edges_per_tau=lambda_edges_per_tau)
+        else:
+            flags = qc.resolve_flags(split_lambda, len(tau_edges) - 1)
+            r = qc.score_binning(tau_edges, lambda_edges, flags, star)
 
         ltau, rho = r["ltau"], r["rho"]
         q, q_full, q_gray, resid = r["q"], r["q_full"], r["q_gray"], r["resid"]
@@ -279,6 +287,7 @@ class Handler(BaseHTTPRequestHandler):
                         "opt_lambda": bool(req.get("opt_lambda", True)),
                         "opt_flags": bool(req.get("opt_flags", True)),
                         "grow": bool(req.get("grow", True)),
+                        "per_group_lambda": bool(req.get("per_group_lambda", False)),
                         "method": req.get("method", "cd"),
                         "max_seconds": float(req.get("max_seconds", 300.0)),
                         "max_evals": int(req.get("max_evals", 5000)),
@@ -293,7 +302,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             split_lambda = req.get("split_lambda") or None
             star = req.get("star") or "G_SSD"
-            out = compute(tau_edges, lambda_edges, split_lambda, star)
+            lpt = req.get("lambda_edges_per_tau") or None
+            out = compute(tau_edges, lambda_edges, split_lambda, star, lambda_edges_per_tau=lpt)
             out["elapsed"] = round(time.perf_counter() - t0, 2)
             self._send(200, json.dumps(out))
         except Exception as e:

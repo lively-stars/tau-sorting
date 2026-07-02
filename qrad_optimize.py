@@ -79,8 +79,11 @@ def make_evaluator(star, *, metric="rms", empty_penalty=EMPTY_PENALTY, score_fn=
     state = {"n_evals": 0}
     _key = {"rms": "rms", "maxabs": "max_abs", "int_q": "int_q_pct"}[metric]
 
-    def evaluate(tau_edges, lambda_edges, flags):
-        r = score(list(tau_edges), list(lambda_edges), list(flags), star)
+    def evaluate(tau_edges, lambda_edges, flags, *, lambda_edges_per_tau=None):
+        if lambda_edges_per_tau is not None:
+            r = score(list(tau_edges), None, None, star, lambda_edges_per_tau=[list(x) for x in lambda_edges_per_tau])
+        else:
+            r = score(list(tau_edges), list(lambda_edges), list(flags), star)
         base = abs(float(r[_key]))
         cost = base * (1.0 + empty_penalty * int(r.get("n_empty", 0)))
         state["n_evals"] += 1
@@ -278,6 +281,89 @@ def _block_fixed_point(tau, lam, flags, evaluate, *, opt_tau, opt_lambda, opt_fl
     return tau, lam, flags, best
 
 
+# --- per-tau-group lambda variant -----------------------------------------------
+def _per_group_lambda_search(lam_per_tau, cost_pg, lmin, lmax, *, cfg, budget):
+    """For each tau group independently, keep the better of *no split* vs a *single
+    lambda cut* (its position optimized by coordinate descent). This lets each tau
+    group choose its own wavelength split, generalizing the shared cut + on/off flag.
+    `cost_pg(lambda_edges_per_tau) -> cost` scores the whole binning (tau fixed)."""
+    lam_per_tau = [list(x) for x in lam_per_tau]
+    best = cost_pg(lam_per_tau)
+    can_split = (lmax - lmin) - 2.0 * cfg.min_gap_lam > 0
+    for k in range(len(lam_per_tau)):
+        if budget.exhausted():
+            return lam_per_tau, best
+
+        def cost_k(edges, _k=k):
+            cand = [list(x) for x in lam_per_tau]
+            cand[_k] = list(edges)
+            return cost_pg(cand)
+
+        c_nosplit = cost_k([lmin, lmax])
+        split_edges, c_split = [lmin, lmax], float("inf")
+        if can_split:
+            cur = lam_per_tau[k]
+            p0 = cur[1] if len(cur) >= 3 else 0.5 * (lmin + lmax)
+            p0 = min(max(p0, lmin + cfg.min_gap_lam), lmax - cfg.min_gap_lam)
+            split_edges, c_split = _optimize_positions(
+                [lmin, p0, lmax], cost_k, cfg=cfg, min_gap=cfg.min_gap_lam, budget=budget
+            )
+        # tie or no gain -> prefer no split (parsimony)
+        if c_split < c_nosplit - 1e-12:
+            lam_per_tau[k], best = list(split_edges), c_split
+        else:
+            lam_per_tau[k], best = [lmin, lmax], c_nosplit
+    return lam_per_tau, best
+
+
+def _insert_edge_pg(tau, lam_per_tau, min_gap):
+    """Grow: split the widest tau group; the new group inherits the parent's lambda edges."""
+    for k in sorted(range(len(tau) - 1), key=lambda j: tau[j + 1] - tau[j], reverse=True):
+        mid = 0.5 * (tau[k] + tau[k + 1])
+        if (mid - tau[k]) >= min_gap and (tau[k + 1] - mid) >= min_gap:
+            new_tau = tau[: k + 1] + [mid] + tau[k + 1 :]
+            new_lpt = (
+                [list(x) for x in lam_per_tau[: k + 1]]
+                + [list(lam_per_tau[k])]
+                + [list(x) for x in lam_per_tau[k + 1 :]]
+            )
+            return new_tau, new_lpt
+    return None, None
+
+
+def _block_fixed_point_pg(tau, lpt, evaluate, *, opt_tau, opt_lambda, lmin, lmax, cfg, budget, report=None):
+    """Block-coordinate fixed point for per-tau-group lambda: alternate per-group lambda
+    choice and shared-tau coordinate descent, to a fixed point."""
+    tau, lpt = list(tau), [list(x) for x in lpt]
+    best = evaluate(tau, None, None, lambda_edges_per_tau=lpt)[0]
+    for _ in range(cfg.max_block_rounds):
+        start = best
+        if opt_lambda:
+            lpt, best = _per_group_lambda_search(
+                lpt,
+                lambda cand: evaluate(tau, None, None, lambda_edges_per_tau=cand)[0],
+                lmin,
+                lmax,
+                cfg=cfg,
+                budget=budget,
+            )
+            if report:
+                report("lambda", best, len(tau) - 1)
+        if opt_tau:
+            tau, best = _optimize_positions(
+                tau,
+                lambda e: evaluate(e, None, None, lambda_edges_per_tau=lpt)[0],
+                cfg=cfg,
+                min_gap=cfg.min_gap_tau,
+                budget=budget,
+            )
+            if report:
+                report("tau", best, len(tau) - 1)
+        if budget.exhausted() or (start - best) <= cfg.block_tol * max(abs(start), 1.0):
+            break
+    return tau, lpt, best
+
+
 # --- public API -----------------------------------------------------------------
 def optimize_qrad(
     tau_edges,
@@ -299,6 +385,7 @@ def optimize_qrad(
     max_evals=400,
     max_seconds=1800.0,
     grow_tol=None,
+    per_group_lambda=False,
     score_fn=None,
     on_progress=None,
     on_eval=None,
@@ -352,6 +439,64 @@ def optimize_qrad(
         """Lightweight live line inside a long block (penalized cost, no extra eval)."""
         if on_progress:
             on_progress(tag, float(cost), int(groups), state["n_evals"])
+
+    if per_group_lambda:
+        lmin, lmax = float(lambda_edges[0]), float(lambda_edges[-1])
+        # warm start: each split tau group gets the shared lambda edges; unsplit -> [lmin, lmax]
+        lpt = [list(lambda_edges) if flags[k] else [lmin, lmax] for k in range(n_tau0)]
+        _, r0 = evaluate(tau_edges, None, None, lambda_edges_per_tau=lpt)
+        rms0 = float(r0["rms"])
+        checkpoint("start", r0)
+        tau, lpt, best = _block_fixed_point_pg(
+            tau_edges,
+            lpt,
+            evaluate,
+            opt_tau=opt_tau,
+            opt_lambda=opt_lambda,
+            lmin=lmin,
+            lmax=lmax,
+            cfg=cfg,
+            budget=budget,
+            report=on_step,
+        )
+        checkpoint("blocks", evaluate(tau, None, None, lambda_edges_per_tau=lpt)[1])
+        if grow:
+            while (len(tau) - 1) < max_groups and not budget.exhausted():
+                cand_tau, cand_lpt = _insert_edge_pg(tau, lpt, min_gap_tau)
+                if cand_tau is None:
+                    break
+                gtol = grow_tol if grow_tol is not None else 0.01 * best
+                ct, clpt, cbest = _block_fixed_point_pg(
+                    cand_tau,
+                    cand_lpt,
+                    evaluate,
+                    opt_tau=opt_tau,
+                    opt_lambda=opt_lambda,
+                    lmin=lmin,
+                    lmax=lmax,
+                    cfg=cfg,
+                    budget=budget,
+                    report=on_step,
+                )
+                if (best - cbest) > gtol:
+                    tau, lpt, best = ct, clpt, cbest
+                    checkpoint("grow", evaluate(tau, None, None, lambda_edges_per_tau=lpt)[1])
+                else:
+                    break
+        final_r = evaluate(tau, None, None, lambda_edges_per_tau=lpt)[1]
+        return {
+            "tau_edges": [round(float(e), 4) for e in tau],
+            "lambda_edges_per_tau": [[round(float(e), 4) for e in x] for x in lpt],
+            "per_group_lambda": True,
+            "rms": float(final_r["rms"]),
+            "rms0": rms0,
+            "n_empty": int(final_r.get("n_empty", 0)),
+            "n_groups": len(tau) - 1,
+            "n_bands_total": int(final_r.get("n_groups", 0)),
+            "n_evals": state["n_evals"],
+            "elapsed": round(time.perf_counter() - t0, 2),
+            "history": history,
+        }
 
     _, r0 = evaluate(tau_edges, lambda_edges, flags)
     rms0 = float(r0["rms"])
@@ -430,6 +575,9 @@ def main(
     opt_lambda: bool = typer.Option(True, "--opt-lambda/--no-opt-lambda"),
     opt_flags: bool = typer.Option(True, "--opt-flags/--no-opt-flags"),
     grow: bool = typer.Option(True, "--grow/--no-grow", help="Allow growing the tau-group count."),
+    per_group_lambda: bool = typer.Option(
+        False, "--per-group-lambda/--shared-lambda", help="Give each tau group its own lambda split."
+    ),
     metric: str = typer.Option("rms", "--metric", help="Objective: rms | maxabs | int_q."),
     method: str = typer.Option("cd", "--method", help="Position search: cd (coordinate descent) | nm (Nelder-Mead)."),
     min_gap_tau: float = typer.Option(MIN_GAP_TAU, "--min-gap-tau"),
@@ -469,28 +617,31 @@ def main(
         max_groups=max_groups,
         max_evals=max_evals,
         max_seconds=max_seconds,
+        per_group_lambda=per_group_lambda,
         on_progress=_progress,
     )
 
     imp = (result["rms0"] - result["rms"]) / result["rms0"] * 100.0
     print("\n[qrad-opt] DONE")
     print(f"  rms: {result['rms0']:.4e} -> {result['rms']:.4e}  ({imp:+.1f}%)")
-    print(f"  tau   = {_fmt(result['tau_edges'])}   ({result['n_groups']} groups)")
-    print(f"  lambda= {_fmt(result['lambda_edges'])}")
-    print(f"  flags = {_flags_str(result['flags'])}   n_empty={result['n_empty']}")
+    print(f"  tau   = {_fmt(result['tau_edges'])}   ({result['n_groups']} tau groups)")
+    if result.get("per_group_lambda"):
+        print(f"  per-group lambda ({result['n_bands_total']} (tau,lambda) groups), n_empty={result['n_empty']}:")
+        for k, lp in enumerate(result["lambda_edges_per_tau"]):
+            cut = "no split" if len(lp) <= 2 else f"cuts at {_fmt(lp[1:-1])}"
+            print(f"    tau{k}: {cut}")
+    else:
+        print(f"  lambda= {_fmt(result['lambda_edges'])}")
+        print(f"  flags = {_flags_str(result['flags'])}   n_empty={result['n_empty']}")
     print(f"  {result['n_evals']} evals in {result['elapsed']}s")
 
     if save_plot:
-        _plot_before_after(
-            tau_bin_edges,
-            lambda_bin_edges,
-            flags,
-            result["tau_edges"],
-            result["lambda_edges"],
-            result["flags"],
-            star,
-            save_plot,
+        after = (
+            {"lpt": result["lambda_edges_per_tau"]}
+            if result.get("per_group_lambda")
+            else {"lam": result["lambda_edges"], "flags": result["flags"]}
         )
+        _plot_before_after(tau_bin_edges, lambda_bin_edges, flags, result["tau_edges"], after, star, save_plot)
         print(f"  before/after plot -> {save_plot}")
 
 
@@ -498,14 +649,17 @@ def _fmt(edges) -> str:
     return "[" + ", ".join(f"{float(e):.4g}" for e in edges) + "]"
 
 
-def _plot_before_after(tau0, lam0, flags0, tau1, lam1, flags1, star, path):
+def _plot_before_after(tau0, lam0, flags0, tau1, after, star, path):
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     a = qrad_core.score_binning(tau0, lam0, qrad_core.resolve_flags(flags0, len(tau0) - 1), star)
-    b = qrad_core.score_binning(tau1, lam1, qrad_core.resolve_flags(flags1, len(tau1) - 1), star)
+    if "lpt" in after:
+        b = qrad_core.score_binning(tau1, None, None, star, lambda_edges_per_tau=after["lpt"])
+    else:
+        b = qrad_core.score_binning(tau1, after["lam"], qrad_core.resolve_flags(after["flags"], len(tau1) - 1), star)
     ltau, rho = a["ltau"], a["rho"]
     order = np.argsort(ltau)
     win = (ltau[order] >= qrad_core.WINDOW[0] - 1.0) & (ltau[order] <= qrad_core.WINDOW[1] + 1.0)
