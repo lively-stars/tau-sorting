@@ -42,7 +42,8 @@ make clean
 # Install dependencies
 uv sync
 
-# Convert the ASCII continuum file to the fast .npy cache that `main` reads
+# Convert inputs to the fast .npy caches that `main` reads (positional INPUT [OUTPUT])
+uv run python tausort.py convert-odf ODF_nc_format.nc ODF_format.npy        # (or convert_odf_to_npy.py -i/-o)
 uv run python tausort.py convert-continuum continuumabs.dat continuumabs.npy
 
 # Run the Q_rad explorer web app as a managed background server (uses ./.venv)

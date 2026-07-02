@@ -298,5 +298,38 @@ class TestConvertContinuum(unittest.TestCase):
                     self.assertEqual(got[t, p, lam], ref[lam, t, p])
 
 
+class TestConvertOdf(unittest.TestCase):
+    def test_nc_to_npy(self):
+        import os
+        import tempfile
+
+        try:
+            from netCDF4 import Dataset
+        except Exception:
+            self.skipTest("netCDF4 not available")
+        from typer.testing import CliRunner
+
+        nt, npr, nb, nsb, numfp = 2, 2, 2, 2, 3
+        d = tempfile.mkdtemp()
+        nc, out = os.path.join(d, "odf.nc"), os.path.join(d, "odf.npy")
+        with Dataset(nc, "w") as ds:
+            for name, size in (("np", npr), ("nt", nt), ("nbins", nb), ("nsubbins", nsb), ("numfp", numfp)):
+                ds.createDimension(name, size)
+            ds.createVariable("ODF", "i2", ("nt", "np", "nbins", "nsubbins"))[:] = 1000  # 10**(1000/1000)=10
+            ds.createVariable("FreqG", "f8", ("numfp",))[:] = [1.0, 2.0, 3.0]
+            ds.createVariable("P", "f8", ("np",))[:] = [0.5, 1.5]
+            ds.createVariable("T", "f8", ("nt",))[:] = [3.2, 4.0]
+            ds.createVariable("subbin", "f8", ("nbins", "nsubbins"))[:] = 0.5
+            ds.vturb = 2.0
+
+        res = CliRunner().invoke(ts.app, ["convert-odf", nc, out])
+        self.assertEqual(res.exit_code, 0, res.output)
+        a = np.load(out, allow_pickle=True)
+        self.assertEqual(int(a["nt"][0]), nt)
+        self.assertEqual(int(a["nbins"][0]), nb)
+        self.assertTrue(np.allclose(a["T"][0], [3.2, 4.0]))
+        self.assertTrue(np.allclose(a["ODF"][0], 10.0))  # 10**(ODF/1000)
+
+
 if __name__ == "__main__":
     unittest.main()

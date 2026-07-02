@@ -3464,5 +3464,27 @@ def convert_continuum(
     console.print(f"[green]✓ {abs_file} -> {out}  shape={kappa.shape}  ({kappa.min():.2e} … {kappa.max():.2e})[/green]")
 
 
+@app.command("convert-odf")
+def convert_odf(
+    input_file: Path = typer.Argument(..., help="Input ODF NetCDF (.nc) file to convert."),
+    output: str = typer.Argument("", help="Output .npy path (default: ODF_format.npy, what `main` reads)."),
+):
+    """
+    Convert an ODF NetCDF (.nc) file to the .npy structured array that `main` loads.
+
+    Usage: `convert-odf INPUT.nc [OUTPUT.npy]`. `main` reads `ODF_format.npy` if present (much
+    faster than parsing the NetCDF) and hints at this converter when it is missing; the default
+    output is `ODF_format.npy` (not a suffix swap of the input). Thin wrapper over
+    `convert_odf_to_npy.convert_odf_netcdf_to_npy`.
+    """
+    from convert_odf_to_npy import convert_odf_netcdf_to_npy
+
+    if not input_file.exists():
+        raise typer.BadParameter(f"{input_file} not found")
+    out = Path(output) if output else Path("ODF_format.npy")
+    convert_odf_netcdf_to_npy(input_file, out)
+    console.print(f"[green]✓ {input_file} -> {out}[/green]")
+
+
 if __name__ == "__main__":
     app()
