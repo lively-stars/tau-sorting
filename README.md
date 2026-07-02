@@ -570,6 +570,10 @@ env vars in your compose/run:
   toward OOM).
 - `QRAD_MAX_GROUPS=5` (default 8) — cap how many tau-groups the optimizer may grow to; each extra
   group enlarges the per-eval opacity arrays. Lower it if the optimizer OOMs.
+- `ODF_MMAP=1` (default off) — memory-map the ~1.4 GB ODF `.npy` instead of loading it into RAM.
+  It's read-only downstream so results are identical; this keeps the ODF as reclaimable, file-backed
+  page cache (the kernel drops it under pressure) rather than anonymous RSS that OOMs. Big win on a
+  tight host: idle RSS drops ~1.4 GB. (`convert-odf` must have produced the `.npy`.)
 
 CI (`.github/workflows/docker-publish.yml`) auto-builds and publishes to GHCR
 (`ghcr.io/lively-stars/tau-sorting`) on every push to `main` (tagged `latest` + branch + commit

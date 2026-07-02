@@ -20,6 +20,7 @@ and continuum opacity data to calculate binned opacities for radiative transfer.
 
 # from matplotlib.tests.test_widgets import ax
 import json
+import os
 import time
 from pathlib import Path
 from typing import Annotated
@@ -184,8 +185,14 @@ def read_odf_npy(filepath: Path) -> ODFData:
     console.print(f"[cyan]Reading ODF data from {filepath}[/cyan]")
     console.print("  Using fast .npy format")
 
+    # ODF_MMAP=1 memory-maps the big ODF array instead of loading it into RAM. The ODF is
+    # read-only downstream, so this is numerically identical; it just keeps the ~1.4 GB out of
+    # anonymous RSS (it becomes reclaimable, file-backed page cache), which avoids OOM on
+    # RAM-constrained hosts. The small fields are always materialized as plain arrays.
+    mmap = os.environ.get("ODF_MMAP", "").strip().lower() not in ("", "0", "false", "no")
+
     try:
-        data = np.load(filepath, allow_pickle=True)
+        data = np.load(filepath, mmap_mode="r") if mmap else np.load(filepath, allow_pickle=True)
 
         odf = ODFData()
 
@@ -197,13 +204,16 @@ def read_odf_npy(filepath: Path) -> ODFData:
         odf.numfp = int(data["numfp"][0])
 
         console.print(f"  Dimensions: nt={odf.nt}, np={odf.np}, nbins={odf.nbins}, nsubbins={odf.nsubbins}")
+        if mmap:
+            console.print("  ODF_MMAP=1: ODF array memory-mapped (kept out of RAM)")
 
-        # Read arrays
+        # Big array: keep memory-mapped when enabled, else an in-RAM view. Small fields are
+        # copied to plain arrays (negligible size) so they don't pin the mmap.
         odf.ODF = data["ODF"][0]
-        odf.wavelength_grid = data["wavelength_grid"][0] * 1e-7  # convert to cm
-        odf.P = data["P"][0]
-        odf.T = data["T"][0]
-        odf.subbin = data["subbin"][0]
+        odf.wavelength_grid = np.array(data["wavelength_grid"][0]) * 1e-7  # convert to cm
+        odf.P = np.array(data["P"][0])
+        odf.T = np.array(data["T"][0])
+        odf.subbin = np.array(data["subbin"][0])
         odf.vturb = np.float64(data["vturb"][0])
 
         console.print(f"  Turbulent velocity: {odf.vturb} km/s")
