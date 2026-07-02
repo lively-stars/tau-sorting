@@ -339,7 +339,7 @@ const groupColor = g => g>=0 ? PAL[g % PAL.length] : 'rgba(140,150,170,0.30)';
 
 function render(d){
   const grayResid = d.q_gray_over_rho.map((g,i)=>g - d.q_full_over_rho[i]);
-  const C = {full:'#3ecf8e', gray:'#5b9bd5', cur:'#ff9d3c', bad:'#e2555b'};
+  const C = {full:'#3ecf8e', gray:'#5b9bd5', cur:'#ff9d3c', bad:'#e2555b', gold:'#f5d442'};
 
   // --- top panel: binning diagram (log10 λ vs -log10 τ_Ros), sub-bins colored by group ---
   const ptColor = d.bin_group.map(groupColor);
@@ -364,6 +364,12 @@ function render(d){
     {...base, y:grayResid, name:'gray − full', line:{color:C.gray,width:1.5,dash:'dot'}, xaxis:'x3',yaxis:'y3', showlegend:false},
     {...base, y:d.residual, name:'this − full', line:{color:C.cur,width:2.5}, xaxis:'x3',yaxis:'y3', showlegend:false},
   ];
+  // optional golden-standard reference curve (present only when data/kappa_goldenS.dat exists)
+  if (Array.isArray(d.q_golden_over_rho)) {
+    const goldResid = d.q_golden_over_rho.map((g,i)=>g - d.q_full_over_rho[i]);
+    data.push({...base, y:d.q_golden_over_rho, name:'goldenS', line:{color:C.gold,width:1.6,dash:'dashdot'}, xaxis:'x2',yaxis:'y2'});
+    data.push({...base, y:goldResid, name:'goldenS − full', line:{color:C.gold,width:1.6,dash:'dashdot'}, xaxis:'x3',yaxis:'y3', showlegend:false});
+  }
   const font={color:'#cdd6e5'}; const grid='#2b3547';
   const layout = {
     paper_bgcolor:'#1a2130', plot_bgcolor:'#121826', font, shapes,

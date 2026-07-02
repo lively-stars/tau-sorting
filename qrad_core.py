@@ -122,7 +122,22 @@ def reference_for_star(star: str):
     q_full, _ = _qrad_from_table(
         np.asarray(f.kap_mean), np.asarray(f.B_band, dtype=np.float64), np.asarray(f.tab_T), np.asarray(f.tab_p), star
     )
-    REF_CACHE[star].update(ltau=ltau, q_full=q_full, q_gray=q_gray, rho=rho)
+
+    # optional "golden standard" reference table (e.g. a hand-tuned 12-band binning),
+    # plotted alongside gray/full when data/kappa_goldenS.dat is present.
+    q_golden = None
+    golden_path = _REPO / "data" / "kappa_goldenS.dat"
+    if golden_path.exists():
+        gd = read_kappa_4_band_comparison(str(golden_path))
+        q_golden, _ = _qrad_from_table(
+            np.asarray(gd.kap_mean),
+            np.asarray(gd.B_band, dtype=np.float64),
+            np.asarray(gd.tab_T),
+            np.asarray(gd.tab_p),
+            star,
+        )
+
+    REF_CACHE[star].update(ltau=ltau, q_full=q_full, q_gray=q_gray, q_golden=q_golden, rho=rho)
     return REF_CACHE[star]
 
 
@@ -245,6 +260,7 @@ def score_binning(tau_edges, lambda_edges, flags, star, *, n_splits=3, lambda_ed
         "rho": rho,
         "q_full": q_full,
         "q_gray": ref["q_gray"],
+        "q_golden": ref.get("q_golden"),
         "n_groups": int(n_groups),
         "n_bands": int(n_bands),
         "n_empty": int((members == 0).sum()),

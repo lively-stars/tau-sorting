@@ -130,7 +130,7 @@ def compute(tau_edges, lambda_edges, split_lambda, star, lambda_edges_per_tau=No
 
         # binning diagram: sub-bin scatter (colored by group downstream) + group boxes
         bg = r["band_index"][SKIP:]
-        return {
+        out = {
             "ltau": ltau[idx].tolist(),
             "q_over_rho": (q[idx] / rho[idx]).tolist(),
             "q_full_over_rho": (q_full[idx] / rho[idx]).tolist(),
@@ -152,6 +152,11 @@ def compute(tau_edges, lambda_edges, split_lambda, star, lambda_edges_per_tau=No
             "group_tau_edges": r["group_tau_edges"].tolist(),
             "group_lam_edges": r["group_lam_edges"].tolist(),
         }
+        # optional golden-standard reference curve (only when data/kappa_goldenS.dat exists)
+        q_golden = r.get("q_golden")
+        if q_golden is not None:
+            out["q_golden_over_rho"] = (q_golden[idx] / rho[idx]).tolist()
+        return out
 
 
 def optimize_edges(tau_window, lambda_edges, max_bins, threshold):

@@ -119,7 +119,11 @@ plot updates live. Three stacked panels:
 - **Binning diagram** (top) — the same view as `tau_rosseland_at_tau_lambda_one.jpg`: every
   wavelength sub-bin plotted at (log₁₀ λ, −log₁₀ τ_Ros(τ_λ=1)), colored by which (λ, τ) group it
   lands in, with the group boxes drawn on top. Shows *how the current edges carve up the sub-bins*.
-- **Q/ρ** (middle) and **residual vs full ODF** (bottom), with the rms / max / ∫Q metrics.
+- **Q/ρ** (middle) and **residual vs full ODF** (bottom), with the rms / max / ∫Q metrics. The
+  references plotted are **full ODF** (the baseline) and **gray**; if you place a table at
+  `data/kappa_goldenS.dat` (e.g. `ln -s kappa_12_band.dat data/kappa_goldenS.dat`) a **goldenS**
+  curve is added too — a fixed "known-good" binning to compare your table against. It's optional:
+  when the file is absent it's simply not shown.
 
 **Optimize τ edges** runs the greedy high-overlap optimizer (same as
 `tausort.py main --optimize-high-overlap`): it grows to *N* optimally-placed τ groups over the
