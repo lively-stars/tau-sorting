@@ -1620,6 +1620,23 @@ def parse_split_lambda(spec: str) -> list[bool]:
     return out
 
 
+def parse_lambda_per_tau(specs: list[str]) -> list[list[float]]:
+    """Parse repeated ``--lambda-per-tau`` entries (one per tau group) into a list of
+    per-group lambda-edge lists. Each entry is a comma/space-separated strictly
+    increasing edge list with >= 2 values (exactly 2 = that group is not lambda-split).
+    All groups must share the same outer window; that is checked by the caller.
+    """
+    out: list[list[float]] = []
+    for s in specs:
+        edges = [float(t) for t in s.replace(",", " ").split() if t]
+        if len(edges) < 2:
+            raise typer.BadParameter(f"--lambda-per-tau entry '{s}' needs >= 2 edges")
+        if any(edges[i] >= edges[i + 1] for i in range(len(edges) - 1)):
+            raise typer.BadParameter(f"--lambda-per-tau entry '{s}' must be strictly increasing")
+        out.append(edges)
+    return out
+
+
 def build_group_specs_split_lambda(
     tau_bin_edges: list[float],
     lambda_bin_edges: list[int | float],
@@ -2776,6 +2793,7 @@ def build_kappa_dat_filename(
     tau_edges_per_lambda: list[list[float]] | None = None,
     tau_bin_edges: list[float] | None = None,
     split_along_lambda: list[bool] | None = None,
+    lambda_edges_per_tau: list[list[float]] | None = None,
 ) -> str:
     """
     Build a .dat filename that encodes the binning parameters.
@@ -2787,11 +2805,21 @@ def build_kappa_dat_filename(
       ``kappa_30band_lm2_tg3-2_sp3_lam_3_4_5.dat`` (full edges live in the .npy).
     - Split-flag mode (shared tau + per-group flags): the flags are encoded as a
       1/0 string, e.g. ``kappa_30band_lm2_sl11001101_sp3_tau_..._lam_3_3.8_5.dat``.
+    - Per-tau-group lambda: shared tau edges + each group's own interior lambda
+      cut(s) (``x`` = no split, ``+`` joins multiple cuts in one group), e.g.
+      ``kappa_21band_pt_sp3_tau_..._lam_3_5_cuts_3.82-3.65-x-3.8.dat``.
     Edges round to 4 decimals.
     """
 
     def _fmt(vals: list[float]) -> str:
         return "_".join(f"{round(float(v), 4):g}" for v in vals)
+
+    if lambda_edges_per_tau is not None and tau_bin_edges is not None:
+        lmin, lmax = lambda_edges_per_tau[0][0], lambda_edges_per_tau[0][-1]
+        cuts = "-".join(
+            "x" if len(e) <= 2 else "+".join(f"{round(float(v), 4):g}" for v in e[1:-1]) for e in lambda_edges_per_tau
+        )
+        return f"kappa_{nbands}band_pt_sp{n_splits}_tau_{_fmt(tau_bin_edges)}_lam_{_fmt([lmin, lmax])}_cuts_{cuts}.dat"
 
     if split_along_lambda is not None and tau_bin_edges is not None:
         n_lambda = len(lambda_bin_edges) - 1
@@ -2904,6 +2932,17 @@ def main(
             "(uniform split when >1 lambda cell).",
         ),
     ] = None,
+    lambda_per_tau: Annotated[
+        list[str],
+        typer.Option(
+            "--lambda-per-tau",
+            help="Per-tau-group lambda edges: repeat once per tau group (in order), each a "
+            "comma-separated increasing edge list, e.g. --lambda-per-tau=3,3.82,5 "
+            "--lambda-per-tau=3,5 ... . Each tau group gets its OWN wavelength split (2 edges = "
+            "no split); all groups must share the same outer [min,max] window. Activates "
+            "per-tau-lambda mode; mutually exclusive with --split-lambda / --optimize-high-overlap.",
+        ),
+    ] = [],
     skip_first_n_wavelengths: int | None = typer.Option(
         1440,
         "--skip-first-n-wavelengths",
@@ -3089,10 +3128,43 @@ def main(
     top_edge = -np.log10(tau_rosseland[max_height_idx] + 0.2)
 
     tau_edges_per_lambda: list[list[float]] | None = None  # per-cell / uniform modes
-    flag_tau_bin_edges: list[float] | None = None  # flag mode (clamped shared edges)
+    flag_tau_bin_edges: list[float] | None = None  # flag mode / per-tau mode (clamped shared edges)
     split_flags: list[bool] | None = None
+    lambda_edges_per_tau: list[list[float]] | None = None  # per-tau-group lambda mode
 
-    if split_lambda is not None:
+    if lambda_per_tau:
+        # ---- Per-tau-group lambda mode: each tau group has its OWN lambda edges ----
+        if optimize_high_overlap or split_lambda is not None:
+            raise typer.BadParameter(
+                "--lambda-per-tau is mutually exclusive with --split-lambda and --optimize-high-overlap."
+            )
+        n_tau = len(tau_bin_edges) - 1
+        lambda_edges_per_tau = parse_lambda_per_tau(lambda_per_tau)
+        if len(lambda_edges_per_tau) != n_tau:
+            raise typer.BadParameter(
+                f"--lambda-per-tau has {len(lambda_edges_per_tau)} entries, expected one per tau group ({n_tau})."
+            )
+        if len({e[0] for e in lambda_edges_per_tau}) != 1 or len({e[-1] for e in lambda_edges_per_tau}) != 1:
+            raise typer.BadParameter("all --lambda-per-tau groups must share the same outer [min, max] lambda window.")
+        lambda_bin_edges = [lambda_edges_per_tau[0][0], lambda_edges_per_tau[0][-1]]  # outer window for plot/save
+        n_lambda = 1
+        # Membership from un-clamped edges; descriptor from the atmosphere-top-clamped tau.
+        _gt0, _gl0, offsets = build_group_specs_per_tau(tau_bin_edges, lambda_edges_per_tau)
+        bin_number = assign_per_tau_lambda(
+            tau_rosseland_at_tau_lambda_one,
+            wavelength_grid_subbins_centers,
+            tau_bin_edges,
+            lambda_edges_per_tau,
+            offsets,
+        )
+        flag_tau_bin_edges = list(tau_bin_edges)
+        flag_tau_bin_edges[0] = top_edge
+        group_tau_edges, group_lam_edges, _offc = build_group_specs_per_tau(flag_tau_bin_edges, lambda_edges_per_tau)
+        n_split_groups = sum(1 for e in lambda_edges_per_tau if len(e) > 2)
+        console.print(
+            f"[green]per-tau-lambda mode: {n_split_groups}/{n_tau} tau-groups split, each with its own λ cut[/green]"
+        )
+    elif split_lambda is not None:
         # ---- Flag mode: shared tau binning + per-tau-group lambda-split flags ----
         if optimize_high_overlap:
             raise typer.BadParameter("--split-lambda and --optimize-high-overlap are mutually exclusive.")
@@ -3331,6 +3403,7 @@ def main(
         tau_edges_per_lambda=tau_edges_per_lambda,
         tau_bin_edges=flag_tau_bin_edges,
         split_along_lambda=split_flags,
+        lambda_edges_per_tau=lambda_edges_per_tau,
     )
     write_kappa_4_band_comparison(kappa_dat_path, build_kappa_band_comparison(tau_bin_results, odf))
     t1 = time.perf_counter()

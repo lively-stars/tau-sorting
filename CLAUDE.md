@@ -131,6 +131,14 @@ grouping modes:
   (`nBands = nSplits · Σ_k (split[k] ? nLambda : 1)`). `build_group_specs_split_lambda` /
   `assign_split_lambda`. Mutually exclusive with `--optimize-high-overlap`; omit the flag to get
   the per-cell uniform behavior.
+- **Per-tau-group lambda (`--lambda-per-tau`)**: a **shared** tau binning where each tau group
+  carries its **own** lambda edges (`--lambda-per-tau` repeated once per tau group; 2 edges = that
+  group unsplit) — the wavelength cut can differ (or be absent) per tau group. All groups share the
+  outer `[min,max]` window; the interior cut(s) vary. `build_group_specs_per_tau` / `assign_per_tau_lambda`
+  (tau-major, `g = offsets[k] + j`). Generalizes the split-flag model; this is the representation
+  the Q_rad optimizer's `--per-group-lambda` mode produces (and what lets its result be saved as a
+  `.dat`). Mutually exclusive with `--split-lambda` / `--optimize-high-overlap`. The `.dat` name is
+  `kappa_<nBands>band_pt_sp<n>_tau_<edges>_lam_<min>_<max>_cuts_<g0>-<g1>-...` (`x` = unsplit).
 
 Two files are written (both gitignored):
 

@@ -248,5 +248,29 @@ class TestPerGroupLambdaOptimizer(unittest.TestCase):
             self.assertAlmostEqual(got[k][1], targets[k], delta=0.05)
 
 
+class TestPerTauLambdaCLI(unittest.TestCase):
+    def test_parse_lambda_per_tau(self):
+        got = ts.parse_lambda_per_tau(["3,3.82,5", "3 5", "3, 4.2, 5"])
+        self.assertEqual(got, [[3.0, 3.82, 5.0], [3.0, 5.0], [3.0, 4.2, 5.0]])
+
+    def test_parse_lambda_per_tau_rejects_bad(self):
+        with self.assertRaises(Exception):
+            ts.parse_lambda_per_tau(["5,3"])  # not increasing
+        with self.assertRaises(Exception):
+            ts.parse_lambda_per_tau(["3"])  # < 2 edges
+
+    def test_filename_encodes_per_group_cuts(self):
+        name = ts.build_kappa_dat_filename(
+            nbands=21,
+            n_splits=3,
+            lambda_bin_edges=[3.0, 5.0],
+            tau_bin_edges=[-0.63, 0.3488, 1.2275, 2.885, 7.0],
+            lambda_edges_per_tau=[[3, 3.82, 5], [3, 3.65, 5], [3, 5], [3, 3.8, 5]],
+        )
+        self.assertIn("_pt_", name)
+        self.assertIn("cuts_3.82-3.65-x-3.8", name)
+        self.assertTrue(name.endswith(".dat"))
+
+
 if __name__ == "__main__":
     unittest.main()

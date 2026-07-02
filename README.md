@@ -46,6 +46,13 @@ uv run python tausort.py main --lambda-bin-edges 3 --lambda-bin-edges 3.8 --lamb
 uv run python tausort.py main --lambda-bin-edges 3 --lambda-bin-edges 3.8 --lambda-bin-edges 5 \
     --split-lambda 00111100
 
+# Per-tau-group lambda: each tau-group gets its OWN wavelength split (its own cut, or none) --
+# repeat --lambda-per-tau once per tau-group (2 edges = no split). Here 4 tau-groups cut at
+# 3.82 / 3.65 / none / 3.8. This is the shape the Q_rad optimizer's per-group-lambda mode finds.
+uv run python tausort.py main \
+    --tau-bin-edges=-0.63 --tau-bin-edges=0.3488 --tau-bin-edges=1.2275 --tau-bin-edges=2.885 --tau-bin-edges=7 \
+    --lambda-per-tau=3,3.82,5 --lambda-per-tau=3,3.65,5 --lambda-per-tau=3,5 --lambda-per-tau=3,3.8,5
+
 # Optimize tau edges (greedy high-segment-overlap search); print only
 uv run python tausort.py main --optimize-high-overlap
 # ...and save the table (grows per lambda cell up to --max-bins; threshold > 1 is unreachable
@@ -58,7 +65,9 @@ uv run python tausort.py main --help        # all options
 
 Key flags: `--tau-bin-edges` (repeat once per edge), `--lambda-bin-edges` (log10 Å; ≥3 edges
 turns on the wavelength dimension), `--split-lambda` (a 0/1 string, one digit per tau-group;
-mutually exclusive with `--optimize-high-overlap`), `--optimize-high-overlap` /
+mutually exclusive with `--optimize-high-overlap`), `--lambda-per-tau` (repeat once per tau-group,
+each a comma-separated edge list — per-group wavelength splits; mutually exclusive with
+`--split-lambda` / `--optimize-high-overlap`), `--optimize-high-overlap` /
 `--save-after-optimize` / `--max-bins` / `--high-overlap-threshold`, and
 `--refine-mid/--no-refine-mid`. See [Tau-bin edge optimization and segmentation
 flags](#tau-bin-edge-optimization-and-segmentation-flags) below for detail.
