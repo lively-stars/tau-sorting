@@ -113,9 +113,15 @@ in the repo for the server to precompute: `models/G2_1D.dat` (the 1D atmosphere,
 Q_full residual baseline). (`data/kappa_12_band.dat` and `kappa_*band_*.dat` are only used by
 `compare_Qrad_from_kappa.py`, not the server.)
 
-Everything — the binning *and* the radiative transfer — runs on the single atmosphere
-`models/G2_1D.dat`. Type τ-edges and λ-edges, toggle which τ-groups split along λ, and the plot
-updates live. Three stacked panels:
+**Model atmosphere.** Both the binning *and* the radiative transfer run on the model picked in the
+**Model atmosphere** dropdown (default `models/G2_1D.dat`). The dropdown lists every *validated* 1D
+model in `models/`; drop more files in that folder and hit **Refresh** to re-scan. The report under
+the dropdown flags every file that *fails* validation and says why — a usable model is an ASCII table
+with 4 columns (z, ρ, p, T), ≥2 rows, and a strictly **decreasing** height column z (top of the
+atmosphere first). A model's first use precomputes (~10–30 s, then cached); switching back is instant.
+
+Type τ-edges and λ-edges, toggle which τ-groups split along λ, and the plot updates live. Three
+stacked panels:
 
 - **Binning diagram** (top) — the same view as `tau_rosseland_at_tau_lambda_one.jpg`: every
   wavelength sub-bin plotted at (log₁₀ λ, −log₁₀ τ_Ros(τ_λ=1)), colored by which (λ, τ) group it

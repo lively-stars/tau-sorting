@@ -40,6 +40,17 @@ WINDOW = qc.WINDOW
 
 _LOCK = threading.Lock()
 
+
+def _resolve_model(req):
+    """Validate the request's chosen atmosphere and return its bare filename (default when
+    absent). Raises ValueError with the reason if the file isn't a usable 1D model."""
+    name = qc._model_name(req.get("model") or None)
+    rep = qc.validate_model_file(qc.MODELS_DIR / name)
+    if not rep["ok"]:
+        raise ValueError(f"model '{name}' is not usable: {rep['error']}")
+    return name
+
+
 # --- Q_rad optimizer: one background job at a time, polled by the UI ---
 _QOPT_LOCK = threading.Lock()
 _QOPT: dict = {
@@ -53,11 +64,11 @@ _QOPT: dict = {
     "best": None,
     "rms0": None,
     "groups": 0,
-    "star": "",
+    "model": "",
 }
 
 
-def _run_qrad_opt(tau_edges, lambda_edges, flags, star, opt):
+def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
     """Thread target: run the Q_rad optimizer, streaming progress into _QOPT."""
 
     def on_eval(n, cost, r):
@@ -85,7 +96,7 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, star, opt):
             tau_edges,
             lambda_edges,
             flags=flags,
-            star=star,
+            model=model,
             opt_tau=opt["opt_tau"],
             opt_lambda=opt["opt_lambda"],
             opt_flags=opt["opt_flags"],
@@ -105,18 +116,20 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, star, opt):
         _QOPT["running"] = False
 
 
-def compute(tau_edges, lambda_edges, split_lambda, star, lambda_edges_per_tau=None):
+def compute(tau_edges, lambda_edges, split_lambda, model, lambda_edges_per_tau=None):
     """Run the per-edge pipeline (via qrad_core) and shape the Q_rad curves + metrics for the UI.
 
+    `model` selects the atmosphere the binning + RTE run on (validated file under models/).
     If `lambda_edges_per_tau` is given (one lambda-edge list per tau group), each tau group
     uses its own wavelength split; otherwise the shared-lambda + split-flag model is used.
     """
     with _LOCK:
         if lambda_edges_per_tau is not None:
-            r = qc.score_binning(tau_edges, None, None, star, lambda_edges_per_tau=lambda_edges_per_tau)
+            r = qc.score_binning(tau_edges, None, None, model, lambda_edges_per_tau=lambda_edges_per_tau)
         else:
             flags = qc.resolve_flags(split_lambda, len(tau_edges) - 1)
-            r = qc.score_binning(tau_edges, lambda_edges, flags, star)
+            r = qc.score_binning(tau_edges, lambda_edges, flags, model)
+        inv = qc.inv_for(model)
 
         ltau, rho = r["ltau"], r["rho"]
         q, q_full, q_gray, resid = r["q"], r["q_full"], r["q_gray"], r["resid"]
@@ -146,8 +159,8 @@ def compute(tau_edges, lambda_edges, split_lambda, star, lambda_edges_per_tau=No
             "total_subbins": r["total_subbins"],
             # binning diagram (log10 lambda[A] vs -log10 tau_Ros); scatter is invariant,
             # bin_group + boxes track the current edges.
-            "bin_x": qc.INV["bin_x_all"][SKIP:].tolist(),
-            "bin_y": qc.INV["bin_y_all"][SKIP:].tolist(),
+            "bin_x": inv["bin_x_all"][SKIP:].tolist(),
+            "bin_y": inv["bin_y_all"][SKIP:].tolist(),
             "bin_group": bg.astype(int).tolist(),
             "group_tau_edges": r["group_tau_edges"].tolist(),
             "group_lam_edges": r["group_lam_edges"].tolist(),
@@ -159,7 +172,7 @@ def compute(tau_edges, lambda_edges, split_lambda, star, lambda_edges_per_tau=No
         return out
 
 
-def optimize_edges(tau_window, lambda_edges, max_bins, threshold):
+def optimize_edges(tau_window, lambda_edges, max_bins, threshold, model=None):
     """Greedy high-overlap optimizer -> an optimized *shared* tau binning.
 
     Runs tausort's optimizer over a single lambda cell spanning the whole given
@@ -170,16 +183,17 @@ def optimize_edges(tau_window, lambda_edges, max_bins, threshold):
     (unreachable) it always grows to exactly `max_bins` optimally-placed groups.
     """
     with _LOCK:
+        inv = qc.inv_for(model)
         window_lambda = [float(lambda_edges[0]), float(lambda_edges[-1])]
         outer = [float(tau_window[0]), float(tau_window[-1])]
         per_cell = ts.optimize_tau_bin_edges(
-            atm=qc.INV["atm"],
-            odf=qc.INV["odf"],
-            interpolated_opacity=qc.INV["interpolated_opacity"],
-            tau_rosseland=qc.INV["tau_ross"],
-            tau_rosseland_at_tau_lambda_one=qc.INV["tau_at_lam1"],
-            wavelength_grid_subbins_centers=qc.INV["wl_centers"],
-            max_height_idx=qc.INV["max_height_idx"],
+            atm=inv["atm"],
+            odf=inv["odf"],
+            interpolated_opacity=inv["interpolated_opacity"],
+            tau_rosseland=inv["tau_ross"],
+            tau_rosseland_at_tau_lambda_one=inv["tau_at_lam1"],
+            wavelength_grid_subbins_centers=inv["wl_centers"],
+            max_height_idx=inv["max_height_idx"],
             initial_tau_bin_edges=outer,
             lambda_bin_edges=window_lambda,
             threshold=float(threshold),
@@ -219,9 +233,14 @@ class Handler(BaseHTTPRequestHandler):
                     {
                         "default_tau_edges": [-0.63, 0.3488, 1.2275, 2.885, 7.0],
                         "default_lambda_edges": [3.0, 3.8, 5.0],
+                        "default_model": qc.DEFAULT_MODEL,
+                        "models": qc.scan_models(),
                     }
                 ),
             )
+        elif self.path == "/api/models":
+            # "Refresh models" button: re-scan models/ and report each file (ok or why not).
+            self._send(200, json.dumps({"default_model": qc.DEFAULT_MODEL, "models": qc.scan_models()}))
         elif self.path == "/api/optimize_qrad_status":
             self._send(
                 200,
@@ -263,18 +282,18 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("tau edges must be strictly increasing")
             if any(lambda_edges[i] >= lambda_edges[i + 1] for i in range(len(lambda_edges) - 1)):
                 raise ValueError("lambda edges must be strictly increasing")
+            model = _resolve_model(req)
             t0 = time.perf_counter()
             if self.path == "/api/optimize":
                 max_bins = int(req.get("max_bins", 4))
                 if not 2 <= max_bins <= 12:
                     raise ValueError("target tau groups must be between 2 and 12")
                 # unreachable threshold -> grow to exactly max_bins, optimally placed
-                edges = optimize_edges(tau_edges, lambda_edges, max_bins, threshold=1.01)
+                edges = optimize_edges(tau_edges, lambda_edges, max_bins, threshold=1.01, model=model)
                 out = {"tau_edges": edges, "elapsed": round(time.perf_counter() - t0, 2)}
                 self._send(200, json.dumps(out))
                 return
             if self.path == "/api/optimize_qrad":
-                star = req.get("star")  # ignored (single model)
                 with _QOPT_LOCK:
                     if _QOPT["running"]:
                         raise ValueError("a Q_rad optimization is already running")
@@ -289,11 +308,11 @@ class Handler(BaseHTTPRequestHandler):
                         best=None,
                         rms0=None,
                         groups=0,
-                        star=star,
+                        model=model,
                     )
                 try:
                     flags = qc.resolve_flags(req.get("split_lambda") or None, len(tau_edges) - 1)
-                    qc.reference()  # warm the single-model reference before threading
+                    qc.reference(model)  # warm the chosen model's reference before threading
                     opt = {
                         "opt_tau": bool(req.get("opt_tau", True)),
                         "opt_lambda": bool(req.get("opt_lambda", True)),
@@ -305,7 +324,7 @@ class Handler(BaseHTTPRequestHandler):
                         "max_evals": int(req.get("max_evals", 5000)),
                     }
                     threading.Thread(
-                        target=_run_qrad_opt, args=(tau_edges, lambda_edges, flags, star, opt), daemon=True
+                        target=_run_qrad_opt, args=(tau_edges, lambda_edges, flags, model, opt), daemon=True
                     ).start()
                 except Exception:
                     _QOPT["running"] = False
@@ -314,7 +333,6 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/kappa_dat":
                 # Build the current binning's kappa table and stream it back as a download.
-                star = req.get("star")  # ignored (single model)
                 lpt = req.get("lambda_edges_per_tau") or None
                 fd, tmp = tempfile.mkstemp(suffix=".dat")
                 os.close(fd)
@@ -322,11 +340,11 @@ class Handler(BaseHTTPRequestHandler):
                     with _LOCK:
                         if lpt is not None:
                             _w, name = qc.save_kappa_dat(
-                                tau_edges, None, None, star, lambda_edges_per_tau=lpt, path=tmp
+                                tau_edges, None, None, model, lambda_edges_per_tau=lpt, path=tmp
                             )
                         else:
                             flags = qc.resolve_flags(req.get("split_lambda") or None, len(tau_edges) - 1)
-                            _w, name = qc.save_kappa_dat(tau_edges, lambda_edges, flags, star, path=tmp)
+                            _w, name = qc.save_kappa_dat(tau_edges, lambda_edges, flags, model, path=tmp)
                         data = Path(tmp).read_bytes()
                 finally:
                     try:
@@ -336,9 +354,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_download(data, name)
                 return
             split_lambda = req.get("split_lambda") or None
-            star = req.get("star")  # ignored (single model)
             lpt = req.get("lambda_edges_per_tau") or None
-            out = compute(tau_edges, lambda_edges, split_lambda, star, lambda_edges_per_tau=lpt)
+            out = compute(tau_edges, lambda_edges, split_lambda, model, lambda_edges_per_tau=lpt)
             out["elapsed"] = round(time.perf_counter() - t0, 2)
             self._send(200, json.dumps(out))
         except Exception as e:

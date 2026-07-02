@@ -63,8 +63,12 @@
 
 <div class="wrap">
   <div class="panel controls">
-    <div class="hint" style="margin-bottom:10px">Atmosphere: <b>models/G2_1D.dat</b> — the 1D model the
-       binning and radiative transfer both run on.</div>
+    <label>Model atmosphere &nbsp;<span class="hint">(binning + radiative transfer run on this)</span></label>
+    <div class="opt-row">
+      <select id="model" style="flex:1; min-width:0"></select>
+      <button id="refresh" class="secondary" title="Re-scan models/ and validate every file">&#x21bb; Refresh</button>
+    </div>
+    <div id="modelreport" class="hint" style="margin:4px 0 10px"></div>
 
     <label>&tau;-group edges &nbsp;<span class="hint">(&minus;log₁₀&tau;<sub>Ros</sub>, increasing)</span></label>
     <input type="text" id="tau" />
@@ -154,10 +158,39 @@ function clearPerGroup() {
   $('flags').classList.remove('moot');
 }
 
+// Populate the model dropdown (valid models only) and the per-file validation report.
+function renderModels(d) {
+  const sel = $('model'); const cur = sel.value;
+  const valid = d.models.filter(m => m.ok);
+  sel.innerHTML = '';
+  valid.forEach(m => { const o = document.createElement('option'); o.value = m.name; o.textContent = m.name; sel.appendChild(o); });
+  sel.value = valid.some(m=>m.name===cur) ? cur
+            : (valid.some(m=>m.name===d.default_model) ? d.default_model
+            : (valid[0] ? valid[0].name : ''));
+  const rep = $('modelreport');
+  if (!d.models.length) { rep.innerHTML = '<span style="color:#e2555b">no files in models/</span>'; return; }
+  rep.innerHTML = d.models.map(m => m.ok
+    ? `<div><span style="color:#3ecf8e">&#10003; ${m.name}</span> <span class="hint">(${m.n_rows}&times;${m.n_cols})</span></div>`
+    : `<div><span style="color:#e2555b" title="${m.error}">&#10007; ${m.name}</span> <span class="hint">${m.error}</span></div>`
+  ).join('');
+}
+
+async function refreshModels() {
+  $('refresh').disabled = true;
+  try {
+    const d = await (await fetch('/api/models')).json();
+    renderModels(d);
+    const nbad = d.models.filter(m=>!m.ok).length;
+    setStatus(`models refreshed · ${d.models.filter(m=>m.ok).length} valid` + (nbad?` · ${nbad} with errors`:''), nbad>0);
+  } catch(e){ setStatus('could not refresh models: '+e.message, true); }
+  finally { $('refresh').disabled = false; }
+}
+
 async function init() {
   const r = await fetch('/api/init'); const d = await r.json();
   $('tau').value = d.default_tau_edges.join(', ');
   $('lambda').value = d.default_lambda_edges.join(', ');
+  renderModels(d);
   buildFlags();
   // resume a Q_rad optimization that's already running (e.g. after a page reload)
   try {
@@ -192,7 +225,7 @@ async function compute() {
   if (tau.length<2) return setStatus('need ≥2 tau edges', true);
   if (lam.length<2) return setStatus('need ≥2 lambda edges', true);
   const split = [...document.querySelectorAll('#flags input')].map(c=>c.checked);
-  const body = {tau_edges:tau, lambda_edges:lam, split_lambda:split};
+  const body = {tau_edges:tau, lambda_edges:lam, split_lambda:split, model:$('model').value};
   if (PG_LAMBDA && PG_LAMBDA.length === tau.length-1) body.lambda_edges_per_tau = PG_LAMBDA;
   $('go').disabled = true; setStatus('computing… (binning + radiative transfer)');
   try {
@@ -217,7 +250,7 @@ async function optimize() {
   setStatus(`optimizing τ edges → ${maxbins} groups… (greedy search, a few seconds)`);
   try {
     const r = await fetch('/api/optimize', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({tau_edges:tau, lambda_edges:lam, max_bins:maxbins})});
+      body: JSON.stringify({tau_edges:tau, lambda_edges:lam, max_bins:maxbins, model:$('model').value})});
     const d = await r.json();
     if (!r.ok) throw new Error(d.error||'optimize failed');
     $('tau').value = d.tau_edges.join(', ');
@@ -241,7 +274,8 @@ async function qoptStart() {
   if (tau.length<2 || lam.length<2) return setStatus('need ≥2 τ and ≥2 λ edges', true);
   const split = [...document.querySelectorAll('#flags input')].map(c=>c.checked);
   const body = {
-    tau_edges: tau, lambda_edges: lam, split_lambda: split, opt_tau: $('qv_tau').checked, opt_lambda: $('qv_lam').checked,
+    tau_edges: tau, lambda_edges: lam, split_lambda: split, model: $('model').value,
+    opt_tau: $('qv_tau').checked, opt_lambda: $('qv_lam').checked,
     opt_flags: $('qv_flags').checked, grow: $('qv_grow').checked,
     per_group_lambda: $('qv_pergroup').checked,
     max_seconds: Math.max(20, Math.min(1800, parseInt($('qbudget').value,10)||180)),
@@ -294,7 +328,7 @@ async function downloadKappa() {
   catch(e){ return setStatus('could not parse edges', true); }
   if (tau.length<2 || lam.length<2) return setStatus('need ≥2 τ and ≥2 λ edges', true);
   const split = [...document.querySelectorAll('#flags input')].map(c=>c.checked);
-  const body = {tau_edges:tau, lambda_edges:lam, split_lambda:split};
+  const body = {tau_edges:tau, lambda_edges:lam, split_lambda:split, model:$('model').value};
   if (PG_LAMBDA && PG_LAMBDA.length === tau.length-1) body.lambda_edges_per_tau = PG_LAMBDA;
   $('dl').disabled = true; setStatus('building kappa table…');
   try {
@@ -392,6 +426,11 @@ const onEdgeEdit = () => { clearPerGroup(); buildFlags(); };
 $('tau').addEventListener('input', onEdgeEdit);
 $('lambda').addEventListener('input', onEdgeEdit);
 $('go').addEventListener('click', compute);
+$('refresh').addEventListener('click', refreshModels);
+$('model').addEventListener('change', () => {
+  setStatus('switching atmosphere — a model’s first use precomputes (~10–30s)…');
+  compute();
+});
 $('opt').addEventListener('click', optimize);
 $('qopt').addEventListener('click', qoptStart);
 $('qcancel').addEventListener('click', qoptCancel);

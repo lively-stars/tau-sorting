@@ -7,8 +7,8 @@ target disagree, so this optimizes the metric that actually matters.
 
 Decision variables (chosen scope): the interior tau edges (count may grow), the interior
 lambda-cell edge positions, and the per-tau-group split flags. The outer tau/lambda
-window is held fixed, as is the number of lambda cells. Everything runs on the single
-atmosphere models/G2_1D.dat (the `star` argument is a vestigial no-op).
+window is held fixed, as is the number of lambda cells. The atmosphere is selectable via
+`model` (a validated 1D model under models/; None -> DEFAULT_MODEL).
 
 Search is block-coordinate: alternate (A) coordinate descent on tau edges, (B) greedy
 split-flag flips, (C) coordinate descent on lambda edges, to a fixed point; then
@@ -64,16 +64,16 @@ def _check_feasible(edges, min_gap: float, name: str) -> None:
 
 
 # --- objective ------------------------------------------------------------------
-def make_evaluator(star, *, metric="rms", empty_penalty=EMPTY_PENALTY, score_fn=None, on_eval=None):
+def make_evaluator(model, *, metric="rms", empty_penalty=EMPTY_PENALTY, score_fn=None, on_eval=None):
     """Return (evaluate, state). `evaluate(tau, lam, flags) -> (cost, raw_dict)`.
 
     cost = base_metric * (1 + empty_penalty * n_empty). The multiplicative empty-band
     penalty counteracts the fact that an empty band is silently dropped from the Q sum
-    (which would otherwise *lower* rms and let the search collapse groups). `score_fn`
-    is dependency-injected (defaults to qrad_core.score_binning) so the search logic is
-    unit-testable against an analytic objective with no ODF. `state["n_evals"]` counts calls.
-    `on_eval(n_evals, cost, raw_dict)` (optional) fires after every evaluation — used by the
-    webapp for a live progress ticker.
+    (which would otherwise *lower* rms and let the search collapse groups). `model` selects
+    the atmosphere passed through to `score_fn`. `score_fn` is dependency-injected (defaults
+    to qrad_core.score_binning) so the search logic is unit-testable against an analytic
+    objective with no ODF. `state["n_evals"]` counts calls. `on_eval(n_evals, cost, raw_dict)`
+    (optional) fires after every evaluation — used by the webapp for a live progress ticker.
     """
     score = score_fn if score_fn is not None else qrad_core.score_binning
     state = {"n_evals": 0}
@@ -81,9 +81,9 @@ def make_evaluator(star, *, metric="rms", empty_penalty=EMPTY_PENALTY, score_fn=
 
     def evaluate(tau_edges, lambda_edges, flags, *, lambda_edges_per_tau=None):
         if lambda_edges_per_tau is not None:
-            r = score(list(tau_edges), None, None, star, lambda_edges_per_tau=[list(x) for x in lambda_edges_per_tau])
+            r = score(list(tau_edges), None, None, model, lambda_edges_per_tau=[list(x) for x in lambda_edges_per_tau])
         else:
-            r = score(list(tau_edges), list(lambda_edges), list(flags), star)
+            r = score(list(tau_edges), list(lambda_edges), list(flags), model)
         base = abs(float(r[_key]))
         cost = base * (1.0 + empty_penalty * int(r.get("n_empty", 0)))
         state["n_evals"] += 1
@@ -370,7 +370,7 @@ def optimize_qrad(
     lambda_edges,
     *,
     flags=None,
-    star=None,  # ignored: single atmosphere (models/G2_1D.dat). Kept for score_fn signature symmetry.
+    model=None,  # atmosphere to optimize on (validated file under models/; None -> DEFAULT_MODEL)
     opt_tau=True,
     opt_lambda=True,
     opt_flags=True,
@@ -414,7 +414,7 @@ def optimize_qrad(
 
     t0 = time.perf_counter()
     evaluate, state = make_evaluator(
-        star, metric=metric, empty_penalty=empty_penalty, score_fn=score_fn, on_eval=on_eval
+        model, metric=metric, empty_penalty=empty_penalty, score_fn=score_fn, on_eval=on_eval
     )
     budget = _Budget(max_evals=max_evals, max_seconds=max_seconds, state=state, t0=t0, should_stop=should_stop)
     cfg = _Cfg(method=method, min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam, adjust_steps=tuple(adjust_steps))
@@ -569,6 +569,9 @@ def main(
         [-0.63, 0.3488, 1.2275, 2.885, 7.0], "--tau-bin-edges", help="Interior+outer tau edges (use = for negatives)."
     ),
     lambda_bin_edges: list[float] = typer.Option([3.0, 3.8, 5.0], "--lambda-bin-edges", help="Lambda-cell edges."),
+    model: str = typer.Option(
+        "", "--model", help="Atmosphere under models/ to optimize on (default: G2_1D.dat). Must pass validation."
+    ),
     split_lambda: str = typer.Option("", "--split-lambda", help="Per-tau-group 0/1 split flags (default all-on)."),
     opt_tau: bool = typer.Option(True, "--opt-tau/--no-opt-tau"),
     opt_lambda: bool = typer.Option(True, "--opt-lambda/--no-opt-lambda"),
@@ -589,15 +592,20 @@ def main(
         False, "--save-dat/--no-save-dat", help="After optimizing, write the optimized binning's kappa .dat table."
     ),
 ):
+    model_name = qrad_core._model_name(model or None)
+    report = qrad_core.validate_model_file(qrad_core.MODELS_DIR / model_name)
+    if not report["ok"]:
+        raise typer.BadParameter(f"model models/{model_name} is not valid: {report['error']}")
+
     print("[startup] precomputing invariants (reads the ODF; ~10-30s)...")
-    qrad_core.precompute()
+    qrad_core.precompute(model_name)
 
     n_tau = len(tau_bin_edges) - 1
     flags = parse_split_lambda(split_lambda) if split_lambda.strip() else [True] * n_tau
     if len(flags) != n_tau:
         raise typer.BadParameter(f"--split-lambda has {len(flags)} entries, expected {n_tau}")
 
-    print(f"[qrad-opt] atmosphere=models/G2_1D.dat metric={metric} method={method} grow={grow}")
+    print(f"[qrad-opt] atmosphere=models/{model_name} metric={metric} method={method} grow={grow}")
     print(f"[qrad-opt] start: tau={_fmt(tau_bin_edges)} lam={_fmt(lambda_bin_edges)} flags={_flags_str(flags)}")
 
     def _progress(tag, value, groups, n):
@@ -607,6 +615,7 @@ def main(
         tau_bin_edges,
         lambda_bin_edges,
         flags=flags,
+        model=model_name,
         opt_tau=opt_tau,
         opt_lambda=opt_lambda,
         opt_flags=opt_flags,
@@ -642,16 +651,18 @@ def main(
             if result.get("per_group_lambda")
             else {"lam": result["lambda_edges"], "flags": result["flags"]}
         )
-        _plot_before_after(tau_bin_edges, lambda_bin_edges, flags, result["tau_edges"], after, save_plot)
+        _plot_before_after(tau_bin_edges, lambda_bin_edges, flags, result["tau_edges"], after, save_plot, model_name)
         print(f"  before/after plot -> {save_plot}")
 
     if save_dat:
         if result.get("per_group_lambda"):
             written, _name = qrad_core.save_kappa_dat(
-                result["tau_edges"], None, None, lambda_edges_per_tau=result["lambda_edges_per_tau"]
+                result["tau_edges"], None, None, model_name, lambda_edges_per_tau=result["lambda_edges_per_tau"]
             )
         else:
-            written, _name = qrad_core.save_kappa_dat(result["tau_edges"], result["lambda_edges"], result["flags"])
+            written, _name = qrad_core.save_kappa_dat(
+                result["tau_edges"], result["lambda_edges"], result["flags"], model_name
+            )
         print(f"  kappa table -> {written}")
 
 
@@ -659,17 +670,17 @@ def _fmt(edges) -> str:
     return "[" + ", ".join(f"{float(e):.4g}" for e in edges) + "]"
 
 
-def _plot_before_after(tau0, lam0, flags0, tau1, after, path):
+def _plot_before_after(tau0, lam0, flags0, tau1, after, path, model=None):
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    a = qrad_core.score_binning(tau0, lam0, qrad_core.resolve_flags(flags0, len(tau0) - 1))
+    a = qrad_core.score_binning(tau0, lam0, qrad_core.resolve_flags(flags0, len(tau0) - 1), model)
     if "lpt" in after:
-        b = qrad_core.score_binning(tau1, None, None, lambda_edges_per_tau=after["lpt"])
+        b = qrad_core.score_binning(tau1, None, None, model, lambda_edges_per_tau=after["lpt"])
     else:
-        b = qrad_core.score_binning(tau1, after["lam"], qrad_core.resolve_flags(after["flags"], len(tau1) - 1))
+        b = qrad_core.score_binning(tau1, after["lam"], qrad_core.resolve_flags(after["flags"], len(tau1) - 1), model)
     ltau, rho = a["ltau"], a["rho"]
     order = np.argsort(ltau)
     win = (ltau[order] >= qrad_core.WINDOW[0] - 1.0) & (ltau[order] <= qrad_core.WINDOW[1] + 1.0)
@@ -683,7 +694,7 @@ def _plot_before_after(tau0, lam0, flags0, tau1, after, path):
     ax[0].plot(ltau[idx], b["q"][idx] / rho[idx], color="#ff9d3c", lw=2.2, label=f"after (rms={b['rms']:.2e})")
     ax[0].set_ylabel("Q / rho [erg/g/s]")
     ax[0].legend(fontsize=9)
-    ax[0].set_title("Q_rad binning optimization (models/G2_1D.dat)")
+    ax[0].set_title(f"Q_rad binning optimization (models/{qrad_core._model_name(model)})")
     ax[1].axhline(0, color="#888", lw=0.8)
     ax[1].plot(ltau[idx], a["resid"][idx], color="#5b9bd5", lw=1.6, ls="--", label="before - full")
     ax[1].plot(ltau[idx], b["resid"][idx], color="#ff9d3c", lw=2.2, label="after - full")

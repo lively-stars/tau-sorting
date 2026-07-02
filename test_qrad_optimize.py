@@ -231,7 +231,7 @@ class TestPerGroupLambdaOptimizer(unittest.TestCase):
             [-0.63, 0.35, 1.23, 2.89, 7.0],
             [3.0, 3.8, 5.0],
             flags=[True] * 4,
-            star="X",
+            model="X",
             per_group_lambda=True,
             opt_tau=False,
             grow=False,
