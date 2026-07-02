@@ -97,9 +97,12 @@ make restart       # stop + start
 ```
 
 `make start` is idempotent (it won't double-start) and the first start reads the ODF (~10–30 s)
-before it begins serving; watch progress with `tail -f webapp.log`. The data inputs (`G2_1D.dat`,
-`ODF_format.npy`, `continuumabs.dat`, `data/kappa_*.dat`, `models/`) must be present in the repo
-for the server to precompute.
+before it begins serving; watch progress with `tail -f webapp.log`. The data inputs must be present
+in the repo for the server to precompute: `G2_1D.dat`, `ODF_format.npy` (or `ODF_nc_format.nc`),
+`continuumabs.dat`, the two reference tables `data/kappa_grey.dat` (gray → the log₁₀ τ_Ross axis) and
+`data/kappa_fullodf.dat` (full-ODF → the Q_full residual baseline), and the `models/` atmospheres.
+(`data/kappa_12_band.dat` and `kappa_*band_*.dat` are only used by `compare_Qrad_from_kappa.py`, not
+the server.)
 
 Pick the model atmosphere, type τ-edges and λ-edges, toggle which τ-groups split along λ, and the
 plot updates live. Three stacked panels:
