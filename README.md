@@ -216,6 +216,27 @@ uv run python test_derivatives.py     # quick script, not unittest-based
 
 ## Data files
 
+Most data inputs are **gitignored** (large / not ours to redistribute), so a fresh clone does **not**
+include them. What ships with the repo: the code, `G2_1D.dat`, and the `models/` STAGGER atmospheres.
+
+**Required after cloning** — put these in place (repo root, and `data/`) before running the tools:
+
+| File | Needed for | What it is |
+| --- | --- | --- |
+| `ODF_nc_format.nc` **or** `ODF_format.npy` | everything | ODF opacity-distribution table (`.npy` is a faster cache of the `.nc`, made by `convert_odf_to_npy.py`; either works) |
+| `continuumabs.dat` | everything | continuum opacity |
+| `data/kappa_grey.dat` | explorer / optimizer / `compare_Qrad_from_kappa.py` | gray reference → the log₁₀ τ_Ross axis |
+| `data/kappa_fullodf.dat` | explorer / optimizer / `compare_Qrad_from_kappa.py` | full-ODF reference → the Q_full residual baseline |
+| `data/kappa_12_band.dat` | `compare_Qrad_from_kappa.py` only | a plotted 12-band reference case |
+
+So the interactive explorer / `qrad_optimize.py` need **four** of these: the ODF, `continuumabs.dat`,
+`data/kappa_grey.dat`, `data/kappa_fullodf.dat`. Already tracked (come with the clone): `G2_1D.dat`,
+`models/{F,G,K,M}_SSD`. Not used by the current pipeline: `continuumscat.dat` / `continuumall.dat`
+(only `continuumabs.dat` is read). The `kappa_*band_*.dat` tables that `compare_Qrad_from_kappa.py`
+also plots are *generated* by `tausort.py main`, not provided.
+
+The tree below documents the full set of inputs:
+
 ```
 ├── G2_1D.dat                  - 1D atmospheric model data (height - ascending, density, pressure, temperature)
 ├── Makefile                   - Makefile to compile the c version tau-sorting code
