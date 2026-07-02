@@ -21,7 +21,7 @@ Every command below runs through `uv run` so it uses that environment.
 
 ### 1. Generate opacity tables — `tausort.py main`
 
-Reads `ODF_nc_format.nc`, `continuumabs.dat` and `G2_1D.dat` (see [Data files](#data-files))
+Reads `ODF_nc_format.nc`, `continuumabs.dat` and `models/G2_1D.dat` (see [Data files](#data-files))
 and writes:
 
 - `tau_bin_opacities.npy` — structured table with `planck`/`rosseland`/`mixed` each
@@ -107,14 +107,15 @@ make restart       # stop + start
 
 `make start` is idempotent (it won't double-start) and the first start reads the ODF (~10–30 s)
 before it begins serving; watch progress with `tail -f webapp.log`. The data inputs must be present
-in the repo for the server to precompute: `G2_1D.dat`, `ODF_format.npy` (or `ODF_nc_format.nc`),
-`continuumabs.dat`, the two reference tables `data/kappa_grey.dat` (gray → the log₁₀ τ_Ross axis) and
-`data/kappa_fullodf.dat` (full-ODF → the Q_full residual baseline), and the `models/` atmospheres.
-(`data/kappa_12_band.dat` and `kappa_*band_*.dat` are only used by `compare_Qrad_from_kappa.py`, not
-the server.)
+in the repo for the server to precompute: `models/G2_1D.dat` (the 1D atmosphere, tracked),
+`ODF_format.npy` (or `ODF_nc_format.nc`), `continuumabs.dat`, and the two reference tables
+`data/kappa_grey.dat` (gray → the log₁₀ τ_Ross axis) and `data/kappa_fullodf.dat` (full-ODF → the
+Q_full residual baseline). (`data/kappa_12_band.dat` and `kappa_*band_*.dat` are only used by
+`compare_Qrad_from_kappa.py`, not the server.)
 
-Pick the model atmosphere, type τ-edges and λ-edges, toggle which τ-groups split along λ, and the
-plot updates live. Three stacked panels:
+Everything — the binning *and* the radiative transfer — runs on the single atmosphere
+`models/G2_1D.dat`. Type τ-edges and λ-edges, toggle which τ-groups split along λ, and the plot
+updates live. Three stacked panels:
 
 - **Binning diagram** (top) — the same view as `tau_rosseland_at_tau_lambda_one.jpg`: every
   wavelength sub-bin plotted at (log₁₀ λ, −log₁₀ τ_Ros(τ_λ=1)), colored by which (λ, τ) group it
@@ -145,16 +146,16 @@ per τ band; a summary lists each group's cut. (Editing the τ/λ boxes by hand 
 name, e.g. `kappa_24band_...dat`) — after an optimize run that's the optimized table, per-group λ
 included. It streams the file to your browser without touching the repo.
 
-Needs the same inputs as `compare_Qrad_from_kappa.py` (the `data/` reference tables + `models/`
-atmospheres). Pure stdlib server (no extra dependencies).
+Needs the same inputs as `compare_Qrad_from_kappa.py` (the `data/` reference tables + `models/G2_1D.dat`).
+Pure stdlib server (no extra dependencies).
 
 ### 2c. Q_rad-driven optimizer — `qrad_optimize.py`
 
 The webapp's "Optimize τ edges" button and `tausort.py main --optimize-high-overlap` both maximize
 a *proxy* (per-group high-segment overlap). This optimizer instead **minimizes the Q_rad rms
 residual directly** — the metric that actually matters — searching over the τ edges, the λ-cell
-edge positions, the per-τ-group split flags, and (optionally) the number of τ groups, for a chosen
-star:
+edge positions, the per-τ-group split flags, and (optionally) the number of τ groups, on the single
+atmosphere `models/G2_1D.dat`:
 
 ```bash
 # reposition the 4 τ edges to minimize the single-cell rms (fast, ~5 min)
@@ -182,8 +183,7 @@ by `--max-evals` / `--max-seconds`; it logs progress and prints the before/after
 Guardrails keep edges strictly increasing and above a per-axis min-gap, and an empty-band penalty
 stops the search from collapsing groups. Toggle blocks with `--no-opt-tau/--no-opt-lambda/--no-opt-flags/--no-grow`;
 pick the objective with `--metric rms|maxabs|int_q` and the position search with `--method cd|nm`
-(Nelder-Mead over a monotone reparameterization). Because Q_rad is atmosphere-specific, a binning
-tuned to one `--star` may not transfer.
+(Nelder-Mead over a monotone reparameterization).
 
 With `--per-group-lambda`, the shared cut + flags are replaced by a **per-τ-group** λ binning: for
 each τ group the search keeps the better of *no split* or a *single λ cut* (its position optimized),
@@ -195,11 +195,9 @@ Add `--save-dat` to write the optimized binning's **kappa `.dat` table** when th
 the filename encodes the binning (per-group λ included, via the `--lambda-per-tau` naming). This is
 the direct way to materialize the optimized table without re-running `tausort.py main`.
 
-On `G_SSD`, the full-scope run above takes the overlap-optimized 24-band baseline (rms **8.04e7**)
-down to rms **4.77e7 (−41%)** — ending at 5 τ groups with split flags `11110` — by trading the
-uniform 4×2 split for fewer, better-placed τ groups and a smarter split pattern. The
-upper-atmosphere residual (log₁₀τ from −2 to −5) tightens noticeably, and it beats the
-high-overlap proxy on the metric that matters:
+The full-scope run above tightens the residual noticeably — trading the uniform 4×2 split for
+fewer, better-placed τ groups and a smarter split pattern — and beats the high-overlap proxy on the
+metric that matters. Before/after on `models/G2_1D.dat`:
 
 ![Q_rad before/after optimization](plots/qrad_before_after.png)
 
@@ -214,7 +212,6 @@ high-overlap proxy on the metric that matters:
 | `uv run python plot_kap_mean_grid.py --input <kappa.dat> [--comparison tau_bin_opacities.npy]` | a kappa `.dat` (+ optional `.npy`) | `kap_mean_grid_4x3.png` (band-mean opacity grid) |
 | `uv run python tausort.py convert-odf ODF_nc_format.nc ODF_format.npy` | ODF NetCDF | `ODF_format.npy` (the fast cache `main` reads; also available standalone as `convert_odf_to_npy.py -i … -o …`) |
 | `uv run python tausort.py convert-continuum continuumabs.dat continuumabs.npy` | `continuumabs.dat` | `continuumabs.npy` (the fast cache `main` reads; ~75× faster than the ASCII `.dat`) |
-| `uv run python tausort.py convert-model models/G_SSD models/G_SSD.dat` | a binary STAGGER model | ASCII `.dat` in G2_1D.dat's 4-column `z ρ p T` format (a drop-in `--atm`; `models/{F,G,K,M}_SSD.dat` are pre-generated) |
 | `uv run python group_derivatives.py <grouped-column-file>` | a grouped column file | opacity-group derivative / segmentation analysis |
 
 `rte.py` (RT solver) and `kappa_band_reader.py` (C-binary read/write) are libraries imported by
@@ -241,7 +238,8 @@ uv run python test_derivatives.py     # quick script, not unittest-based
 ## Data files
 
 Most data inputs are **gitignored** (large / not ours to redistribute), so a fresh clone does **not**
-include them. What ships with the repo: the code, `G2_1D.dat`, and the `models/` STAGGER atmospheres.
+include them. What ships with the repo: the code and `models/G2_1D.dat` (the single 1D atmosphere the
+binning *and* the radiative transfer run on).
 
 **Required after cloning** — put these in place (repo root, and `data/`) before running the tools:
 
@@ -257,15 +255,14 @@ So the interactive explorer / `qrad_optimize.py` need **four** of these: the ODF
 `data/kappa_grey.dat`, `data/kappa_fullodf.dat`. (Build the fast `.npy` caches once with
 `tausort.py convert-odf ODF_nc_format.nc ODF_format.npy` and
 `tausort.py convert-continuum continuumabs.dat continuumabs.npy`.) Already tracked
-(come with the clone): `G2_1D.dat`,
-`models/{F,G,K,M}_SSD`. Not used by the current pipeline: `continuumscat.dat` / `continuumall.dat`
+(comes with the clone): `models/G2_1D.dat`. Not used by the current pipeline: `continuumscat.dat` / `continuumall.dat`
 (only `continuumabs.dat` is read). The `kappa_*band_*.dat` tables that `compare_Qrad_from_kappa.py`
 also plots are *generated* by `tausort.py main`, not provided.
 
 The tree below documents the full set of inputs:
 
 ```
-├── G2_1D.dat                  - 1D atmospheric model data (height - ascending, density, pressure, temperature)
+├── models/G2_1D.dat           - 1D atmospheric model data (height - descending, density, pressure, temperature)
 ├── Makefile                   - Makefile to compile the c version tau-sorting code
 ├── ODF_nc_format.nc           - ODF data in netCDF format (p, T, n_bins, n_subbins)
 ├── continuumabs.dat           - Continuum absorption data (p, T, n_bins)
@@ -310,7 +307,7 @@ variables:
 1. Inputs:
     - ODF_nc_format.nc - kappa (T, p, N_b, N_s)
     - continuumall.dat - continuum opacity (T, p, N_b)
-    - G2_1D.dat - atmospheric model (height, rho, p, T)
+    - models/G2_1D.dat - atmospheric model (height, rho, p, T)
 2. Calculate reference kappa (rosseland, 500nm...) as
     $$ \kappa_\text{all}(T,p) = f(\kappa_{ODF} + \kappa_{cont}) $$
     $$ \kappa_\text{ross} = \frac{\integrate_0^\inf\kappa_\text{all} \frac{dB_\lambda}{dT} d\lambda}{\integrate_0^\inf \frac{dB_\lambda}{dT} d\lambda} $$
@@ -435,7 +432,7 @@ rename/move it into `plots/` to reproduce the files above.
 `compare_Qrad_from_kappa.py` validates the binned-opacity tables by computing the
 radiative heating rate Q_rad from each table and comparing it against the full-ODF
 reference. It is **self-contained** in this repo — the RT solver (`rte.py`) and the
-1D model atmospheres (`models/`) live here, no external dependencies.
+1D atmosphere (`models/G2_1D.dat`) live here, no external dependencies.
 
 ```bash
 uv run python compare_Qrad_from_kappa.py
@@ -444,7 +441,7 @@ uv run python compare_Qrad_from_kappa.py
 For each opacity table it:
 
 1. reads the table with `kappa_band_reader.read_kappa_4_band_comparison`,
-2. interpolates `ln κ` / `ln B` onto a 1D STAGGER atmosphere (`models/G_SSD`),
+2. interpolates `ln κ` / `ln B` onto the 1D atmosphere (`models/G2_1D.dat`),
 3. solves the 1D RTE per band (short characteristics, `rte.Solver`),
 4. sums the per-band heating rate to Q_rad and plots `Q/ρ` and the residual
    `(Q − Q_full)/ρ` vs `log10 τ_ross`, writing `Qrad_comparison.png`.
@@ -508,7 +505,10 @@ peak). Bottom: residual vs the full-ODF reference — this is what matters.
 
 ![Q_rad comparison](plots/qrad_comparison.png)
 
-Reading the residual panel (rms over log₁₀τ ∈ [−5, 4], lower is better):
+Reading the residual panel (rms over log₁₀τ ∈ [−5, 4], lower is better). *The absolute rms values and
+the `qrad_comparison.png` residual plot were produced on the STAGGER solar model that supplied the RTE
+atmosphere at the time; the RTE now runs on `models/G2_1D.dat`, so re-run the commands for exact
+figures — the **relative** ordering (the takeaway) is atmosphere-robust:*
 
 | binning | bands | rms `ΔQ/ρ` | vs full |
 | --- | --- | --- | --- |
@@ -525,4 +525,4 @@ that one group recovers nearly the full benefit at 15 bands. That is exactly wha
 `--split-lambda` is for: spend wavelength resolution only where it matters.
 
 Relevant files: `compare_Qrad_from_kappa.py` (driver), `rte.py` (RT solver),
-`models/{F,G,K,M}_SSD` (STAGGER 1D atmospheres).
+`models/G2_1D.dat` (the 1D atmosphere).

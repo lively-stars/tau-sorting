@@ -63,9 +63,8 @@
 
 <div class="wrap">
   <div class="panel controls">
-    <label>Model atmosphere (RT)</label>
-    <select id="star"></select>
-    <div class="hint">STAGGER 1D atmosphere the radiative transfer is solved on.</div>
+    <div class="hint" style="margin-bottom:10px">Atmosphere: <b>models/G2_1D.dat</b> — the 1D model the
+       binning and radiative transfer both run on.</div>
 
     <label>&tau;-group edges &nbsp;<span class="hint">(&minus;log₁₀&tau;<sub>Ros</sub>, increasing)</span></label>
     <input type="text" id="tau" />
@@ -157,7 +156,6 @@ function clearPerGroup() {
 
 async function init() {
   const r = await fetch('/api/init'); const d = await r.json();
-  $('star').innerHTML = d.stars.map(s=>`<option ${s===d.default_star?'selected':''}>${s}</option>`).join('');
   $('tau').value = d.default_tau_edges.join(', ');
   $('lambda').value = d.default_lambda_edges.join(', ');
   buildFlags();
@@ -194,7 +192,7 @@ async function compute() {
   if (tau.length<2) return setStatus('need ≥2 tau edges', true);
   if (lam.length<2) return setStatus('need ≥2 lambda edges', true);
   const split = [...document.querySelectorAll('#flags input')].map(c=>c.checked);
-  const body = {tau_edges:tau, lambda_edges:lam, split_lambda:split, star:$('star').value};
+  const body = {tau_edges:tau, lambda_edges:lam, split_lambda:split};
   if (PG_LAMBDA && PG_LAMBDA.length === tau.length-1) body.lambda_edges_per_tau = PG_LAMBDA;
   $('go').disabled = true; setStatus('computing… (binning + radiative transfer)');
   try {
@@ -243,8 +241,7 @@ async function qoptStart() {
   if (tau.length<2 || lam.length<2) return setStatus('need ≥2 τ and ≥2 λ edges', true);
   const split = [...document.querySelectorAll('#flags input')].map(c=>c.checked);
   const body = {
-    tau_edges: tau, lambda_edges: lam, split_lambda: split, star: $('star').value,
-    opt_tau: $('qv_tau').checked, opt_lambda: $('qv_lam').checked,
+    tau_edges: tau, lambda_edges: lam, split_lambda: split, opt_tau: $('qv_tau').checked, opt_lambda: $('qv_lam').checked,
     opt_flags: $('qv_flags').checked, grow: $('qv_grow').checked,
     per_group_lambda: $('qv_pergroup').checked,
     max_seconds: Math.max(20, Math.min(1800, parseInt($('qbudget').value,10)||180)),
@@ -297,7 +294,7 @@ async function downloadKappa() {
   catch(e){ return setStatus('could not parse edges', true); }
   if (tau.length<2 || lam.length<2) return setStatus('need ≥2 τ and ≥2 λ edges', true);
   const split = [...document.querySelectorAll('#flags input')].map(c=>c.checked);
-  const body = {tau_edges:tau, lambda_edges:lam, split_lambda:split, star:$('star').value};
+  const body = {tau_edges:tau, lambda_edges:lam, split_lambda:split};
   if (PG_LAMBDA && PG_LAMBDA.length === tau.length-1) body.lambda_edges_per_tau = PG_LAMBDA;
   $('dl').disabled = true; setStatus('building kappa table…');
   try {

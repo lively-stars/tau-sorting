@@ -213,13 +213,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.path in ("/", "/index.html"):
             self._send(200, (Path(__file__).resolve().parent / "index.html").read_bytes(), "text/html; charset=utf-8")
         elif self.path == "/api/init":
-            stars = sorted(p.name for p in (_REPO / "models").glob("*_SSD"))
             self._send(
                 200,
                 json.dumps(
                     {
-                        "stars": stars,
-                        "default_star": "G_SSD" if "G_SSD" in stars else (stars[0] if stars else ""),
                         "default_tau_edges": [-0.63, 0.3488, 1.2275, 2.885, 7.0],
                         "default_lambda_edges": [3.0, 3.8, 5.0],
                     }
@@ -277,7 +274,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps(out))
                 return
             if self.path == "/api/optimize_qrad":
-                star = req.get("star") or "G_SSD"
+                star = req.get("star")  # ignored (single model)
                 with _QOPT_LOCK:
                     if _QOPT["running"]:
                         raise ValueError("a Q_rad optimization is already running")
@@ -296,7 +293,7 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 try:
                     flags = qc.resolve_flags(req.get("split_lambda") or None, len(tau_edges) - 1)
-                    qc.reference_for_star(star)  # warm before threading (avoid REF_CACHE races)
+                    qc.reference()  # warm the single-model reference before threading
                     opt = {
                         "opt_tau": bool(req.get("opt_tau", True)),
                         "opt_lambda": bool(req.get("opt_lambda", True)),
@@ -317,7 +314,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/kappa_dat":
                 # Build the current binning's kappa table and stream it back as a download.
-                star = req.get("star") or "G_SSD"
+                star = req.get("star")  # ignored (single model)
                 lpt = req.get("lambda_edges_per_tau") or None
                 fd, tmp = tempfile.mkstemp(suffix=".dat")
                 os.close(fd)
@@ -339,7 +336,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_download(data, name)
                 return
             split_lambda = req.get("split_lambda") or None
-            star = req.get("star") or "G_SSD"
+            star = req.get("star")  # ignored (single model)
             lpt = req.get("lambda_edges_per_tau") or None
             out = compute(tau_edges, lambda_edges, split_lambda, star, lambda_edges_per_tau=lpt)
             out["elapsed"] = round(time.perf_counter() - t0, 2)

@@ -34,13 +34,13 @@ _h = 2.0 * np.pi * 1.0546e-27
 _kB = 1.3807e-16
 _SBC = (2 * np.pi**5 * _kB**4) / (15 * _cvac**2 * _h**3)
 
-DZ = 1.0e6  # STAGGER grid spacing [cm]
+DZ = 1.0e6  # atmosphere grid spacing [cm] (uniform; matches models/G2_1D.dat) for the int-Q weight
 NMU = 4
 WINDOW = (-5.0, 4.0)  # log10(tau_ross) window for the rms metric
 SKIP = 1440  # first N (far-UV) sub-bins skipped in the binning-diagram scatter
 
 INV: dict = {}  # edge-independent invariants (filled by precompute)
-REF_CACHE: dict = {}  # per-star reference Q_rad / axis
+REF: dict = {}  # single-model reference Q_rad curves + log10(tau) axis (filled by reference())
 
 
 def resolve_flags(split_lambda, n_tau: int) -> list[bool]:
@@ -65,25 +65,24 @@ def _bilin_interp(dat, x, y):
     )
 
 
-def _load_star(star: str):
-    """Read a models/<star> STAGGER atmosphere -> (z, rho, pre, tem)."""
-    tvar = np.fromfile(str(_REPO / "models" / star), dtype=np.float32)
-    tvar = tvar[4:].reshape([int(tvar[0]), int(tvar[1])])
-    nz = tvar.shape[-1]
-    z = np.arange(nz) * DZ
-    rho = np.flip(tvar[0])
-    pre = np.flip(tvar[2])
-    tem = np.flip(tvar[3])
-    return z, rho, pre, tem
+def _atm_rt():
+    """The single atmosphere (G2_1D.dat) in the orientation the RTE wants.
+
+    Returns (z, rho, pre, tem) top-of-atmosphere first. G2_1D.dat is top-first but stores z
+    as height (descending), while `compute_tau`/`Solver` want z increasing into the atmosphere
+    (tau=0 at index 0), so z = depth-from-top = atm.z[0] - atm.z; rho/p/T are in file order.
+    """
+    atm = INV["atm"]
+    return atm.z[0] - atm.z, atm.rho, atm.p, atm.T
 
 
-def _qrad_from_table(kap_tab, b_tab, ttab, ptab, star):
-    """Q_rad(z) summed over bands, mirroring compare_Qrad's Q_from_kappa.
+def _qrad_from_table(kap_tab, b_tab, ttab, ptab):
+    """Q_rad(z) summed over bands on the single atmosphere, mirroring compare_Qrad's Q_from_kappa.
 
     kap_tab: [nband, nT, np] ln(kappa); b_tab: [nband, nT] ln(B); ttab/ptab log10.
     Empty (all-NaN) bands are dropped; non-finite ln(B) -> B=0.
     """
-    z, rho, pre, tem = REF_CACHE[star]["atm"]
+    z, rho, pre, tem = _atm_rt()
     keep = ~np.isnan(kap_tab).all(axis=(1, 2))
     kap_tab = kap_tab[keep]
     b_tab = np.where(np.isfinite(b_tab[keep]), b_tab[keep], -700.0)
@@ -102,17 +101,17 @@ def _qrad_from_table(kap_tab, b_tab, ttab, ptab, star):
     return rt.get_Q().sum(axis=0), k_z
 
 
-def reference_for_star(star: str):
-    """Precompute (and cache) the full-ODF Q_rad, gray Q_rad, and the log10(tau) axis."""
-    if star in REF_CACHE:
-        return REF_CACHE[star]
-    REF_CACHE[star] = {"atm": _load_star(star)}
-    z, rho, pre, tem = REF_CACHE[star]["atm"]
+def reference():
+    """Compute (once) the gray/full-ODF (and optional goldenS) Q_rad references and the
+    log10(tau) axis on the single G2_1D atmosphere. Cached in the module-global REF."""
+    if REF:
+        return REF
+    z, rho, _pre, _tem = _atm_rt()
 
-    # gray reference -> tau_ross axis
+    # gray reference -> tau axis
     g = read_kappa_4_band_comparison(str(_REPO / "data" / "kappa_grey.dat"))
     q_gray, k_gray = _qrad_from_table(
-        np.asarray(g.kap_mean), np.asarray(g.B_band, dtype=np.float64), np.asarray(g.tab_T), np.asarray(g.tab_p), star
+        np.asarray(g.kap_mean), np.asarray(g.B_band, dtype=np.float64), np.asarray(g.tab_T), np.asarray(g.tab_p)
     )
     tau_ref = np.maximum(compute_tau(z, k_gray, rho)[0], 1e-20)
     ltau = np.log10(tau_ref)
@@ -120,31 +119,26 @@ def reference_for_star(star: str):
     # full-ODF reference (the residual baseline)
     f = read_kappa_4_band_comparison(str(_REPO / "data" / "kappa_fullodf.dat"))
     q_full, _ = _qrad_from_table(
-        np.asarray(f.kap_mean), np.asarray(f.B_band, dtype=np.float64), np.asarray(f.tab_T), np.asarray(f.tab_p), star
+        np.asarray(f.kap_mean), np.asarray(f.B_band, dtype=np.float64), np.asarray(f.tab_T), np.asarray(f.tab_p)
     )
 
-    # optional "golden standard" reference table (e.g. a hand-tuned 12-band binning),
-    # plotted alongside gray/full when data/kappa_goldenS.dat is present.
+    # optional "golden standard" reference table, plotted when data/kappa_goldenS.dat is present.
     q_golden = None
     golden_path = _REPO / "data" / "kappa_goldenS.dat"
     if golden_path.exists():
         gd = read_kappa_4_band_comparison(str(golden_path))
         q_golden, _ = _qrad_from_table(
-            np.asarray(gd.kap_mean),
-            np.asarray(gd.B_band, dtype=np.float64),
-            np.asarray(gd.tab_T),
-            np.asarray(gd.tab_p),
-            star,
+            np.asarray(gd.kap_mean), np.asarray(gd.B_band, dtype=np.float64), np.asarray(gd.tab_T), np.asarray(gd.tab_p)
         )
 
-    REF_CACHE[star].update(ltau=ltau, q_full=q_full, q_gray=q_gray, q_golden=q_golden, rho=rho)
-    return REF_CACHE[star]
+    REF.update(ltau=ltau, q_full=q_full, q_gray=q_gray, q_golden=q_golden, rho=rho)
+    return REF
 
 
 def precompute():
     """Edge-independent setup: mirror the front of tausort.main once."""
     t0 = time.perf_counter()
-    atm = ts.read_atmospheric_model(_REPO / "G2_1D.dat")
+    atm = ts.read_atmospheric_model(_REPO / "models" / "G2_1D.dat")
     npy = _REPO / "ODF_format.npy"
     odf = ts.read_odf_npy(npy) if npy.exists() else ts.read_odf_netcdf(_REPO / "ODF_nc_format.nc")
     cont = ts.read_continuum_data(_REPO / "continuumabs.dat", odf.nbins, odf.nt, odf.np)
@@ -177,14 +171,14 @@ def precompute():
         bin_y_all=bin_y_all,
         n_subbins=len(wl_centers),
     )
-    # warm the default STAGGER atmosphere reference
-    reference_for_star("G_SSD")
+    reference()  # warm the single-model gray/full/golden reference + tau axis
     print(f"[precompute] ready in {time.perf_counter() - t0:.1f}s (odf {odf.nt}x{odf.np}, {INV['n_subbins']} sub-bins)")
 
 
-def score_binning(tau_edges, lambda_edges, flags, star, *, n_splits=3, lambda_edges_per_tau=None) -> dict:
+def score_binning(tau_edges, lambda_edges, flags, star=None, *, n_splits=3, lambda_edges_per_tau=None) -> dict:
     """Map a binning to Q_rad + residual metrics against the full-ODF reference.
 
+    (`star` is accepted but ignored — there is a single atmosphere, models/G2_1D.dat.)
     Requires `precompute()` to have run. Two grouping modes:
       - shared lambda + flags (default): `flags` resolved (one bool per tau group).
       - per-tau-group lambda: pass `lambda_edges_per_tau` (one lambda-edge list per tau
@@ -195,7 +189,7 @@ def score_binning(tau_edges, lambda_edges, flags, star, *, n_splits=3, lambda_ed
     scalar metrics and the descriptor/membership the binning diagram needs.
     """
     odf, cont, atm = INV["odf"], INV["cont"], INV["atm"]
-    ref = reference_for_star(star)
+    ref = reference()
     clamped = list(tau_edges)
     clamped[0] = float(-np.log10(INV["tau_ross"][INV["max_height_idx"]] + 0.2))
 
@@ -238,7 +232,7 @@ def score_binning(tau_edges, lambda_edges, flags, star, *, n_splits=3, lambda_ed
         b_tab = np.log(np.where(b_band > 0, b_band, np.nan)).T  # [nBands, nT]
     kap_tab[members == 0] = np.nan
 
-    q, _kz = _qrad_from_table(kap_tab, b_tab, np.asarray(odf.T), np.asarray(odf.P), star)
+    q, _kz = _qrad_from_table(kap_tab, b_tab, np.asarray(odf.T), np.asarray(odf.P))
 
     ltau = ref["ltau"]
     rho = ref["rho"]
@@ -292,7 +286,7 @@ def _kappa_dat_name(tau_edges, lambda_edges, flags, lambda_edges_per_tau, clampe
     )
 
 
-def save_kappa_dat(tau_edges, lambda_edges, flags, star, *, lambda_edges_per_tau=None, n_splits=3, path=None):
+def save_kappa_dat(tau_edges, lambda_edges, flags, star=None, *, lambda_edges_per_tau=None, n_splits=3, path=None):
     """Build the binning's C-format kappa table and write it to disk.
 
     Runs the same grouping + sort + band-average pipeline as `score_binning` but keeps the

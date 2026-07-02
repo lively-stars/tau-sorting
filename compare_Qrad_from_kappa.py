@@ -137,35 +137,16 @@ else:
 # ---------------------------------------------------------------------------
 # 1. Load a 1D model atmosphere (first index = top of the box)
 # ---------------------------------------------------------------------------
-# load an atmos - i provide 4 default atmos to choose from
-stars = [
-    "G_SSD",
-]
-# some physical parameters
-dzs: list[int | float] = [
-    1e6,
-]
-gstars = np.array(
-    10
-    ** np.asarray(
-        [
-            4.438,
-        ]
-    ),
-    dtype=np.float64,
-)
-
-ii = 0  # which atmosphere to load
-dz = dzs[ii]
-gstar = gstars[ii]
-
-tvar = np.fromfile(str(_HERE / "models" / stars[ii]), dtype=np.float32)
-tvar = tvar[4:].reshape([int(tvar[0]), int(tvar[1])])
-nz = tvar.shape[-1]
-z = np.arange(nz) * dz
-rho = np.flip(tvar[0])
-pre = np.flip(tvar[2])
-tem = np.flip(tvar[3])
+# The single 1D atmosphere: models/G2_1D.dat (ASCII columns z rho p T, top-of-atmosphere first).
+_atm = np.loadtxt(_HERE / "models" / "G2_1D.dat")
+nz = _atm.shape[0]
+dz = 1e6  # uniform grid spacing [cm], for the int-Q weight
+# The RTE wants z increasing into the atmosphere; G2_1D.dat stores z as height (descending),
+# so use depth-from-top. rho/p/T stay in the file's (top-first) order.
+z = _atm[0, 0] - _atm[:, 0]
+rho = _atm[:, 1]
+pre = _atm[:, 2]
+tem = _atm[:, 3]
 
 
 # ---------------------------------------------------------------------------
