@@ -83,6 +83,24 @@ binning + RTE (~3 s):
 uv run python webapp/server.py        # then open the printed http://localhost:<port>
 ```
 
+**Deploy via a local `.venv` + `make`.** For a long-running instance, install the deps into a
+project-local `.venv` once and manage the server with the Makefile (it runs
+`.venv/bin/python webapp/server.py` detached, writes the PID to `.webapp.pid`, and logs to
+`webapp.log`):
+
+```bash
+uv sync            # create ./.venv and install dependencies
+make start         # start the server in the background  -> http://localhost:8771
+make status        # is it running?
+make stop          # stop it
+make restart       # stop + start
+```
+
+`make start` is idempotent (it won't double-start) and the first start reads the ODF (~10–30 s)
+before it begins serving; watch progress with `tail -f webapp.log`. The data inputs (`G2_1D.dat`,
+`ODF_format.npy`, `continuumabs.dat`, `data/kappa_*.dat`, `models/`) must be present in the repo
+for the server to precompute.
+
 Pick the model atmosphere, type τ-edges and λ-edges, toggle which τ-groups split along λ, and the
 plot updates live. Three stacked panels:
 

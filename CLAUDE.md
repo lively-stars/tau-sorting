@@ -42,6 +42,13 @@ make clean
 # Install dependencies
 uv sync
 
+# Run the Q_rad explorer web app as a managed background server (uses ./.venv)
+uv sync                 # create ./.venv + install deps (once)
+make start              # start webapp/server.py detached -> http://localhost:8771
+make status             # running?    (PID in .webapp.pid, logs in webapp.log)
+make stop               # stop it
+make restart            # stop + start
+
 # Lint + format (manual pre-commit; see "Pre-commit" section below)
 ./scripts/precommit.sh            # auto-fix + format the tree
 ./scripts/precommit.sh --check    # report-only, exit non-zero if changes needed
