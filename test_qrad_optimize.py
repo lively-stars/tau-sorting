@@ -286,19 +286,7 @@ class TestConvertContinuum(unittest.TestCase):
         np.savetxt(dat, data)
         res = CliRunner().invoke(
             ts.app,
-            [
-                "convert-continuum",
-                "--cont-abs",
-                dat,
-                "--nt",
-                str(nt),
-                "--np",
-                str(npr),
-                "--nbins",
-                str(nb),
-                "--output",
-                out,
-            ],
+            ["convert-continuum", dat, out, "--nt", str(nt), "--np", str(npr), "--nbins", str(nb)],
         )
         self.assertEqual(res.exit_code, 0, res.output)
         got = np.load(out)

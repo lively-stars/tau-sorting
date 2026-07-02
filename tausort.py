@@ -3432,19 +3432,20 @@ def verify_planck(
 
 @app.command("convert-continuum")
 def convert_continuum(
-    abs_file: Path = typer.Option("continuumabs.dat", "--cont-abs", help="ASCII continuum .dat to convert."),
+    abs_file: Path = typer.Argument(..., help="Input ASCII continuum .dat to convert."),
+    output: str = typer.Argument("", help="Output .npy path (default: the input name with .npy)."),
     nt: int = typer.Option(300, "--nt", help="Number of temperature points."),
     n_pressure: int = typer.Option(150, "--np", help="Number of pressure points."),
     nbins: int = typer.Option(328, "--nbins", help="Number of wavelength bins."),
-    output: str = typer.Option("", "--output", "-o", help="Output .npy path (default: the .dat name with .npy)."),
 ):
     """
     Convert an ASCII continuum .dat to the fast .npy cache that `main` reads.
 
-    `main` reads `continuumabs.npy` if present (a ~75x speedup over the ASCII .dat) but never
-    writes it; this command produces it once. The .dat is one value per line in (lambda, T, P)
-    order (nbins*nt*n_pressure = 328*300*150 by default); it is reshaped and transposed to the
-    (nt, n_pressure, nbins) layout `main` expects. Pass --nt/--np/--nbins for other grids.
+    Usage: `convert-continuum INPUT.dat [OUTPUT.npy]`. `main` reads `continuumabs.npy` if present
+    (a ~75x speedup over the ASCII .dat) but never writes it; this produces it. The .dat is one
+    value per line in (lambda, T, P) order (nbins*nt*n_pressure = 328*300*150 by default); it is
+    reshaped and transposed to the (nt, n_pressure, nbins) layout `main` expects. Pass
+    --nt/--np/--nbins for other grids.
     """
     if not abs_file.exists():
         raise typer.BadParameter(f"{abs_file} not found")
