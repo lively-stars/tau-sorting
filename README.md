@@ -213,6 +213,7 @@ high-overlap proxy on the metric that matters:
 | `uv run python plot_odf_samples.py` | `ODF_nc_format.nc` | `odf_samples.png` (sample ODF curves) |
 | `uv run python plot_kap_mean_grid.py --input <kappa.dat> [--comparison tau_bin_opacities.npy]` | a kappa `.dat` (+ optional `.npy`) | `kap_mean_grid_4x3.png` (band-mean opacity grid) |
 | `uv run python convert_odf_to_npy.py -i ODF_nc_format.nc -o ODF_format.npy` | ODF NetCDF | `.npy` (faster loading) |
+| `uv run python tausort.py convert-continuum` | `continuumabs.dat` | `continuumabs.npy` (the fast cache `main` reads; ~75× faster than the ASCII `.dat`) |
 | `uv run python group_derivatives.py <grouped-column-file>` | a grouped column file | opacity-group derivative / segmentation analysis |
 
 `rte.py` (RT solver) and `kappa_band_reader.py` (C-binary read/write) are libraries imported by
@@ -252,7 +253,8 @@ include them. What ships with the repo: the code, `G2_1D.dat`, and the `models/`
 | `data/kappa_12_band.dat` | `compare_Qrad_from_kappa.py` only | a plotted 12-band reference case |
 
 So the interactive explorer / `qrad_optimize.py` need **four** of these: the ODF, `continuumabs.dat`,
-`data/kappa_grey.dat`, `data/kappa_fullodf.dat`. Already tracked (come with the clone): `G2_1D.dat`,
+`data/kappa_grey.dat`, `data/kappa_fullodf.dat`. (Build the fast `continuumabs.npy` cache once with
+`uv run python tausort.py convert-continuum`.) Already tracked (come with the clone): `G2_1D.dat`,
 `models/{F,G,K,M}_SSD`. Not used by the current pipeline: `continuumscat.dat` / `continuumall.dat`
 (only `continuumabs.dat` is read). The `kappa_*band_*.dat` tables that `compare_Qrad_from_kappa.py`
 also plots are *generated* by `tausort.py main`, not provided.

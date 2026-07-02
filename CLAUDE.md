@@ -42,6 +42,9 @@ make clean
 # Install dependencies
 uv sync
 
+# Convert the ASCII continuum file to the fast .npy cache that `main` reads
+uv run python tausort.py convert-continuum        # continuumabs.dat -> continuumabs.npy
+
 # Run the Q_rad explorer web app as a managed background server (uses ./.venv)
 uv sync                 # create ./.venv + install deps (once)
 make start              # start webapp/server.py detached -> http://localhost:8771

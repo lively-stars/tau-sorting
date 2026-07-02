@@ -272,5 +272,43 @@ class TestPerTauLambdaCLI(unittest.TestCase):
         self.assertTrue(name.endswith(".dat"))
 
 
+class TestConvertContinuum(unittest.TestCase):
+    def test_dat_to_npy_ordering(self):
+        import os
+        import tempfile
+
+        from typer.testing import CliRunner
+
+        nb, nt, npr = 2, 3, 2  # nbins, nt, n_pressure
+        data = np.arange(nb * nt * npr, dtype=float)  # .dat is (lambda, T, P) C-order: 0..11
+        d = tempfile.mkdtemp()
+        dat, out = os.path.join(d, "cont.dat"), os.path.join(d, "cont.npy")
+        np.savetxt(dat, data)
+        res = CliRunner().invoke(
+            ts.app,
+            [
+                "convert-continuum",
+                "--cont-abs",
+                dat,
+                "--nt",
+                str(nt),
+                "--np",
+                str(npr),
+                "--nbins",
+                str(nb),
+                "--output",
+                out,
+            ],
+        )
+        self.assertEqual(res.exit_code, 0, res.output)
+        got = np.load(out)
+        self.assertEqual(got.shape, (nt, npr, nb))  # main's (nt, np, nbins) layout
+        ref = data.reshape(nb, nt, npr)  # the .dat's native (lambda, T, P) view
+        for t in range(nt):
+            for p in range(npr):
+                for lam in range(nb):
+                    self.assertEqual(got[t, p, lam], ref[lam, t, p])
+
+
 if __name__ == "__main__":
     unittest.main()

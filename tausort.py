@@ -309,15 +309,16 @@ def read_continuum_opacity(filepath: Path, n_bins: int, n_temperature: int, n_pr
             kappa = np.load(npy_path)
         else:
             # Fall back to ASCII .dat file
-            console.print("  [yellow]Loading ASCII (slow) - consider converting to .npy[/yellow]")
+            console.print("  [yellow]Loading ASCII (slow) - consider `tausort.py convert-continuum`[/yellow]")
             data = np.loadtxt(str(filepath))
             expected_size = n_bins * n_temperature * n_pressure
 
             if data.size != expected_size:
                 console.print(f"[yellow]Warning: Expected {expected_size} values, got {data.size}[/yellow]")
 
-            # Reshape to (nt, n_pressure, nb)
-            kappa = data.reshape((n_temperature, n_pressure, n_bins))
+            # .dat is (lambda, T, P) C-order -> (nbins, nt, np); transpose to (nt, np, nbins),
+            # matching the pre-generated continuumabs.npy layout that `main` reads.
+            kappa = data.reshape((n_bins, n_temperature, n_pressure)).transpose(1, 2, 0)
 
         console.print(f"  ✓ Loaded continuum opacity with shape {kappa.shape}")
         console.print(f"  Value range: {kappa.min():.2e} - {kappa.max():.2e}")
@@ -3427,6 +3428,39 @@ def verify_planck(
     at various temperatures for verification purposes.
     """
     plot_planck_and_derivatives(output)
+
+
+@app.command("convert-continuum")
+def convert_continuum(
+    abs_file: Path = typer.Option("continuumabs.dat", "--cont-abs", help="ASCII continuum .dat to convert."),
+    nt: int = typer.Option(300, "--nt", help="Number of temperature points."),
+    n_pressure: int = typer.Option(150, "--np", help="Number of pressure points."),
+    nbins: int = typer.Option(328, "--nbins", help="Number of wavelength bins."),
+    output: str = typer.Option("", "--output", "-o", help="Output .npy path (default: the .dat name with .npy)."),
+):
+    """
+    Convert an ASCII continuum .dat to the fast .npy cache that `main` reads.
+
+    `main` reads `continuumabs.npy` if present (a ~75x speedup over the ASCII .dat) but never
+    writes it; this command produces it once. The .dat is one value per line in (lambda, T, P)
+    order (nbins*nt*n_pressure = 328*300*150 by default); it is reshaped and transposed to the
+    (nt, n_pressure, nbins) layout `main` expects. Pass --nt/--np/--nbins for other grids.
+    """
+    if not abs_file.exists():
+        raise typer.BadParameter(f"{abs_file} not found")
+    console.print(f"[cyan]Reading ASCII continuum from {abs_file} (slow for large files)...[/cyan]")
+    data = np.loadtxt(str(abs_file))
+    expected = nt * n_pressure * nbins
+    if data.size != expected:
+        raise typer.BadParameter(
+            f"{abs_file}: got {data.size} values, expected {expected} = nt*np*nbins "
+            f"({nt}*{n_pressure}*{nbins}); pass --nt/--np/--nbins to match your file."
+        )
+    # .dat is (lambda, T, P) C-order -> (nbins, nt, np); transpose to (nt, np, nbins).
+    kappa = data.reshape((nbins, nt, n_pressure)).transpose(1, 2, 0)
+    out = Path(output) if output else Path(str(abs_file).replace(".dat", ".npy"))
+    np.save(out, kappa)
+    console.print(f"[green]✓ {abs_file} -> {out}  shape={kappa.shape}  ({kappa.min():.2e} … {kappa.max():.2e})[/green]")
 
 
 if __name__ == "__main__":
