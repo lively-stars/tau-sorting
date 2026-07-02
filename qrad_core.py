@@ -255,3 +255,78 @@ def score_binning(tau_edges, lambda_edges, flags, star, *, n_splits=3, lambda_ed
         "group_tau_edges": group_tau_edges,
         "group_lam_edges": group_lam_edges,
     }
+
+
+def _kappa_dat_name(tau_edges, lambda_edges, flags, lambda_edges_per_tau, clamped_tau, n_bands, n_splits):
+    """Self-describing .dat filename for a binning (delegates to tausort per mode)."""
+    if lambda_edges_per_tau is not None:
+        return ts.build_kappa_dat_filename(
+            nbands=n_bands,
+            n_splits=n_splits,
+            lambda_bin_edges=[lambda_edges_per_tau[0][0], lambda_edges_per_tau[0][-1]],
+            tau_bin_edges=clamped_tau,
+            lambda_edges_per_tau=lambda_edges_per_tau,
+        )
+    return ts.build_kappa_dat_filename(
+        nbands=n_bands,
+        n_splits=n_splits,
+        lambda_bin_edges=lambda_edges,
+        tau_bin_edges=clamped_tau,
+        split_along_lambda=list(flags),
+    )
+
+
+def save_kappa_dat(tau_edges, lambda_edges, flags, star, *, lambda_edges_per_tau=None, n_splits=3, path=None):
+    """Build the binning's C-format kappa table and write it to disk.
+
+    Runs the same grouping + sort + band-average pipeline as `score_binning` but keeps the
+    full opacity result, NaN-masks empty bands (as `tausort.main` does before saving), packs it
+    with `tausort.build_kappa_band_comparison`, and writes it with `write_kappa_4_band_comparison`
+    (`kap_mean = ln(mixed)` in `[nBands, NT, Np]`). `flags` may be None in per-tau mode. `path`
+    overrides the output path; otherwise a self-describing name is used (in the CWD). `star` is
+    unused (the table is star-independent) but kept for signature symmetry with `score_binning`.
+    Returns `(written_path, descriptive_name)`.
+    """
+    odf, cont, atm = INV["odf"], INV["cont"], INV["atm"]
+    clamped = list(tau_edges)
+    clamped[0] = float(-np.log10(INV["tau_ross"][INV["max_height_idx"]] + 0.2))
+
+    if lambda_edges_per_tau is not None:
+        _gt0, _gl0, offs = ts.build_group_specs_per_tau(tau_edges, lambda_edges_per_tau)
+        band_index = ts.assign_per_tau_lambda(
+            INV["tau_at_lam1"], INV["wl_centers"], tau_edges, lambda_edges_per_tau, offs
+        )
+        group_tau_edges, _gl, _o = ts.build_group_specs_per_tau(clamped, lambda_edges_per_tau)
+    else:
+        _gt0, _gl0, s2cg, s2sg = ts.build_group_specs_split_lambda(tau_edges, lambda_edges, flags)
+        band_index = ts.assign_split_lambda(INV["tau_at_lam1"], INV["wl_centers"], tau_edges, lambda_edges, s2cg, s2sg)
+        group_tau_edges, _gl, _a, _b = ts.build_group_specs_split_lambda(clamped, lambda_edges, flags)
+    n_groups = int(group_tau_edges.shape[0])
+
+    sorted_per_bin = ts.sort_weighted_opacity_per_tau_bin(
+        atm=atm,
+        odf=odf,
+        interpolated_opacity=INV["interpolated_opacity"],
+        tau_rosseland=INV["tau_ross"],
+        band_index=band_index,
+        group_tau_edges=group_tau_edges,
+        wavelength_grid_subbins_centers=INV["wl_centers"],
+        write_debug_json=False,
+        verbose=False,
+    )
+    split_band_index = ts.build_split_band_index(
+        sorted_per_bin, n_subbin_points=len(band_index), n_groups=n_groups, n_splits=n_splits
+    )
+    n_bands = n_groups * n_splits
+    res = ts.calculate_tau_bin_opacities(odf=odf, cont=cont, band_index=split_band_index, n_bins=n_bands)
+
+    members = np.asarray(res["members_per_band"])
+    empty = members == 0
+    for key in ("kappa_planck", "kappa_rosseland", "kappa_mixed"):
+        res[key][:, :, empty] = np.nan
+
+    comparison = ts.build_kappa_band_comparison(res, odf)
+    name = _kappa_dat_name(tau_edges, lambda_edges, flags, lambda_edges_per_tau, clamped, n_bands, n_splits)
+    written = str(path) if path is not None else name
+    ts.write_kappa_4_band_comparison(written, comparison)
+    return written, name

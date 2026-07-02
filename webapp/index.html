@@ -119,6 +119,10 @@
         <tr><td>compute time</td><td id="m_time">—</td></tr>
       </table>
     </div>
+
+    <button id="dl" class="secondary" style="margin-top:12px">&#x2913; Download kappa table (.dat)</button>
+    <div class="hint">Writes the current binning's C-format kappa table (`kappa_&lt;…&gt;.dat`). After an
+       optimize run this is the optimized table.</div>
   </div>
 
   <div class="panel plot">
@@ -287,6 +291,30 @@ function qoptFinish(result) {
   compute();
 }
 
+async function downloadKappa() {
+  let tau, lam;
+  try { tau = parseEdges($('tau').value); lam = parseEdges($('lambda').value); }
+  catch(e){ return setStatus('could not parse edges', true); }
+  if (tau.length<2 || lam.length<2) return setStatus('need ≥2 τ and ≥2 λ edges', true);
+  const split = [...document.querySelectorAll('#flags input')].map(c=>c.checked);
+  const body = {tau_edges:tau, lambda_edges:lam, split_lambda:split, star:$('star').value};
+  if (PG_LAMBDA && PG_LAMBDA.length === tau.length-1) body.lambda_edges_per_tau = PG_LAMBDA;
+  $('dl').disabled = true; setStatus('building kappa table…');
+  try {
+    const r = await fetch('/api/kappa_dat', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    if (!r.ok) { let m='download failed'; try { m=(await r.json()).error||m; } catch(_){} throw new Error(m); }
+    const blob = await r.blob();
+    const cd = r.headers.get('Content-Disposition') || '';
+    const mm = cd.match(/filename="([^"]+)"/);
+    const name = mm ? mm[1] : 'kappa.dat';
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click();
+    a.remove(); URL.revokeObjectURL(url);
+    setStatus('downloaded ' + name);
+  } catch(e){ setStatus(e.message, true); }
+  finally { $('dl').disabled = false; }
+}
+
 async function qoptCancel(e){
   if (e) e.preventDefault();
   setStatus('cancelling — keeping the best binning found so far…');
@@ -364,6 +392,7 @@ $('go').addEventListener('click', compute);
 $('opt').addEventListener('click', optimize);
 $('qopt').addEventListener('click', qoptStart);
 $('qcancel').addEventListener('click', qoptCancel);
+$('dl').addEventListener('click', downloadKappa);
 ['tau','lambda'].forEach(id=>$(id).addEventListener('keydown', e=>{ if(e.key==='Enter') compute(); }));
 init();
 </script>

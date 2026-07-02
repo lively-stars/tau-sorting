@@ -586,6 +586,9 @@ def main(
     max_evals: int = typer.Option(400, "--max-evals"),
     max_seconds: float = typer.Option(1800.0, "--max-seconds"),
     save_plot: str = typer.Option("", "--save-plot", help="Write a before/after Q/rho plot to this path."),
+    save_dat: bool = typer.Option(
+        False, "--save-dat/--no-save-dat", help="After optimizing, write the optimized binning's kappa .dat table."
+    ),
 ):
     print("[startup] precomputing invariants (reads the ODF; ~10-30s)...")
     qrad_core.precompute()
@@ -643,6 +646,17 @@ def main(
         )
         _plot_before_after(tau_bin_edges, lambda_bin_edges, flags, result["tau_edges"], after, star, save_plot)
         print(f"  before/after plot -> {save_plot}")
+
+    if save_dat:
+        if result.get("per_group_lambda"):
+            written, _name = qrad_core.save_kappa_dat(
+                result["tau_edges"], None, None, star, lambda_edges_per_tau=result["lambda_edges_per_tau"]
+            )
+        else:
+            written, _name = qrad_core.save_kappa_dat(
+                result["tau_edges"], result["lambda_edges"], result["flags"], star
+            )
+        print(f"  kappa table -> {written}")
 
 
 def _fmt(edges) -> str:

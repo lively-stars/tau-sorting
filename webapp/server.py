@@ -16,7 +16,9 @@ Run:  uv run python webapp/server.py      (then open http://localhost:8771)
 from __future__ import annotations
 
 import json
+import os
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -191,6 +193,14 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _send_download(self, data, filename):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def log_message(self, *args):
         pass  # quiet
 
@@ -235,7 +245,7 @@ class Handler(BaseHTTPRequestHandler):
             _QOPT["cancel"] = True
             self._send(200, json.dumps({"cancelled": True}))
             return
-        if self.path not in ("/api/compute", "/api/optimize", "/api/optimize_qrad"):
+        if self.path not in ("/api/compute", "/api/optimize", "/api/optimize_qrad", "/api/kappa_dat"):
             self._send(404, json.dumps({"error": "not found"}))
             return
         try:
@@ -299,6 +309,29 @@ class Handler(BaseHTTPRequestHandler):
                     _QOPT["running"] = False
                     raise
                 self._send(200, json.dumps({"started": True}))
+                return
+            if self.path == "/api/kappa_dat":
+                # Build the current binning's kappa table and stream it back as a download.
+                star = req.get("star") or "G_SSD"
+                lpt = req.get("lambda_edges_per_tau") or None
+                fd, tmp = tempfile.mkstemp(suffix=".dat")
+                os.close(fd)
+                try:
+                    with _LOCK:
+                        if lpt is not None:
+                            _w, name = qc.save_kappa_dat(
+                                tau_edges, None, None, star, lambda_edges_per_tau=lpt, path=tmp
+                            )
+                        else:
+                            flags = qc.resolve_flags(req.get("split_lambda") or None, len(tau_edges) - 1)
+                            _w, name = qc.save_kappa_dat(tau_edges, lambda_edges, flags, star, path=tmp)
+                        data = Path(tmp).read_bytes()
+                finally:
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
+                self._send_download(data, name)
                 return
             split_lambda = req.get("split_lambda") or None
             star = req.get("star") or "G_SSD"

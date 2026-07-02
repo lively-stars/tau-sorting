@@ -137,6 +137,10 @@ Tick **per-group λ** to let *each τ group choose its own wavelength split* (it
 none) instead of one shared cut + on/off flags. The binning diagram then shows the λ cuts "jumping"
 per τ band; a summary lists each group's cut. (Editing the τ/λ boxes by hand reverts to shared-λ.)
 
+**Download kappa table (.dat)** writes the *current* binning's C-format kappa table (self-describing
+name, e.g. `kappa_24band_...dat`) — after an optimize run that's the optimized table, per-group λ
+included. It streams the file to your browser without touching the repo.
+
 Needs the same inputs as `compare_Qrad_from_kappa.py` (the `data/` reference tables + `models/`
 atmospheres). Pure stdlib server (no extra dependencies).
 
@@ -181,6 +185,11 @@ With `--per-group-lambda`, the shared cut + flags are replaced by a **per-τ-gro
 each τ group the search keeps the better of *no split* or a *single λ cut* (its position optimized),
 so the wavelength split can differ (or be absent) per τ group — the "jumping" cuts. It prints each
 group's cut and (with `--save-plot`) the before/after.
+
+Add `--save-dat` to write the optimized binning's **kappa `.dat` table** when the run finishes
+(`qrad_core.save_kappa_dat` → `tausort.build_kappa_band_comparison` / `write_kappa_4_band_comparison`);
+the filename encodes the binning (per-group λ included, via the `--lambda-per-tau` naming). This is
+the direct way to materialize the optimized table without re-running `tausort.py main`.
 
 On `G_SSD`, the full-scope run above takes the overlap-optimized 24-band baseline (rms **8.04e7**)
 down to rms **4.77e7 (−41%)** — ending at 5 τ groups with split flags `11110` — by trading the
