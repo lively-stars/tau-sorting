@@ -386,6 +386,7 @@ def optimize_qrad(
     max_seconds=1800.0,
     grow_tol=None,
     per_group_lambda=False,
+    lambda_edges_per_tau=None,  # per-group-lambda warm start (one lambda-edge list per tau group)
     score_fn=None,
     on_progress=None,
     on_eval=None,
@@ -442,8 +443,16 @@ def optimize_qrad(
 
     if per_group_lambda:
         lmin, lmax = float(lambda_edges[0]), float(lambda_edges[-1])
-        # warm start: each split tau group gets the shared lambda edges; unsplit -> [lmin, lmax]
-        lpt = [list(lambda_edges) if flags[k] else [lmin, lmax] for k in range(n_tau0)]
+        if lambda_edges_per_tau is not None and len(lambda_edges_per_tau) == n_tau0:
+            # continue from a prior per-group binning (so re-running keeps refining the cuts),
+            # clamping each interior cut into the current [lmin, lmax] window.
+            lpt = [
+                [lmin, *[min(max(float(e), lmin), lmax) for e in x[1:-1]], lmax] if len(x) >= 3 else [lmin, lmax]
+                for x in lambda_edges_per_tau
+            ]
+        else:
+            # warm start: each split tau group gets the shared lambda edges; unsplit -> [lmin, lmax]
+            lpt = [list(lambda_edges) if flags[k] else [lmin, lmax] for k in range(n_tau0)]
         _, r0 = evaluate(tau_edges, None, None, lambda_edges_per_tau=lpt)
         rms0 = float(r0["rms"])
         checkpoint("start", r0)

@@ -247,6 +247,23 @@ class TestPerGroupLambdaOptimizer(unittest.TestCase):
             self.assertEqual(len(got[k]), 3)  # group k split (one interior cut)
             self.assertAlmostEqual(got[k][1], targets[k], delta=0.05)
 
+    def test_warm_start_is_honored(self):
+        # A re-run must resume from the passed per-group cuts, not reset to the shared box.
+        seen = {}
+
+        def score(tau, lam, flags, model, *, lambda_edges_per_tau=None):
+            seen.setdefault("lpt0", [list(x) for x in lambda_edges_per_tau])
+            return {"rms": 1e8, "max_abs": 2e8, "int_q_pct": 0.0, "n_empty": 0,
+                    "n_groups": sum(len(x) - 1 for x in lambda_edges_per_tau)}
+
+        warm = [[3.0, 3.55, 5.0], [3.0, 5.0], [3.0, 4.4, 5.0], [3.0, 3.7, 5.0]]
+        qo.optimize_qrad(
+            [-0.63, 0.35, 1.23, 2.89, 7.0], [3.0, 3.8, 5.0], flags=[True] * 4,
+            per_group_lambda=True, lambda_edges_per_tau=warm,
+            opt_tau=False, opt_lambda=False, grow=False, score_fn=score, max_evals=50,
+        )
+        self.assertEqual(seen["lpt0"], warm)  # started from the warm-start cuts, not [3,3.8,5]×4
+
 
 class TestPerTauLambdaCLI(unittest.TestCase):
     def test_parse_lambda_per_tau(self):

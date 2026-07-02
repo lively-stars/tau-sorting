@@ -280,6 +280,8 @@ async function qoptStart() {
     per_group_lambda: $('qv_pergroup').checked,
     max_seconds: Math.max(20, Math.min(1800, parseInt($('qbudget').value,10)||180)),
   };
+  // warm-start a per-group re-run from the current cuts so it keeps refining (not resetting to the shared box)
+  if ($('qv_pergroup').checked && PG_LAMBDA && PG_LAMBDA.length === tau.length-1) body.lambda_edges_per_tau = PG_LAMBDA;
   qoptBusy(true); setStatus('starting Q_rad optimization…');
   try {
     const r = await fetch('/api/optimize_qrad', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});

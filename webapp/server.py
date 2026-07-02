@@ -105,6 +105,7 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
             max_seconds=opt["max_seconds"],
             max_evals=opt["max_evals"],
             per_group_lambda=opt["per_group_lambda"],
+            lambda_edges_per_tau=opt["lambda_edges_per_tau"],
             on_eval=on_eval,
             on_progress=on_progress,
             should_stop=lambda: _QOPT["cancel"],
@@ -319,6 +320,8 @@ class Handler(BaseHTTPRequestHandler):
                         "opt_flags": bool(req.get("opt_flags", True)),
                         "grow": bool(req.get("grow", True)),
                         "per_group_lambda": bool(req.get("per_group_lambda", False)),
+                        # per-group-lambda warm start (re-running keeps refining the current cuts)
+                        "lambda_edges_per_tau": req.get("lambda_edges_per_tau") or None,
                         "method": req.get("method", "cd"),
                         "max_seconds": float(req.get("max_seconds", 300.0)),
                         "max_evals": int(req.get("max_evals", 5000)),
