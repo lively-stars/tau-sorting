@@ -51,7 +51,12 @@
   .metrics .big { font-size:16px; }
   #status { margin-top:10px; font-size:12.5px; color:var(--muted); min-height:1.2em; }
   #status.err { color:var(--bad); }
-  #chart { width:100%; height:860px; }
+  #chart, #atmchart { width:100%; height:860px; }
+  .tabs { display:flex; gap:6px; margin-bottom:12px; border-bottom:1px solid var(--line); }
+  .tab { margin-top:0; width:auto; flex:0 0 auto; padding:8px 16px; font-weight:600; color:var(--muted);
+         background:#0e1420; border:1px solid var(--line); border-bottom:none; border-radius:8px 8px 0 0;
+         cursor:pointer; position:relative; bottom:-1px; }
+  .tab.active { color:var(--ink); background:var(--panel); border-bottom:1px solid var(--panel); }
 </style>
 </head>
 <body>
@@ -129,7 +134,12 @@
   </div>
 
   <div class="panel plot">
+    <div class="tabs">
+      <button class="tab active" data-tab="qrad">Q<sub>rad</sub></button>
+      <button class="tab" data-tab="atm">Atmosphere</button>
+    </div>
     <div id="chart"></div>
+    <div id="atmchart" style="display:none"></div>
   </div>
 </div>
 
@@ -423,6 +433,62 @@ function render(d){
   LAST = d;
 }
 
+// --- Atmosphere tab: plot the selected model's structure vs log10 tau_Ros ---
+let ACTIVE_TAB = 'qrad';
+let ATM = null;        // cached /api/atmosphere payload
+let ATM_MODEL = null;  // which model ATM belongs to
+
+// Lazily fetch + draw the atmosphere for the current model (cached; pass force to refetch).
+async function loadAtmosphere(force=false) {
+  const model = $('model').value;
+  if (!force && ATM && ATM_MODEL === model) { Plotly.Plots.resize('atmchart'); return; }
+  setStatus('loading atmosphere for ' + model + '…');
+  try {
+    const r = await fetch('/api/atmosphere?model=' + encodeURIComponent(model));
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'server error');
+    ATM = d; ATM_MODEL = model;
+    renderAtm(d);
+    setStatus(`atmosphere: ${d.model} · ${d.n_levels} levels · T ${Math.min(...d.T).toFixed(0)}–${Math.max(...d.T).toFixed(0)} K`);
+  } catch(e){ setStatus(e.message, true); }
+}
+
+function renderAtm(d){
+  const lrho = d.rho.map(v => Math.log10(v));
+  const lp   = d.p.map(v => Math.log10(v));
+  const x = d.depth_mm;  // depth from top of atmosphere [Mm]: 0 at the surface, increasing inward
+  const font = {color:'#cdd6e5'}; const grid = '#2b3547';
+  const C = {T:'#ff9d3c', rho:'#3ecf8e', p:'#5b9bd5'};
+  const base = {x, mode:'lines', type:'scatter'};
+  const data = [
+    {...base, y:d.T,  name:'T',       line:{color:C.T,  width:2.5}, xaxis:'x',  yaxis:'y'},
+    {...base, y:lrho, name:'log₁₀ ρ', line:{color:C.rho,width:2.5}, xaxis:'x2', yaxis:'y2'},
+    {...base, y:lp,   name:'log₁₀ P', line:{color:C.p,  width:2.5}, xaxis:'x3', yaxis:'y3'},
+  ];
+  const xax = {gridcolor:grid, zeroline:false, matches:'x3'};
+  const layout = {
+    paper_bgcolor:'#1a2130', plot_bgcolor:'#121826', font,
+    margin:{l:78,r:16,t:22,b:46}, showlegend:false,
+    xaxis:{...xax, domain:[0,1], anchor:'y',  showticklabels:false},
+    yaxis:{title:'T [K]', gridcolor:grid, zeroline:false, domain:[0.70,0.99]},
+    xaxis2:{...xax, domain:[0,1], anchor:'y2', showticklabels:false},
+    yaxis2:{title:'log₁₀ ρ [g/cm³]', gridcolor:grid, zeroline:false, domain:[0.37,0.62]},
+    xaxis3:{...xax, title:'depth from top [Mm]', domain:[0,1], anchor:'y3'},
+    yaxis3:{title:'log₁₀ P [dyn/cm²]', gridcolor:grid, zeroline:false, domain:[0,0.28]},
+  };
+  Plotly.react('atmchart', data, layout, {responsive:true, displayModeBar:false});
+}
+
+function switchTab(tab){
+  if (tab === ACTIVE_TAB) return;
+  ACTIVE_TAB = tab;
+  document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  $('chart').style.display   = tab === 'qrad' ? '' : 'none';
+  $('atmchart').style.display = tab === 'atm'  ? '' : 'none';
+  if (tab === 'atm') loadAtmosphere();
+  else Plotly.Plots.resize('chart');  // resize the (was-hidden) Q_rad chart
+}
+
 // a manual edge edit invalidates any active per-group-lambda binning (it's tied to the tau binning)
 const onEdgeEdit = () => { clearPerGroup(); buildFlags(); };
 $('tau').addEventListener('input', onEdgeEdit);
@@ -430,9 +496,12 @@ $('lambda').addEventListener('input', onEdgeEdit);
 $('go').addEventListener('click', compute);
 $('refresh').addEventListener('click', refreshModels);
 $('model').addEventListener('change', () => {
+  ATM = null; ATM_MODEL = null;  // invalidate cached atmosphere for the new model
   setStatus('switching atmosphere — a model’s first use precomputes (~10–30s)…');
-  compute();
+  if (ACTIVE_TAB === 'atm') loadAtmosphere(true);
+  compute();  // keep the Q_rad view (+ metrics) in sync for when the tab is next shown
 });
+document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.tab)));
 $('opt').addEventListener('click', optimize);
 $('qopt').addEventListener('click', qoptStart);
 $('qcancel').addEventListener('click', qoptCancel);

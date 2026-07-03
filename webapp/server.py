@@ -24,6 +24,7 @@ import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 
@@ -230,6 +231,32 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass  # quiet
 
+    def _atmosphere(self):
+        """GET /api/atmosphere?model=<name> — the selected atmosphere's structure (z, rho, p, T),
+        read straight from the model .dat. It's just the four columns — no ODF, no precompute, no
+        RTE — so it's instant even for a model that was never binned."""
+        try:
+            q = parse_qs(urlparse(self.path).query)
+            model = (q.get("model") or [None])[0]
+            name = _resolve_model({"model": model})  # validates: 4 cols, >=2 rows, decreasing z
+            data = np.atleast_2d(np.loadtxt(qc.MODELS_DIR / name))
+            z, rho, pres, tem = (data[:, i].astype(float) for i in range(4))
+            out = {
+                "model": name,
+                "n_levels": int(z.size),
+                "height_mm": (z / 1e8).tolist(),  # height [Mm] (as stored, top-of-atmosphere first)
+                "depth_mm": ((z[0] - z) / 1e8).tolist(),  # depth from top [Mm], increasing inward
+                "rho": rho.tolist(),  # density [g/cm^3]
+                "p": pres.tolist(),  # pressure [dyn/cm^2]
+                "T": tem.tolist(),  # temperature [K]
+            }
+            self._send(200, json.dumps(out))
+        except ValueError as e:
+            self._send(400, json.dumps({"error": str(e)}))
+        except Exception as e:
+            traceback.print_exc()
+            self._send(400, json.dumps({"error": f"{type(e).__name__}: {e}"}))
+
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             self._send(200, (Path(__file__).resolve().parent / "index.html").read_bytes(), "text/html; charset=utf-8")
@@ -248,6 +275,8 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/models":
             # "Refresh models" button: re-scan models/ and report each file (ok or why not).
             self._send(200, json.dumps({"default_model": qc.DEFAULT_MODEL, "models": qc.scan_models()}))
+        elif urlparse(self.path).path == "/api/atmosphere":
+            self._atmosphere()
         elif self.path == "/api/optimize_qrad_status":
             self._send(
                 200,
