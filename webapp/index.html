@@ -182,6 +182,8 @@ const $ = id => document.getElementById(id);
 const parseEdges = s => s.split(/[,\s]+/).map(t=>t.trim()).filter(Boolean).map(Number);
 let LAST = null;
 let PG_LAMBDA = null;   // active per-tau-group lambda edges (null = shared-lambda + flags mode)
+let _editTimer = null;  // debounce for auto-recompute after editing the tau/lambda edge boxes
+const edgesValid = a => a.length >= 2 && a.every(Number.isFinite) && a.every((v,i)=>i===0 || v>a[i-1]);
 
 // Enter per-group-lambda mode: show the per-group cuts, dim the (now-moot) shared flags.
 function setPerGroup(lpt) {
@@ -265,6 +267,7 @@ function buildFlags() {
 function setStatus(msg, err=false){ const s=$('status'); s.textContent=msg; s.className=err?'err':''; }
 
 async function compute() {
+  clearTimeout(_editTimer);  // cancel any pending debounced auto-compute
   let tau, lam;
   try { tau = parseEdges($('tau').value); lam = parseEdges($('lambda').value); }
   catch(e){ return setStatus('could not parse edges', true); }
@@ -547,7 +550,14 @@ function switchTab(tab){
 }
 
 // a manual edge edit invalidates any active per-group-lambda binning (it's tied to the tau binning)
-const onEdgeEdit = () => { clearPerGroup(); buildFlags(); };
+const onEdgeEdit = () => {
+  clearPerGroup(); buildFlags();
+  // auto-recompute the plot once edits settle and are valid (debounced; compute is ~1.5-3s)
+  clearTimeout(_editTimer);
+  _editTimer = setTimeout(() => {
+    if (edgesValid(parseEdges($('tau').value)) && edgesValid(parseEdges($('lambda').value))) compute();
+  }, 600);
+};
 $('tau').addEventListener('input', onEdgeEdit);
 $('lambda').addEventListener('input', onEdgeEdit);
 $('go').addEventListener('click', compute);
