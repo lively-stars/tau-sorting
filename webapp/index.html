@@ -443,6 +443,10 @@ function render(d){
     return {type:'rect', xref:'x', yref:'y', x0:le[0], x1:le[1], y0:te[0], y1:te[1],
             line:{color:'rgba(240,244,250,0.7)', width:1}, fillcolor:'rgba(0,0,0,0)', layer:'above'};
   });
+  // auto-scale the binning diagram so every sub-bin AND every group box is visible (x=log λ, y=−log τ)
+  const _allx = d.bin_x.concat(d.group_lam_edges.flat()), _ally = d.bin_y.concat(d.group_tau_edges.flat());
+  const _xlo = Math.min(..._allx), _xhi = Math.max(..._allx), _ylo = Math.min(..._ally), _yhi = Math.max(..._ally);
+  const _xpad = ((_xhi - _xlo) || 1) * 0.02, _ypad = ((_yhi - _ylo) || 1) * 0.03;
   // shade the scoring window (where rms/max are measured) on the Q/ρ and residual panels
   if (Array.isArray(d.window) && d.window.length===2) {
     const [wl, wh] = d.window;
@@ -472,8 +476,8 @@ function render(d){
     margin:{l:70,r:16,t:22,b:46}, showlegend:true,
     legend:{orientation:'h', y:1.06, x:0, yanchor:'bottom', font:{size:11}},
     // top: binning diagram (its own λ x-axis)
-    xaxis:{title:'log₁₀ λ [Å]', range:[3,5], gridcolor:grid, zeroline:false, domain:[0,1], anchor:'y'},
-    yaxis:{title:'−log₁₀ τ_Ros(τ_λ=1)', range:[-1,7], gridcolor:grid, zeroline:false, domain:[0.70,0.99]},
+    xaxis:{title:'log₁₀ λ [Å]', range:[_xlo-_xpad, _xhi+_xpad], gridcolor:grid, zeroline:false, domain:[0,1], anchor:'y'},
+    yaxis:{title:'−log₁₀ τ_Ros(τ_λ=1)', range:[_ylo-_ypad, _yhi+_ypad], gridcolor:grid, zeroline:false, domain:[0.70,0.99]},
     // middle: Q/ρ (τ x-axis, shared with residual)
     xaxis2:{range:[4,-5], gridcolor:grid, zeroline:false, domain:[0,1], anchor:'y2',
             matches:'x3', showticklabels:false},
