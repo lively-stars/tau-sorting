@@ -1,6 +1,6 @@
 # Build-context excludes — keep the image lean and the ~2.8 GB of gitignored runtime
 # data out of the context. .dockerignore uses .gitignore-like syntax with last-match-
-# wins, so the models/G2_1D.dat re-include below MUST stay after the *.dat rules.
+# wins, so the models/*.dat re-include below MUST stay after the *.dat rules.
 
 # Version control / CI / tooling
 .git
@@ -37,10 +37,10 @@ kappa_*.dat
 tau_bin_opacities.npy
 debug_tau_bin_*.json
 
-# Blanket-ignore opacity .dat files, then re-include the tracked default atmosphere.
-# models/G2_1D.dat is a HARD requirement in the image — it is the default 1D model.
+# Blanket-ignore opacity .dat files, then re-include the tracked 1D model atmospheres.
+# models/*.dat must ship in the image so every model is selectable in the webapp.
 **/*.dat
-!models/G2_1D.dat
+!models/*.dat
 
 # Figures / archives / transient outputs (not needed at runtime)
 plots/
