@@ -38,6 +38,10 @@
   #qcancel { display:none; margin-left:8px; color:var(--accent); font-weight:600; }
   #pergroup-info { display:none; margin-top:6px; line-height:1.55; }
   #pergroup-info code { color:var(--accent); }
+  .pggrid { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+  .pgrow { display:inline-flex; align-items:center; gap:4px; margin:0; font-weight:500; font-size:12px; color:var(--ink); }
+  .pgcut { width:60px; padding:4px 6px; background:#0e1420; color:var(--ink); border:1px solid var(--line); border-radius:7px; font:inherit; font-size:12px; }
+  .pgcut:focus { outline:none; border-color:var(--accent); }
   .flag { display:inline-flex; align-items:center; gap:5px; margin:0; background:#0e1420; border:1px solid var(--line);
           border-radius:7px; padding:5px 8px; font-size:12px; cursor:pointer; user-select:none; }
   .flag input { accent-color:var(--accent); }
@@ -190,17 +194,32 @@ let PG_LAMBDA = null;   // active per-tau-group lambda edges (null = shared-lamb
 let _editTimer = null;  // debounce for auto-recompute after editing the tau/lambda edge boxes
 const edgesValid = a => a.length >= 2 && a.every(Number.isFinite) && a.every((v,i)=>i===0 || v>a[i-1]);
 
-// Enter per-group-lambda mode: show the per-group cuts, dim the (now-moot) shared flags.
+// Enter per-group-lambda mode: show an EDITABLE λ-cut per τ group, dim the (now-moot) shared flags.
 function setPerGroup(lpt) {
-  PG_LAMBDA = lpt;
-  const rows = lpt.map((l,k) => {
-    const cut = l.length <= 2 ? 'no split' : 'cut @ ' + l.slice(1,-1).map(v=>(+v).toFixed(2)).join(', ');
-    return `τ${k}: <code>${cut}</code>`;
-  }).join(' &nbsp; ');
+  PG_LAMBDA = lpt.map(x => x.slice());
+  const lmin = PG_LAMBDA[0][0], lmax = PG_LAMBDA[0][PG_LAMBDA[0].length-1];
+  const rows = PG_LAMBDA.map((l,k) => {
+    const cut = l.length >= 3 ? (+l[1]).toFixed(2) : '';
+    return `<label class="pgrow">τ${k} <input type="number" class="pgcut" data-k="${k}" step="0.05" `
+         + `min="${lmin}" max="${lmax}" value="${cut}" placeholder="—" title="log₁₀λ cut for τ${k} (blank = no split)"></label>`;
+  }).join('');
   const info = $('pergroup-info');
-  info.innerHTML = '<b>per-group λ active</b> — each τ group has its own split: ' + rows;
+  info.innerHTML = `<b>per-group λ</b> <span class="hint">— log₁₀λ cut per τ group (blank = no split); edits recompute</span>`
+                 + `<div class="pggrid">${rows}</div>`;
   info.style.display = 'block';
   $('flags').classList.add('moot');
+  info.querySelectorAll('.pgcut').forEach(inp => inp.addEventListener('input', onPgCutEdit));
+}
+// Rebuild PG_LAMBDA from the per-group cut inputs and recompute (debounced). Blank/out-of-range = no split.
+function onPgCutEdit() {
+  if (!PG_LAMBDA) return;
+  const lmin = PG_LAMBDA[0][0], lmax = PG_LAMBDA[0][PG_LAMBDA[0].length-1];
+  $('pergroup-info').querySelectorAll('.pgcut').forEach(inp => {
+    const k = +inp.dataset.k, v = parseFloat(inp.value);
+    PG_LAMBDA[k] = (isFinite(v) && v > lmin && v < lmax) ? [lmin, v, lmax] : [lmin, lmax];
+  });
+  clearTimeout(_editTimer);
+  _editTimer = setTimeout(() => compute(), 500);
 }
 function clearPerGroup() {
   if (!PG_LAMBDA) return;
