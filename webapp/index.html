@@ -489,7 +489,7 @@ function render(d){
     xaxis3:{title:'log₁₀ τ_Ros', range:[4,-5], gridcolor:grid, zeroline:false, domain:[0,1], anchor:'y3'},
     yaxis3:{title:'(Q − Q_full)/ρ', gridcolor:grid, zeroline:true, zerolinecolor:'#40506a', domain:[0,0.28]},
   };
-  Plotly.react('chart', data, layout, {responsive:true, displayModeBar:false});
+  Plotly.react('chart', data, layout, {responsive:true, displayModeBar:true, displaylogo:false, modeBarButtonsToRemove:['lasso2d','select2d']});
   LAST = d;
 }
 
@@ -536,7 +536,7 @@ function renderAtm(d){
     xaxis3:{...xax, title:'depth from top [Mm]', domain:[0,1], anchor:'y3'},
     yaxis3:{title:'log₁₀ P [dyn/cm²]', gridcolor:grid, zeroline:false, domain:[0,0.28]},
   };
-  Plotly.react('atmchart', data, layout, {responsive:true, displayModeBar:false});
+  Plotly.react('atmchart', data, layout, {responsive:true, displayModeBar:true, displaylogo:false, modeBarButtonsToRemove:['lasso2d','select2d']});
 }
 
 function switchTab(tab){
