@@ -30,6 +30,9 @@
     border:1px solid var(--line); border-radius:8px; font:inherit;
   }
   input[type=text]:focus, select:focus { outline:none; border-color:var(--accent); }
+  .qprog { display:none; height:6px; margin-top:8px; background:#0e1420; border:1px solid var(--line); border-radius:4px; overflow:hidden; }
+  .qprog.on { display:block; }
+  #qprogbar { height:100%; width:0%; background:var(--accent); transition:width .2s linear; }
   #flags, #qvars { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
   #flags.disabled, #flags.moot { opacity:.4; pointer-events:none; }
   #qcancel { display:none; margin-left:8px; color:var(--accent); font-weight:600; }
@@ -124,6 +127,7 @@
       <button id="qopt" class="secondary">Optimize Q_rad &rarr;</button>
       <span class="opt-n"><input type="number" id="qbudget" min="20" max="1800" value="180" /> s</span>
     </div>
+    <div id="qprog" class="qprog" title="elapsed / time budget"><div id="qprogbar"></div></div>
     <details id="qadv">
       <summary>Advanced optimizer settings &amp; stopping conditions</summary>
       <div class="adv-grid">
@@ -317,6 +321,22 @@ let QPOLL = null;
 
 function qoptBusy(on){ $('qopt').disabled=on; $('go').disabled=on; $('opt').disabled=on; }
 
+// Progress bar under the Optimize Q_rad button: fills from 0 to the time budget as the run
+// elapses (smoothly via a client tick, re-synced to the server's elapsed on each poll).
+let QANIM = null, QT0 = 0, QBUD = 1;
+function startQBar(budgetSec){
+  QBUD = Math.max(1, budgetSec) * 1000; QT0 = Date.now();
+  $('qprog').classList.add('on'); $('qprogbar').style.width = '0%';
+  if (!QANIM) QANIM = setInterval(() => {
+    $('qprogbar').style.width = Math.min(100, (Date.now() - QT0) / QBUD * 100).toFixed(1) + '%';
+  }, 150);
+}
+function stopQBar(){
+  if (QANIM) { clearInterval(QANIM); QANIM = null; }
+  $('qprogbar').style.width = '100%';           // snap full to signal completion
+  setTimeout(() => { if (!QANIM){ $('qprog').classList.remove('on'); $('qprogbar').style.width = '0%'; } }, 500);
+}
+
 async function qoptStart() {
   let tau, lam;
   try { tau = parseEdges($('tau').value); lam = parseEdges($('lambda').value); }
@@ -347,8 +367,9 @@ async function qoptStart() {
     const d = await r.json();
     if (!r.ok) throw new Error(d.error||'could not start');
     $('qcancel').style.display = 'inline';
+    startQBar(body.max_seconds);
     QPOLL = setInterval(qoptPoll, 1500);
-  } catch(e){ setStatus(e.message, true); qoptBusy(false); }
+  } catch(e){ setStatus(e.message, true); qoptBusy(false); stopQBar(); }
 }
 
 async function qoptPoll() {
@@ -357,6 +378,8 @@ async function qoptPoll() {
   catch(e){ return; }  // transient network hiccup; keep polling
   if (d.error) { setStatus('optimize error: ' + d.error, true); return qoptFinish(null); }
   if (!d.running) return qoptFinish(d.result);
+  if (!QANIM) startQBar(+$('qbudget').value || 180);          // resume (e.g. after a page reload)
+  if (typeof d.elapsed === 'number') QT0 = Date.now() - d.elapsed * 1000;  // resync to server elapsed
   const imp = (d.rms0 && d.best) ? ` (−${(100*(d.rms0-d.best)/d.rms0).toFixed(1)}%)` : '';
   const best = d.best ? d.best.toExponential(2) : '…';
   setStatus(`optimizing Q_rad… ${d.n_evals} evals · rms ${best}${imp} · ${d.groups} groups · ${Math.round(d.elapsed)}s`);
@@ -364,6 +387,7 @@ async function qoptPoll() {
 
 function qoptFinish(result) {
   if (QPOLL) { clearInterval(QPOLL); QPOLL = null; }
+  stopQBar();
   $('qcancel').style.display = 'none';
   qoptBusy(false);
   if (!result) return;
