@@ -290,7 +290,7 @@ def precompute(model=None) -> dict:
     return inv
 
 
-def score_binning(tau_edges, lambda_edges, flags, model=None, *, n_splits=3, lambda_edges_per_tau=None) -> dict:
+def score_binning(tau_edges, lambda_edges, flags, model=None, *, n_splits=3, lambda_edges_per_tau=None, window=None) -> dict:
     """Map a binning to Q_rad + residual metrics against the full-ODF reference.
 
     `model` selects the atmosphere the binning + RTE run on (a bare filename under models/;
@@ -354,7 +354,12 @@ def score_binning(tau_edges, lambda_edges, flags, model=None, *, n_splits=3, lam
     rho = ref["rho"]
     q_full = ref["q_full"]
     resid = (q - q_full) / rho
-    in_win = (ltau >= WINDOW[0]) & (ltau <= WINDOW[1])
+    # rms / max_abs are scored over the log10(tau_Ross) window (default WINDOW=(-5,4)); the
+    # caller can narrow it to focus the fit on a depth slice. int_q stays whole-atmosphere.
+    win = WINDOW if window is None else (float(window[0]), float(window[1]))
+    in_win = (ltau >= min(win)) & (ltau <= max(win))
+    if int(in_win.sum()) < 2:
+        raise ValueError(f"scoring window {win} (log10 tau_Ross) covers < 2 atmosphere points; widen it")
     rms = float(np.sqrt(np.mean((resid[in_win]) ** 2)))
     max_abs = float(np.abs(resid[in_win]).max())
     int_q = float(-q.sum() * DZ / 1e10)
@@ -364,6 +369,7 @@ def score_binning(tau_edges, lambda_edges, flags, model=None, *, n_splits=3, lam
         "rms": rms,
         "max_abs": max_abs,
         "int_q_pct": (int_q - int_full) / int_full * 100.0,
+        "window": (float(min(win)), float(max(win))),
         "q": q,
         "resid": resid,
         "ltau": ltau,

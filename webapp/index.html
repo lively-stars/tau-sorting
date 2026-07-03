@@ -57,6 +57,11 @@
          background:#0e1420; border:1px solid var(--line); border-bottom:none; border-radius:8px 8px 0 0;
          cursor:pointer; position:relative; bottom:-1px; }
   .tab.active { color:var(--ink); background:var(--panel); border-bottom:1px solid var(--panel); }
+  details#qadv { margin-top:8px; }
+  details#qadv > summary { color:var(--muted); font-size:12px; cursor:pointer; font-weight:600; margin-bottom:6px; }
+  .adv-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px 10px; }
+  .adv-grid label { display:flex; align-items:center; justify-content:space-between; gap:6px; margin:0; font-weight:500; font-size:12px; }
+  .adv-grid input, .adv-grid select { width:98px; padding:4px 6px; background:#0e1420; color:var(--ink); border:1px solid var(--line); border-radius:7px; font:inherit; font-size:12px; }
 </style>
 </head>
 <body>
@@ -96,6 +101,14 @@
     <div class="hint">Only matters with &gt;1 &lambda; cell. Off = that group stays one band over all &lambda;.</div>
     <div id="pergroup-info" class="hint"></div>
 
+    <label>Scoring window &nbsp;<span class="hint">(log₁₀ τ_Ros, lo → hi)</span></label>
+    <div class="opt-row">
+      <span class="opt-n"><input type="number" id="win_lo" step="0.5" value="-5" /> to
+        <input type="number" id="win_hi" step="0.5" value="4" /></span>
+    </div>
+    <div class="hint">The depth range the rms/max residual is measured over (used by both Compute and Optimize;
+       the plot shades it). Narrow it to focus the fit, e.g. <code>-1</code> to <code>2</code> for the photosphere.</div>
+
     <label>Optimize for Q_rad &nbsp;<span class="hint">(direct &mdash; slow)</span></label>
     <div id="qvars">
       <label class="flag"><input type="checkbox" id="qv_tau" checked> &tau;</label>
@@ -108,6 +121,22 @@
       <button id="qopt" class="secondary">Optimize Q_rad &rarr;</button>
       <span class="opt-n"><input type="number" id="qbudget" min="20" max="1800" value="180" /> s</span>
     </div>
+    <details id="qadv">
+      <summary>Advanced optimizer settings &amp; stopping conditions</summary>
+      <div class="adv-grid">
+        <label>metric <select id="qv_metric"><option value="rms">rms</option><option value="maxabs">max |Δ|</option><option value="int_q">∫Q</option></select></label>
+        <label>method <select id="qv_method"><option value="cd">coord-descent</option><option value="nm">Nelder-Mead</option></select></label>
+        <label>max &tau;-groups <input type="number" id="qv_maxgroups" min="2" max="8" value="5" /></label>
+        <label>max evals <input type="number" id="qv_maxevals" min="20" value="5000" /></label>
+        <label>target rms <input type="number" id="qv_targetrms" min="0" step="1000000" value="0" title="0 = off" /></label>
+        <label>plateau evals <input type="number" id="qv_plateau" min="0" value="0" title="0 = off" /></label>
+        <label>grow tol % <input type="number" id="qv_growtol" min="0" step="0.5" value="1" /></label>
+        <label>min gap &tau; <input type="number" id="qv_gaptau" min="0.01" step="0.01" value="0.15" /></label>
+        <label>min gap &lambda; <input type="number" id="qv_gaplam" min="0.01" step="0.01" value="0.10" /></label>
+      </div>
+      <div class="hint" style="margin-top:6px">Stops: time (right of the button), max evals, target rms, or plateau
+         (rms stalled N evals). <code>0</code> = that stop is off. <b>∫Q</b> metric ignores the τ-window.</div>
+    </details>
     <div class="hint">Minimizes the Q_rad residual <em>directly</em> (full RTE per step, ~2.5&nbsp;s). Warm-starts
        from the current binning and loads the result when done.<a href="#" id="qcancel">cancel</a><br>
        <b>per-group &lambda;</b>: each &tau; group gets its own wavelength split (its own cut, or none) &mdash;
@@ -200,6 +229,8 @@ async function init() {
   const r = await fetch('/api/init'); const d = await r.json();
   $('tau').value = d.default_tau_edges.join(', ');
   $('lambda').value = d.default_lambda_edges.join(', ');
+  if (Array.isArray(d.default_window)) { $('win_lo').value = d.default_window[0]; $('win_hi').value = d.default_window[1]; }
+  if (d.max_groups_ceiling) { $('qv_maxgroups').max = d.max_groups_ceiling; $('qv_maxgroups').value = Math.min(+$('qv_maxgroups').value, d.max_groups_ceiling); }
   renderModels(d);
   buildFlags();
   // resume a Q_rad optimization that's already running (e.g. after a page reload)
@@ -235,7 +266,8 @@ async function compute() {
   if (tau.length<2) return setStatus('need ≥2 tau edges', true);
   if (lam.length<2) return setStatus('need ≥2 lambda edges', true);
   const split = [...document.querySelectorAll('#flags input')].map(c=>c.checked);
-  const body = {tau_edges:tau, lambda_edges:lam, split_lambda:split, model:$('model').value};
+  const body = {tau_edges:tau, lambda_edges:lam, split_lambda:split, model:$('model').value,
+                window_lo:+$('win_lo').value, window_hi:+$('win_hi').value};
   if (PG_LAMBDA && PG_LAMBDA.length === tau.length-1) body.lambda_edges_per_tau = PG_LAMBDA;
   $('go').disabled = true; setStatus('computing… (binning + radiative transfer)');
   try {
@@ -289,6 +321,15 @@ async function qoptStart() {
     opt_flags: $('qv_flags').checked, grow: $('qv_grow').checked,
     per_group_lambda: $('qv_pergroup').checked,
     max_seconds: Math.max(20, Math.min(1800, parseInt($('qbudget').value,10)||180)),
+    window_lo: +$('win_lo').value, window_hi: +$('win_hi').value,
+    metric: $('qv_metric').value, method: $('qv_method').value,
+    max_groups: parseInt($('qv_maxgroups').value,10) || undefined,
+    max_evals: parseInt($('qv_maxevals').value,10) || undefined,
+    target_rms: parseFloat($('qv_targetrms').value) || 0,
+    plateau_evals: parseInt($('qv_plateau').value,10) || 0,
+    grow_tol_rel: (parseFloat($('qv_growtol').value) || 0) / 100,
+    min_gap_tau: parseFloat($('qv_gaptau').value) || undefined,
+    min_gap_lam: parseFloat($('qv_gaplam').value) || undefined,
   };
   // warm-start a per-group re-run from the current cuts so it keeps refining (not resetting to the shared box)
   if ($('qv_pergroup').checked && PG_LAMBDA && PG_LAMBDA.length === tau.length-1) body.lambda_edges_per_tau = PG_LAMBDA;
@@ -330,7 +371,8 @@ function qoptFinish(result) {
     result.flags.forEach((f,i)=>{ if(boxes[i]) boxes[i].checked = f; });
   }
   const imp = (100*(result.rms0-result.rms)/result.rms0).toFixed(1);
-  setStatus(`Q_rad optimized: rms ${result.rms0.toExponential(2)} → ${result.rms.toExponential(2)} (−${imp}%) · computing…`);
+  const why = result.stop_reason ? ` · stopped: ${result.stop_reason}` : '';
+  setStatus(`Q_rad optimized: rms ${result.rms0.toExponential(2)} → ${result.rms.toExponential(2)} (−${imp}%)${why} · ${result.n_evals} evals · computing…`);
   compute();
 }
 
@@ -396,6 +438,12 @@ function render(d){
     return {type:'rect', xref:'x', yref:'y', x0:le[0], x1:le[1], y0:te[0], y1:te[1],
             line:{color:'rgba(240,244,250,0.7)', width:1}, fillcolor:'rgba(0,0,0,0)', layer:'above'};
   });
+  // shade the scoring window (where rms/max are measured) on the Q/ρ and residual panels
+  if (Array.isArray(d.window) && d.window.length===2) {
+    const [wl, wh] = d.window;
+    ['2','3'].forEach(ax => shapes.push({type:'rect', xref:'x'+ax, yref:'y'+ax+' domain',
+      x0:wl, x1:wh, y0:0, y1:1, fillcolor:'rgba(255,157,60,0.07)', line:{width:0}, layer:'below'}));
+  }
 
   // --- Q_rad panels (unchanged content, moved to x2/y2 and x3/y3) ---
   const base = {x:d.ltau, mode:'lines', type:'scatter'};

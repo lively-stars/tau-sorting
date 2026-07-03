@@ -57,6 +57,18 @@ def _resolve_model(req):
     return name
 
 
+def _window(req):
+    """Optional (lo, hi) log10(tau_Ross) scoring window from window_lo/window_hi; None if absent
+    (-> qrad_core.WINDOW). Raises if the two are given but don't span a sensible range."""
+    lo, hi = req.get("window_lo"), req.get("window_hi")
+    if lo is None or hi is None:
+        return None
+    lo, hi = float(lo), float(hi)
+    if hi - lo < 0.5:
+        raise ValueError("scoring window (log10 tau_Ross) must span at least 0.5; widen it")
+    return (lo, hi)
+
+
 # --- Q_rad optimizer: one background job at a time, polled by the UI ---
 _QOPT_LOCK = threading.Lock()
 _QOPT: dict = {
@@ -107,10 +119,18 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
             opt_lambda=opt["opt_lambda"],
             opt_flags=opt["opt_flags"],
             grow=opt["grow"],
+            metric=opt["metric"],
             method=opt["method"],
             max_seconds=opt["max_seconds"],
             max_evals=opt["max_evals"],
             max_groups=opt["max_groups"],
+            min_gap_tau=opt["min_gap_tau"],
+            min_gap_lam=opt["min_gap_lam"],
+            grow_tol_rel=opt["grow_tol_rel"],
+            window=opt["window"],
+            target_rms=opt["target_rms"],
+            plateau_evals=opt["plateau_evals"],
+            plateau_rel=opt["plateau_rel"],
             per_group_lambda=opt["per_group_lambda"],
             lambda_edges_per_tau=opt["lambda_edges_per_tau"],
             on_eval=on_eval,
@@ -124,29 +144,32 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
         _QOPT["running"] = False
 
 
-def compute(tau_edges, lambda_edges, split_lambda, model, lambda_edges_per_tau=None):
+def compute(tau_edges, lambda_edges, split_lambda, model, lambda_edges_per_tau=None, window=None):
     """Run the per-edge pipeline (via qrad_core) and shape the Q_rad curves + metrics for the UI.
 
     `model` selects the atmosphere the binning + RTE run on (validated file under models/).
+    `window` (log10 tau_Ross (lo,hi)) narrows the rms/max_abs scoring range (None -> default).
     If `lambda_edges_per_tau` is given (one lambda-edge list per tau group), each tau group
     uses its own wavelength split; otherwise the shared-lambda + split-flag model is used.
     """
     with _LOCK:
         if lambda_edges_per_tau is not None:
-            r = qc.score_binning(tau_edges, None, None, model, lambda_edges_per_tau=lambda_edges_per_tau)
+            r = qc.score_binning(tau_edges, None, None, model, lambda_edges_per_tau=lambda_edges_per_tau, window=window)
         else:
             flags = qc.resolve_flags(split_lambda, len(tau_edges) - 1)
-            r = qc.score_binning(tau_edges, lambda_edges, flags, model)
+            r = qc.score_binning(tau_edges, lambda_edges, flags, model, window=window)
         inv = qc.inv_for(model)
 
         ltau, rho = r["ltau"], r["rho"]
         q, q_full, q_gray, resid = r["q"], r["q_full"], r["q_gray"], r["resid"]
 
-        # sort by the tau axis, and drop the off-screen tau=0 boundary point so it
-        # doesn't dominate the plot's y-range (metrics already use [-5, 4]).
+        # sort by the tau axis, and drop the off-screen tau=0 boundary point. The display slice
+        # is the UNION of the default view and the user's scoring window (each +-1 dex), so a
+        # narrowed window never crops the plot below today's view.
+        effwin = r["window"]
         order = np.argsort(ltau)
         lo = ltau[order]
-        disp = (lo >= WINDOW[0] - 1.0) & (lo <= WINDOW[1] + 1.0)
+        disp = (lo >= min(WINDOW[0], effwin[0]) - 1.0) & (lo <= max(WINDOW[1], effwin[1]) + 1.0)
         idx = order[disp]
 
         # binning diagram: sub-bin scatter (colored by group downstream) + group boxes
@@ -163,6 +186,7 @@ def compute(tau_edges, lambda_edges, split_lambda, model, lambda_edges_per_tau=N
             "rms": r["rms"],
             "max_abs": r["max_abs"],
             "int_q_pct": r["int_q_pct"],
+            "window": list(effwin),  # effective scoring window (log10 tau_Ros) -> UI guides
             "assigned": r["assigned"],
             "total_subbins": r["total_subbins"],
             # binning diagram (log10 lambda[A] vs -log10 tau_Ros); scatter is invariant,
@@ -267,6 +291,8 @@ class Handler(BaseHTTPRequestHandler):
                     {
                         "default_tau_edges": [-0.63, 0.3488, 1.2275, 2.885, 7.0],
                         "default_lambda_edges": [3.0, 3.8, 5.0],
+                        "default_window": [WINDOW[0], WINDOW[1]],
+                        "max_groups_ceiling": MAX_GROUPS,
                         "default_model": qc.DEFAULT_MODEL,
                         "models": qc.scan_models(),
                     }
@@ -349,6 +375,13 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     flags = qc.resolve_flags(req.get("split_lambda") or None, len(tau_edges) - 1)
                     qc.reference(model)  # warm the chosen model's reference before threading
+                    metric = req.get("metric", "rms")
+                    if metric not in ("rms", "maxabs", "int_q"):
+                        raise ValueError(f"metric must be rms|maxabs|int_q, got {metric!r}")
+                    method = req.get("method", "cd")
+                    if method not in ("cd", "nm"):
+                        raise ValueError(f"method must be cd|nm, got {method!r}")
+                    target = req.get("target_rms")
                     opt = {
                         "opt_tau": bool(req.get("opt_tau", True)),
                         "opt_lambda": bool(req.get("opt_lambda", True)),
@@ -357,10 +390,19 @@ class Handler(BaseHTTPRequestHandler):
                         "per_group_lambda": bool(req.get("per_group_lambda", False)),
                         # per-group-lambda warm start (re-running keeps refining the current cuts)
                         "lambda_edges_per_tau": req.get("lambda_edges_per_tau") or None,
-                        "method": req.get("method", "cd"),
+                        "metric": metric,
+                        "method": method,
                         "max_seconds": float(req.get("max_seconds", 300.0)),
                         "max_evals": int(req.get("max_evals", 5000)),
-                        "max_groups": MAX_GROUPS,
+                        # user may ask for fewer than the host ceiling, never more.
+                        "max_groups": max(2, min(MAX_GROUPS, int(req.get("max_groups", MAX_GROUPS)))),
+                        "window": _window(req),
+                        "target_rms": (float(target) if target else None),
+                        "plateau_evals": max(0, int(req.get("plateau_evals", 0) or 0)),
+                        "plateau_rel": float(req.get("plateau_rel", 0.005) or 0.005),
+                        "grow_tol_rel": float(req.get("grow_tol_rel", 0.01) or 0.01),
+                        "min_gap_tau": float(req.get("min_gap_tau", 0.15) or 0.15),
+                        "min_gap_lam": float(req.get("min_gap_lam", 0.10) or 0.10),
                     }
                     threading.Thread(
                         target=_run_qrad_opt, args=(tau_edges, lambda_edges, flags, model, opt), daemon=True
@@ -394,7 +436,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             split_lambda = req.get("split_lambda") or None
             lpt = req.get("lambda_edges_per_tau") or None
-            out = compute(tau_edges, lambda_edges, split_lambda, model, lambda_edges_per_tau=lpt)
+            out = compute(tau_edges, lambda_edges, split_lambda, model, lambda_edges_per_tau=lpt, window=_window(req))
             out["elapsed"] = round(time.perf_counter() - t0, 2)
             self._send(200, json.dumps(out))
         except Exception as e:

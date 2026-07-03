@@ -348,5 +348,69 @@ class TestConvertOdf(unittest.TestCase):
         self.assertTrue(np.allclose(a["ODF"][0], 10.0))  # 10**(ODF/1000)
 
 
+class TestStoppingAndWindow(unittest.TestCase):
+    """Stopping conditions + scoring window, via an injected analytic score_fn (no ODF)."""
+
+    @staticmethod
+    def _flat(rms=5e7):
+        def score(tau, lam, flags, model, *, lambda_edges_per_tau=None, window=None):
+            return {"rms": rms, "max_abs": 2 * rms, "int_q_pct": 0.0, "n_empty": 0, "n_groups": len(tau) - 1}
+
+        return score
+
+    def test_target_rms_stops_early(self):
+        # score always returns rms below the target -> should stop with stop_reason='target_rms'
+        res = qo.optimize_qrad(
+            [-0.63, 0.35, 1.23, 2.89, 7.0], [3.0, 5.0], flags=[True] * 4,
+            target_rms=6e7, opt_lambda=False, opt_flags=False, grow=False,
+            score_fn=self._flat(5e7), max_evals=1000, max_seconds=100,
+        )
+        self.assertEqual(res["stop_reason"], "target_rms")
+        self.assertLess(res["n_evals"], 25)
+
+    def test_plateau_stops(self):
+        # constant rms -> no improvement -> plateau fires after plateau_evals
+        res = qo.optimize_qrad(
+            [-0.63, 0.35, 1.23, 2.89, 7.0], [3.0, 5.0], flags=[True] * 4,
+            plateau_evals=5, opt_lambda=False, opt_flags=False, grow=False,
+            score_fn=self._flat(5e7), max_evals=1000, max_seconds=100,
+        )
+        self.assertEqual(res["stop_reason"], "plateau")
+
+    def test_max_evals_stops(self):
+        res = qo.optimize_qrad(
+            [-0.63, 0.35, 1.23, 2.89, 7.0], [3.0, 5.0], flags=[True] * 4,
+            max_evals=8, grow=False, score_fn=self._flat(5e7), max_seconds=100,
+        )
+        self.assertEqual(res["stop_reason"], "max_evals")
+        # a few un-budgeted checkpoint/final evals record the result, so allow a small overshoot
+        self.assertLessEqual(res["n_evals"], 8 + 5)
+
+    def test_window_forwarded_only_when_set(self):
+        seen = []
+
+        def score(tau, lam, flags, model, *, lambda_edges_per_tau=None, window="MISSING"):
+            seen.append(window)
+            return {"rms": 5e7, "max_abs": 1e8, "int_q_pct": 0.0, "n_empty": 0, "n_groups": len(tau) - 1}
+
+        qo.optimize_qrad(
+            [-0.63, 0.35, 1.23, 2.89, 7.0], [3.0, 5.0], flags=[True] * 4,
+            window=(-2.0, 2.0), opt_tau=False, opt_lambda=False, opt_flags=False, grow=False,
+            score_fn=score, max_evals=20,
+        )
+        self.assertTrue(all(w == (-2.0, 2.0) for w in seen))  # window passed through every call
+
+    def test_window_absent_keeps_positional_signature(self):
+        # a 4-positional score_fn (no window kwarg) must still work when window is None
+        def score(tau, lam, flags, model):
+            return {"rms": 5e7, "max_abs": 1e8, "int_q_pct": 0.0, "n_empty": 0, "n_groups": len(tau) - 1}
+
+        res = qo.optimize_qrad(
+            [-0.63, 0.35, 1.23, 2.89, 7.0], [3.0, 5.0], flags=[True] * 4,
+            grow=False, score_fn=score, max_evals=15,
+        )
+        self.assertIn("stop_reason", res)
+
+
 if __name__ == "__main__":
     unittest.main()

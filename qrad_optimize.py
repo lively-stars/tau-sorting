@@ -64,26 +64,31 @@ def _check_feasible(edges, min_gap: float, name: str) -> None:
 
 
 # --- objective ------------------------------------------------------------------
-def make_evaluator(model, *, metric="rms", empty_penalty=EMPTY_PENALTY, score_fn=None, on_eval=None):
+def make_evaluator(model, *, metric="rms", empty_penalty=EMPTY_PENALTY, score_fn=None, on_eval=None, window=None):
     """Return (evaluate, state). `evaluate(tau, lam, flags) -> (cost, raw_dict)`.
 
     cost = base_metric * (1 + empty_penalty * n_empty). The multiplicative empty-band
     penalty counteracts the fact that an empty band is silently dropped from the Q sum
     (which would otherwise *lower* rms and let the search collapse groups). `model` selects
-    the atmosphere passed through to `score_fn`. `score_fn` is dependency-injected (defaults
-    to qrad_core.score_binning) so the search logic is unit-testable against an analytic
-    objective with no ODF. `state["n_evals"]` counts calls. `on_eval(n_evals, cost, raw_dict)`
-    (optional) fires after every evaluation — used by the webapp for a live progress ticker.
+    the atmosphere passed through to `score_fn`; `window` (log10 tau_Ross (lo,hi)) narrows the
+    rms/max_abs scoring range and is forwarded only when set, so an injected `score_fn` keeps
+    its 4-positional signature by default. `score_fn` is dependency-injected (defaults to
+    qrad_core.score_binning) so the search logic is unit-testable against an analytic objective
+    with no ODF. `state["n_evals"]` counts calls. `on_eval(n_evals, cost, raw_dict)` (optional)
+    fires after every evaluation — used by the webapp for a live progress ticker.
     """
     score = score_fn if score_fn is not None else qrad_core.score_binning
     state = {"n_evals": 0}
     _key = {"rms": "rms", "maxabs": "max_abs", "int_q": "int_q_pct"}[metric]
+    _win = {} if window is None else {"window": (float(window[0]), float(window[1]))}
 
     def evaluate(tau_edges, lambda_edges, flags, *, lambda_edges_per_tau=None):
         if lambda_edges_per_tau is not None:
-            r = score(list(tau_edges), None, None, model, lambda_edges_per_tau=[list(x) for x in lambda_edges_per_tau])
+            r = score(
+                list(tau_edges), None, None, model, lambda_edges_per_tau=[list(x) for x in lambda_edges_per_tau], **_win
+            )
         else:
-            r = score(list(tau_edges), list(lambda_edges), list(flags), model)
+            r = score(list(tau_edges), list(lambda_edges), list(flags), model, **_win)
         base = abs(float(r[_key]))
         cost = base * (1.0 + empty_penalty * int(r.get("n_empty", 0)))
         state["n_evals"] += 1
@@ -101,11 +106,44 @@ class _Budget:
     state: dict
     t0: float
     should_stop: object = None  # optional callable -> True to abort at the next check
+    target_rms: float | None = None  # stop once the best RAW rms drops to/below this
+    plateau_evals: int = 0  # stop if the best rms hasn't improved over this many evals (0 = off)
+    plateau_rel: float = 0.005  # "improvement" = best rms fell by >= this fraction of the reference
+    best_rms: float = float("inf")  # running best RAW rms (r["rms"], independent of the metric)
+    stop_reason: str = ""  # which condition ended the search (for reporting)
+    _pl_ref_rms: float = float("inf")  # plateau reference rms
+    _pl_ref_n: int = 0  # eval count at which _pl_ref_rms was last set
+
+    def record(self, rms: float, n: int) -> None:
+        """Track the running best rms + plateau reference. Called after every evaluation."""
+        if rms < self.best_rms:
+            self.best_rms = rms
+        # reset the plateau window whenever we see a meaningful (>= plateau_rel) improvement
+        if self._pl_ref_rms == float("inf") or (self._pl_ref_rms - rms) >= self.plateau_rel * self._pl_ref_rms:
+            self._pl_ref_rms, self._pl_ref_n = rms, n
+
+    def reset_plateau(self, n: int) -> None:
+        """Restart the plateau window (e.g. after an accepted grow) so it isn't cut short."""
+        self._pl_ref_rms, self._pl_ref_n = self.best_rms, n
 
     def exhausted(self) -> bool:
         if self.should_stop is not None and self.should_stop():
+            self.stop_reason = self.stop_reason or "cancelled"
             return True
-        return self.state["n_evals"] >= self.max_evals or (time.perf_counter() - self.t0) >= self.max_seconds
+        n = self.state["n_evals"]
+        if n >= self.max_evals:
+            self.stop_reason = "max_evals"
+            return True
+        if (time.perf_counter() - self.t0) >= self.max_seconds:
+            self.stop_reason = "max_seconds"
+            return True
+        if self.target_rms is not None and self.best_rms <= self.target_rms:
+            self.stop_reason = "target_rms"
+            return True
+        if self.plateau_evals > 0 and self._pl_ref_n > 0 and (n - self._pl_ref_n) >= self.plateau_evals:
+            self.stop_reason = "plateau"
+            return True
+        return False
 
 
 @dataclass
@@ -384,7 +422,12 @@ def optimize_qrad(
     max_groups=8,
     max_evals=400,
     max_seconds=1800.0,
-    grow_tol=None,
+    grow_tol=None,  # absolute grow threshold; if None, grow_tol_rel * current rms is used
+    grow_tol_rel=0.01,  # relative grow threshold (fraction of current rms) when grow_tol is None
+    window=None,  # log10 tau_Ross (lo, hi) to score rms/max_abs over (None -> qrad_core.WINDOW)
+    target_rms=None,  # early stop once the best raw rms <= this
+    plateau_evals=0,  # early stop if best rms hasn't improved over this many evals (0 = off)
+    plateau_rel=0.005,  # plateau "improvement" threshold (fraction of the reference rms)
     per_group_lambda=False,
     lambda_edges_per_tau=None,  # per-group-lambda warm start (one lambda-edge list per tau group)
     score_fn=None,
@@ -414,10 +457,26 @@ def optimize_qrad(
     _check_feasible(lambda_edges, min_gap_lam, "lambda")
 
     t0 = time.perf_counter()
+
+    def _record_on_eval(n, cost, r):
+        # track best rms / plateau for the stopping conditions, then the caller's hook.
+        budget.record(float(r["rms"]), n)  # `budget` bound below; evaluate() only runs afterward
+        if on_eval is not None:
+            on_eval(n, cost, r)
+
     evaluate, state = make_evaluator(
-        model, metric=metric, empty_penalty=empty_penalty, score_fn=score_fn, on_eval=on_eval
+        model, metric=metric, empty_penalty=empty_penalty, score_fn=score_fn, on_eval=_record_on_eval, window=window
     )
-    budget = _Budget(max_evals=max_evals, max_seconds=max_seconds, state=state, t0=t0, should_stop=should_stop)
+    budget = _Budget(
+        max_evals=max_evals,
+        max_seconds=max_seconds,
+        state=state,
+        t0=t0,
+        should_stop=should_stop,
+        target_rms=target_rms,
+        plateau_evals=plateau_evals,
+        plateau_rel=plateau_rel,
+    )
     cfg = _Cfg(method=method, min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam, adjust_steps=tuple(adjust_steps))
 
     history: list[dict] = []
@@ -474,7 +533,7 @@ def optimize_qrad(
                 cand_tau, cand_lpt = _insert_edge_pg(tau, lpt, min_gap_tau)
                 if cand_tau is None:
                     break
-                gtol = grow_tol if grow_tol is not None else 0.01 * best
+                gtol = grow_tol if grow_tol is not None else grow_tol_rel * best
                 ct, clpt, cbest = _block_fixed_point_pg(
                     cand_tau,
                     cand_lpt,
@@ -489,6 +548,7 @@ def optimize_qrad(
                 )
                 if (best - cbest) > gtol:
                     tau, lpt, best = ct, clpt, cbest
+                    budget.reset_plateau(state["n_evals"])  # a real grow shouldn't be cut short by plateau
                     checkpoint("grow", evaluate(tau, None, None, lambda_edges_per_tau=lpt)[1])
                 else:
                     break
@@ -504,6 +564,8 @@ def optimize_qrad(
             "n_bands_total": int(final_r.get("n_groups", 0)),
             "n_evals": state["n_evals"],
             "elapsed": round(time.perf_counter() - t0, 2),
+            "stop_reason": budget.stop_reason or "converged",
+            "window": list(final_r.get("window", [])),
             "history": history,
         }
 
@@ -545,6 +607,7 @@ def optimize_qrad(
             )
             if (best - cbest) > gtol:
                 tau, lam, flg, best = ct, cl, cf, cbest
+                budget.reset_plateau(state["n_evals"])  # a real grow shouldn't be cut short by plateau
                 checkpoint("grow", evaluate(tau, lam, flg)[1])
             else:
                 break
@@ -560,6 +623,8 @@ def optimize_qrad(
         "n_groups": len(tau) - 1,
         "n_evals": state["n_evals"],
         "elapsed": round(time.perf_counter() - t0, 2),
+        "stop_reason": budget.stop_reason or "converged",
+        "window": list(final_r.get("window", [])),
         "history": history,
     }
 
@@ -596,6 +661,11 @@ def main(
     max_groups: int = typer.Option(8, "--max-groups"),
     max_evals: int = typer.Option(400, "--max-evals"),
     max_seconds: float = typer.Option(1800.0, "--max-seconds"),
+    window_lo: float = typer.Option(-5.0, "--window-lo", help="Score rms over log10(tau_Ros) >= this."),
+    window_hi: float = typer.Option(4.0, "--window-hi", help="Score rms over log10(tau_Ros) <= this."),
+    target_rms: float = typer.Option(0.0, "--target-rms", help="Stop once rms <= this (0 = off)."),
+    plateau_evals: int = typer.Option(0, "--plateau-evals", help="Stop if rms stalls this many evals (0 = off)."),
+    grow_tol_rel: float = typer.Option(0.01, "--grow-tol-rel", help="Grow a tau group only if rms improves > this frac."),
     save_plot: str = typer.Option("", "--save-plot", help="Write a before/after Q/rho plot to this path."),
     save_dat: bool = typer.Option(
         False, "--save-dat/--no-save-dat", help="After optimizing, write the optimized binning's kappa .dat table."
@@ -636,6 +706,10 @@ def main(
         max_groups=max_groups,
         max_evals=max_evals,
         max_seconds=max_seconds,
+        window=(window_lo, window_hi),
+        target_rms=(target_rms if target_rms > 0 else None),
+        plateau_evals=plateau_evals,
+        grow_tol_rel=grow_tol_rel,
         per_group_lambda=per_group_lambda,
         on_progress=_progress,
     )
