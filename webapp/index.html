@@ -15,10 +15,13 @@
   header { padding:16px 22px; border-bottom:1px solid var(--line); }
   header h1 { margin:0; font-size:18px; font-weight:650; }
   header p { margin:4px 0 0; color:var(--muted); font-size:13px; }
-  .wrap { display:flex; gap:18px; padding:18px 22px; align-items:flex-start; flex-wrap:wrap; }
+  .wrap { display:flex; gap:10px; padding:18px 22px; align-items:flex-start; flex-wrap:wrap; }
   .panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 18px; }
-  .controls { width:312px; flex:0 0 312px; }
-  .plot { flex:1 1 460px; min-width:420px; }
+  .controls { width:312px; flex:0 0 auto; }
+  .plot { flex:1 1 380px; min-width:340px; }
+  .gutter { flex:0 0 10px; align-self:stretch; min-height:260px; border-radius:6px; cursor:col-resize;
+            background:var(--line); transition:background .15s; }
+  .gutter:hover, .gutter.drag { background:var(--accent); }
   label { display:block; font-weight:600; margin:14px 0 5px; font-size:13px; }
   label:first-of-type { margin-top:0; }
   .hint { color:var(--muted); font-weight:400; font-size:12px; margin-top:3px; }
@@ -161,6 +164,8 @@
     <div class="hint">Writes the current binning's C-format kappa table (`kappa_&lt;…&gt;.dat`). After an
        optimize run this is the optimized table.</div>
   </div>
+
+  <div class="gutter" id="gutter" title="Drag to resize the controls panel"></div>
 
   <div class="panel plot">
     <div class="tabs">
@@ -555,6 +560,31 @@ $('qopt').addEventListener('click', qoptStart);
 $('qcancel').addEventListener('click', qoptCancel);
 $('dl').addEventListener('click', downloadKappa);
 ['tau','lambda'].forEach(id=>$(id).addEventListener('keydown', e=>{ if(e.key==='Enter') compute(); }));
+
+// Draggable splitter: resize the controls column (persisted). Reflows the active chart on release.
+(function(){
+  const wrap = document.querySelector('.wrap'), controls = document.querySelector('.controls'), gutter = $('gutter');
+  const clamp = w => Math.max(280, Math.min(680, w));
+  const saved = parseFloat(localStorage.getItem('ctrlWidth'));
+  if (saved) controls.style.width = clamp(saved) + 'px';
+  let dragging = false;
+  gutter.addEventListener('mousedown', e => {
+    dragging = true; gutter.classList.add('drag');
+    document.body.style.userSelect = 'none'; document.body.style.cursor = 'col-resize';
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', e => {
+    if (dragging) controls.style.width = clamp(e.clientX - wrap.getBoundingClientRect().left) + 'px';
+  });
+  window.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false; gutter.classList.remove('drag');
+    document.body.style.userSelect = ''; document.body.style.cursor = '';
+    localStorage.setItem('ctrlWidth', controls.offsetWidth);
+    try { Plotly.Plots.resize(ACTIVE_TAB === 'atm' ? 'atmchart' : 'chart'); } catch(_){}
+  });
+})();
+
 init();
 </script>
 </body>
