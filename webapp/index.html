@@ -128,6 +128,7 @@
       <span class="opt-n"><input type="number" id="qbudget" min="20" max="1800" value="180" /> s</span>
     </div>
     <div id="qprog" class="qprog" title="elapsed / time budget"><div id="qprogbar"></div></div>
+    <div id="qstatus" class="hint" style="margin-top:6px; min-height:1.2em"></div>
     <details id="qadv">
       <summary>Advanced optimizer settings &amp; stopping conditions</summary>
       <div class="adv-grid">
@@ -269,6 +270,8 @@ function buildFlags() {
 }
 
 function setStatus(msg, err=false){ const s=$('status'); s.textContent=msg; s.className=err?'err':''; }
+// Optimizer status line, shown under the Optimize Q_rad button + progress bar (not the global status).
+function setQStatus(msg, err=false){ const e=$('qstatus'); e.textContent=msg; e.style.color = err ? 'var(--bad)' : ''; }
 
 async function compute() {
   clearTimeout(_editTimer);  // cancel any pending debounced auto-compute
@@ -340,8 +343,8 @@ function stopQBar(){
 async function qoptStart() {
   let tau, lam;
   try { tau = parseEdges($('tau').value); lam = parseEdges($('lambda').value); }
-  catch(e){ return setStatus('could not parse edges', true); }
-  if (tau.length<2 || lam.length<2) return setStatus('need ≥2 τ and ≥2 λ edges', true);
+  catch(e){ return setQStatus('could not parse edges', true); }
+  if (tau.length<2 || lam.length<2) return setQStatus('need ≥2 τ and ≥2 λ edges', true);
   const split = [...document.querySelectorAll('#flags input')].map(c=>c.checked);
   const body = {
     tau_edges: tau, lambda_edges: lam, split_lambda: split, model: $('model').value,
@@ -361,7 +364,7 @@ async function qoptStart() {
   };
   // warm-start a per-group re-run from the current cuts so it keeps refining (not resetting to the shared box)
   if ($('qv_pergroup').checked && PG_LAMBDA && PG_LAMBDA.length === tau.length-1) body.lambda_edges_per_tau = PG_LAMBDA;
-  qoptBusy(true); setStatus('starting Q_rad optimization…');
+  qoptBusy(true); setQStatus('starting Q_rad optimization…');
   try {
     const r = await fetch('/api/optimize_qrad', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
     const d = await r.json();
@@ -369,20 +372,20 @@ async function qoptStart() {
     $('qcancel').style.display = 'inline';
     startQBar(body.max_seconds);
     QPOLL = setInterval(qoptPoll, 1500);
-  } catch(e){ setStatus(e.message, true); qoptBusy(false); stopQBar(); }
+  } catch(e){ setQStatus(e.message, true); qoptBusy(false); stopQBar(); }
 }
 
 async function qoptPoll() {
   let d;
   try { d = await (await fetch('/api/optimize_qrad_status')).json(); }
   catch(e){ return; }  // transient network hiccup; keep polling
-  if (d.error) { setStatus('optimize error: ' + d.error, true); return qoptFinish(null); }
+  if (d.error) { setQStatus('optimize error: ' + d.error, true); return qoptFinish(null); }
   if (!d.running) return qoptFinish(d.result);
   if (!QANIM) startQBar(+$('qbudget').value || 180);          // resume (e.g. after a page reload)
   if (typeof d.elapsed === 'number') QT0 = Date.now() - d.elapsed * 1000;  // resync to server elapsed
   const imp = (d.rms0 && d.best) ? ` (−${(100*(d.rms0-d.best)/d.rms0).toFixed(1)}%)` : '';
   const best = d.best ? d.best.toExponential(2) : '…';
-  setStatus(`optimizing Q_rad… ${d.n_evals} evals · rms ${best}${imp} · ${d.groups} groups · ${Math.round(d.elapsed)}s`);
+  setQStatus(`optimizing Q_rad… ${d.n_evals} evals · rms ${best}${imp} · ${d.groups} groups · ${Math.round(d.elapsed)}s`);
 }
 
 function qoptFinish(result) {
@@ -404,7 +407,7 @@ function qoptFinish(result) {
   }
   const imp = (100*(result.rms0-result.rms)/result.rms0).toFixed(1);
   const why = result.stop_reason ? ` · stopped: ${result.stop_reason}` : '';
-  setStatus(`Q_rad optimized: rms ${result.rms0.toExponential(2)} → ${result.rms.toExponential(2)} (−${imp}%)${why} · ${result.n_evals} evals · computing…`);
+  setQStatus(`Q_rad optimized: rms ${result.rms0.toExponential(2)} → ${result.rms.toExponential(2)} (−${imp}%)${why} · ${result.n_evals} evals`);
   compute();
 }
 
@@ -434,7 +437,7 @@ async function downloadKappa() {
 
 async function qoptCancel(e){
   if (e) e.preventDefault();
-  setStatus('cancelling — keeping the best binning found so far…');
+  setQStatus('cancelling — keeping the best binning found so far…');
   try { await fetch('/api/optimize_qrad_cancel', {method:'POST'}); } catch(_){}
 }
 
