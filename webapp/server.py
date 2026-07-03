@@ -83,6 +83,7 @@ _QOPT: dict = {
     "rms0": None,
     "groups": 0,
     "model": "",
+    "diagram": None,  # binning-diagram data of the current best (for the live top-plot preview)
 }
 
 
@@ -95,6 +96,16 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
         rms = float(r["rms"])
         if _QOPT["best"] is None or rms < _QOPT["best"]:
             _QOPT["best"] = rms
+            # snapshot the current best binning's diagram (sub-bin group + boxes) — cheap, no RTE —
+            # so the UI can live-preview the top plot. Assigned atomically; the poller reads it.
+            bi, gte, gle = r.get("band_index"), r.get("group_tau_edges"), r.get("group_lam_edges")
+            if bi is not None and gte is not None and gle is not None:
+                _QOPT["diagram"] = {
+                    "rms": rms,
+                    "bin_group": np.asarray(bi)[SKIP:].astype(int).tolist(),
+                    "group_tau_edges": np.asarray(gte).tolist(),
+                    "group_lam_edges": np.asarray(gle).tolist(),
+                }
 
     def on_progress(tag, value, groups, n):
         if tag == "start":
@@ -317,6 +328,7 @@ class Handler(BaseHTTPRequestHandler):
                         "history": _QOPT["history"][-12:],
                         "result": _QOPT["result"],
                         "error": _QOPT["error"],
+                        "diagram": _QOPT["diagram"],
                     }
                 ),
             )
@@ -371,6 +383,7 @@ class Handler(BaseHTTPRequestHandler):
                         rms0=None,
                         groups=0,
                         model=model,
+                        diagram=None,
                     )
                 try:
                     flags = qc.resolve_flags(req.get("split_lambda") or None, len(tau_edges) - 1)

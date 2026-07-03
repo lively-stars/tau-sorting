@@ -364,7 +364,7 @@ async function qoptStart() {
   };
   // warm-start a per-group re-run from the current cuts so it keeps refining (not resetting to the shared box)
   if ($('qv_pergroup').checked && PG_LAMBDA && PG_LAMBDA.length === tau.length-1) body.lambda_edges_per_tau = PG_LAMBDA;
-  qoptBusy(true); setQStatus('starting Q_rad optimization…');
+  qoptBusy(true); setQStatus('starting Q_rad optimization…'); QLASTDIAG = null;
   try {
     const r = await fetch('/api/optimize_qrad', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
     const d = await r.json();
@@ -383,6 +383,7 @@ async function qoptPoll() {
   if (!d.running) return qoptFinish(d.result);
   if (!QANIM) startQBar(+$('qbudget').value || 180);          // resume (e.g. after a page reload)
   if (typeof d.elapsed === 'number') QT0 = Date.now() - d.elapsed * 1000;  // resync to server elapsed
+  if (d.diagram && d.diagram.rms !== QLASTDIAG) { QLASTDIAG = d.diagram.rms; liveBinning(d.diagram); }  // live top-plot preview
   const imp = (d.rms0 && d.best) ? ` (−${(100*(d.rms0-d.best)/d.rms0).toFixed(1)}%)` : '';
   const best = d.best ? d.best.toExponential(2) : '…';
   setQStatus(`optimizing Q_rad… ${d.n_evals} evals · rms ${best}${imp} · ${d.groups} groups · ${Math.round(d.elapsed)}s`);
@@ -456,6 +457,25 @@ const PAL = ['#ff9d3c','#3ecf8e','#5b9bd5','#e2555b','#b083f0','#f7c948','#4dd0e
              '#f06292','#a3be8c','#d0876f','#88c0d0','#ebcb8b','#c0a0ff','#7ec4ff',
              '#ffd479','#9ad1a0'];
 const groupColor = g => g>=0 ? PAL[g % PAL.length] : 'rgba(140,150,170,0.30)';
+
+let QLASTDIAG = null;   // rms of the last live-drawn optimizer diagram (skip redundant redraws)
+// Live-update ONLY the top binning diagram (sub-bin colors + group boxes + range) from the
+// optimizer's current best, reusing the invariant scatter (LAST.bin_x/bin_y). No RTE — cheap per poll.
+function liveBinning(diag){
+  if (!LAST || !diag || !Array.isArray(diag.bin_group) || diag.bin_group.length !== LAST.bin_x.length) return;
+  const colors = diag.bin_group.map(groupColor);
+  const shapes = diag.group_tau_edges.map((te,g)=>{ const le = diag.group_lam_edges[g];
+    return {type:'rect', xref:'x', yref:'y', x0:le[0], x1:le[1], y0:te[0], y1:te[1],
+            line:{color:'rgba(240,244,250,0.7)', width:1}, fillcolor:'rgba(0,0,0,0)', layer:'above'}; });
+  const wl = +$('win_lo').value, wh = +$('win_hi').value;   // keep the scoring-window shading on Q/ρ + residual
+  if (isFinite(wl) && isFinite(wh)) ['2','3'].forEach(ax => shapes.push({type:'rect', xref:'x'+ax, yref:'y'+ax+' domain',
+    x0:wl, x1:wh, y0:0, y1:1, fillcolor:'rgba(255,157,60,0.07)', line:{width:0}, layer:'below'}));
+  const ax = LAST.bin_x.concat(diag.group_lam_edges.flat()), ay = LAST.bin_y.concat(diag.group_tau_edges.flat());
+  const xlo=Math.min(...ax), xhi=Math.max(...ax), ylo=Math.min(...ay), yhi=Math.max(...ay);
+  const xpad=((xhi-xlo)||1)*0.02, ypad=((yhi-ylo)||1)*0.03;
+  Plotly.restyle('chart', {'marker.color':[colors]}, [0]);
+  Plotly.relayout('chart', {shapes, 'xaxis.range':[xlo-xpad, xhi+xpad], 'yaxis.range':[ylo-ypad, yhi+ypad]});
+}
 
 function render(d){
   const grayResid = d.q_gray_over_rho.map((g,i)=>g - d.q_full_over_rho[i]);
