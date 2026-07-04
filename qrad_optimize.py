@@ -794,7 +794,11 @@ def optimize_qrad(
                 if cand is None:
                     break
                 ctree, cbest = cand
-                gtol = grow_tol if grow_tol is not None else grow_tol_rel * best
+                # Tree policy: grow to the leaf cap, accepting ANY real rms improvement (gtol 0 by
+                # default, overridable via grow_tol). A guillotine split adds DOF so it almost always
+                # helps a little; the empty-band penalty + min-gap still reject degenerate/empty
+                # splits (those raise the cost), so "grow to more" can't collapse the binning.
+                gtol = grow_tol if grow_tol is not None else 0.0
                 if (best - cbest) > gtol:
                     btree, best = ctree, cbest
                     budget.reset_plateau(state["n_evals"])
