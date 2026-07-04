@@ -577,10 +577,46 @@ def _block_fixed_point_tree(tree, cost_tree, *, cfg, budget, min_gap_tau, min_ga
     return tree, best
 
 
-def _grow_tree(tree, cost_tree, *, cfg, budget, min_gap_tau, min_gap_lam, max_try=3):
+def _refine_node(tree, path, cost_tree, *, cfg, budget, min_gap_tau, min_gap_lam, best=None):
+    """Coordinate-descend a SINGLE internal node's cut position. Cheap refine used while growing
+    (the rest of the tree was already refined, so re-sweeping every node per candidate is wasteful
+    and — at RTE cost — eats the whole budget before the tree can grow)."""
+    node = _node_at_path(tree["root"], path)
+    span = next(((lo, hi) for n, lo, hi in _iter_internal(tree["root"], _root_rect(tree)) if n is node), None)
+    best_c = best if best is not None else cost_tree(tree)
+    if span is None or "at" not in node:
+        return tree, best_c
+    span_lo, span_hi = span
+    mg = min_gap_tau if node["axis"] == "tau" else min_gap_lam
+    best_at = float(node["at"])
+    for step in cfg.adjust_steps:
+        old = best_at
+        for d in (-1.0, +1.0):
+            if budget.exhausted():
+                node["at"] = best_at
+                return tree, best_c
+            cand = old + d * step
+            if cand <= span_lo + mg - 1e-12 or cand >= span_hi - mg + 1e-12:
+                continue
+            node["at"] = cand
+            if not _tree_feasible(tree, min_gap_tau, min_gap_lam):
+                continue
+            c = cost_tree(tree)
+            if c < best_c - 1e-12:
+                best_c, best_at = c, cand
+    node["at"] = best_at
+    return tree, best_c
+
+
+def _grow_tree(tree, cost_tree, *, cfg, budget, min_gap_tau, min_gap_lam, max_try=6, light=True):
     """Structural grow: among the widest few leaves, split each on tau AND on lambda at its
     midpoint, refine positions, and return the (tree, cost) of the best split found. None if no
-    leaf can be split within the min gap."""
+    leaf can be split within the min gap. With ``light`` only the new cut is refined (cheap);
+    otherwise the whole tree is re-refined (slow, RTE-bound).
+
+    max_try must be wide enough that a lambda sub-cell (half the area of a full-lambda band, so it
+    never ranks among the top few widest) is still eligible for a tau sub-split — otherwise a
+    general-2D split (tau boundary that differs per lambda region) is never even evaluated."""
     leaves = sorted(
         _iter_leaves_with_path(tree["root"], _root_rect(tree)),
         key=lambda pr: (pr[1][1] - pr[1][0]) * (pr[1][3] - pr[1][2]),
@@ -608,9 +644,14 @@ def _grow_tree(tree, cost_tree, *, cfg, budget, min_gap_tau, min_gap_lam, max_tr
             leaf.update({"axis": axis, "at": mid, "lo": {"leaf": True}, "hi": {"leaf": True}})
             if not _tree_feasible(cand, min_gap_tau, min_gap_lam):
                 continue
-            cand, c = _block_fixed_point_tree(
-                cand, cost_tree, cfg=cfg, budget=budget, min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam
-            )
+            if light:
+                cand, c = _refine_node(
+                    cand, path, cost_tree, cfg=cfg, budget=budget, min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam
+                )
+            else:
+                cand, c = _block_fixed_point_tree(
+                    cand, cost_tree, cfg=cfg, budget=budget, min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam
+                )
             if c < best_c:
                 best_tree, best_c = cand, c
     return (best_tree, best_c) if best_tree is not None else None
@@ -717,28 +758,38 @@ def optimize_qrad(
             on_progress(tag, float(cost), int(groups), state["n_evals"])
 
     if tree or binning_tree is not None:
-        # General 2D guillotine: warm-start from the passed tree, else convert the legacy binning.
+        # General 2D guillotine. Re-run (binning_tree given) continues refining that tree; a first
+        # run seeds a COARSE tree (the tau bands, no lambda splits) and lets grow BUILD the tiling.
+        # Seeding from the full per-group grid at max_leaves would leave grow no room, so it could
+        # only nudge a fixed grid; from the coarse seed, grow splits leaves on either axis — including
+        # a tau sub-split inside a single lambda region, which is what makes the tiling non-grid.
         if binning_tree is not None:
             btree = copy.deepcopy(binning_tree)
-        elif lambda_edges_per_tau is not None and len(lambda_edges_per_tau) == n_tau0:
-            btree = tree_from_lpt(tau_edges, lambda_edges_per_tau)
         else:
-            btree = tree_from_flags(tau_edges, lambda_edges, flags)
+            lmin, lmax = float(lambda_edges[0]), float(lambda_edges[-1])
+            btree = tree_from_lpt(tau_edges, [[lmin, lmax] for _ in range(n_tau0)])
 
         def cost_tree(t):
             return evaluate(None, None, None, binning_tree=t)[0]
 
         _, r0 = evaluate(None, None, None, binning_tree=btree)
         rms0 = float(r0["rms"])
+        best = cost_tree(btree)
         checkpoint("start", r0)
-        btree, best = _block_fixed_point_tree(
-            btree, cost_tree, cfg=cfg, budget=budget, min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam, report=on_step
-        )
-        checkpoint("blocks", evaluate(None, None, None, binning_tree=btree)[1])
+        # Grow FIRST so the budget builds structure (each grow cheaply refines only its new cut).
+        # A heavy refine of the coarse seed up front would, at RTE cost, exhaust the budget before
+        # a single leaf is split — leaving a plain grid. Grow lets tau/lambda cuts nest to any
+        # depth (a tau sub-split inside one lambda region == the non-grid tiling we want).
         if grow:
             while _n_leaves(btree) < max_groups and not budget.exhausted():
                 cand = _grow_tree(
-                    btree, cost_tree, cfg=cfg, budget=budget, min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam
+                    btree,
+                    cost_tree,
+                    cfg=cfg,
+                    budget=budget,
+                    min_gap_tau=min_gap_tau,
+                    min_gap_lam=min_gap_lam,
+                    light=True,
                 )
                 if cand is None:
                     break
@@ -750,6 +801,18 @@ def optimize_qrad(
                     checkpoint("grow", evaluate(None, None, None, binning_tree=btree)[1])
                 else:
                     break
+        # Final polish: sweep every cut position with whatever budget is left.
+        if not budget.exhausted():
+            btree, best = _block_fixed_point_tree(
+                btree,
+                cost_tree,
+                cfg=cfg,
+                budget=budget,
+                min_gap_tau=min_gap_tau,
+                min_gap_lam=min_gap_lam,
+                report=on_step,
+            )
+            checkpoint("blocks", evaluate(None, None, None, binning_tree=btree)[1])
         final_r = evaluate(None, None, None, binning_tree=btree)[1]
         return {
             "binning_tree": _round_tree(btree),
