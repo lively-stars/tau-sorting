@@ -253,14 +253,26 @@ class TestPerGroupLambdaOptimizer(unittest.TestCase):
 
         def score(tau, lam, flags, model, *, lambda_edges_per_tau=None):
             seen.setdefault("lpt0", [list(x) for x in lambda_edges_per_tau])
-            return {"rms": 1e8, "max_abs": 2e8, "int_q_pct": 0.0, "n_empty": 0,
-                    "n_groups": sum(len(x) - 1 for x in lambda_edges_per_tau)}
+            return {
+                "rms": 1e8,
+                "max_abs": 2e8,
+                "int_q_pct": 0.0,
+                "n_empty": 0,
+                "n_groups": sum(len(x) - 1 for x in lambda_edges_per_tau),
+            }
 
         warm = [[3.0, 3.55, 5.0], [3.0, 5.0], [3.0, 4.4, 5.0], [3.0, 3.7, 5.0]]
         qo.optimize_qrad(
-            [-0.63, 0.35, 1.23, 2.89, 7.0], [3.0, 3.8, 5.0], flags=[True] * 4,
-            per_group_lambda=True, lambda_edges_per_tau=warm,
-            opt_tau=False, opt_lambda=False, grow=False, score_fn=score, max_evals=50,
+            [-0.63, 0.35, 1.23, 2.89, 7.0],
+            [3.0, 3.8, 5.0],
+            flags=[True] * 4,
+            per_group_lambda=True,
+            lambda_edges_per_tau=warm,
+            opt_tau=False,
+            opt_lambda=False,
+            grow=False,
+            score_fn=score,
+            max_evals=50,
         )
         self.assertEqual(seen["lpt0"], warm)  # started from the warm-start cuts, not [3,3.8,5]×4
 
@@ -361,9 +373,16 @@ class TestStoppingAndWindow(unittest.TestCase):
     def test_target_rms_stops_early(self):
         # score always returns rms below the target -> should stop with stop_reason='target_rms'
         res = qo.optimize_qrad(
-            [-0.63, 0.35, 1.23, 2.89, 7.0], [3.0, 5.0], flags=[True] * 4,
-            target_rms=6e7, opt_lambda=False, opt_flags=False, grow=False,
-            score_fn=self._flat(5e7), max_evals=1000, max_seconds=100,
+            [-0.63, 0.35, 1.23, 2.89, 7.0],
+            [3.0, 5.0],
+            flags=[True] * 4,
+            target_rms=6e7,
+            opt_lambda=False,
+            opt_flags=False,
+            grow=False,
+            score_fn=self._flat(5e7),
+            max_evals=1000,
+            max_seconds=100,
         )
         self.assertEqual(res["stop_reason"], "target_rms")
         self.assertLess(res["n_evals"], 25)
@@ -371,16 +390,28 @@ class TestStoppingAndWindow(unittest.TestCase):
     def test_plateau_stops(self):
         # constant rms -> no improvement -> plateau fires after plateau_evals
         res = qo.optimize_qrad(
-            [-0.63, 0.35, 1.23, 2.89, 7.0], [3.0, 5.0], flags=[True] * 4,
-            plateau_evals=5, opt_lambda=False, opt_flags=False, grow=False,
-            score_fn=self._flat(5e7), max_evals=1000, max_seconds=100,
+            [-0.63, 0.35, 1.23, 2.89, 7.0],
+            [3.0, 5.0],
+            flags=[True] * 4,
+            plateau_evals=5,
+            opt_lambda=False,
+            opt_flags=False,
+            grow=False,
+            score_fn=self._flat(5e7),
+            max_evals=1000,
+            max_seconds=100,
         )
         self.assertEqual(res["stop_reason"], "plateau")
 
     def test_max_evals_stops(self):
         res = qo.optimize_qrad(
-            [-0.63, 0.35, 1.23, 2.89, 7.0], [3.0, 5.0], flags=[True] * 4,
-            max_evals=8, grow=False, score_fn=self._flat(5e7), max_seconds=100,
+            [-0.63, 0.35, 1.23, 2.89, 7.0],
+            [3.0, 5.0],
+            flags=[True] * 4,
+            max_evals=8,
+            grow=False,
+            score_fn=self._flat(5e7),
+            max_seconds=100,
         )
         self.assertEqual(res["stop_reason"], "max_evals")
         # a few un-budgeted checkpoint/final evals record the result, so allow a small overshoot
@@ -394,9 +425,16 @@ class TestStoppingAndWindow(unittest.TestCase):
             return {"rms": 5e7, "max_abs": 1e8, "int_q_pct": 0.0, "n_empty": 0, "n_groups": len(tau) - 1}
 
         qo.optimize_qrad(
-            [-0.63, 0.35, 1.23, 2.89, 7.0], [3.0, 5.0], flags=[True] * 4,
-            window=(-2.0, 2.0), opt_tau=False, opt_lambda=False, opt_flags=False, grow=False,
-            score_fn=score, max_evals=20,
+            [-0.63, 0.35, 1.23, 2.89, 7.0],
+            [3.0, 5.0],
+            flags=[True] * 4,
+            window=(-2.0, 2.0),
+            opt_tau=False,
+            opt_lambda=False,
+            opt_flags=False,
+            grow=False,
+            score_fn=score,
+            max_evals=20,
         )
         self.assertTrue(all(w == (-2.0, 2.0) for w in seen))  # window passed through every call
 
@@ -406,10 +444,120 @@ class TestStoppingAndWindow(unittest.TestCase):
             return {"rms": 5e7, "max_abs": 1e8, "int_q_pct": 0.0, "n_empty": 0, "n_groups": len(tau) - 1}
 
         res = qo.optimize_qrad(
-            [-0.63, 0.35, 1.23, 2.89, 7.0], [3.0, 5.0], flags=[True] * 4,
-            grow=False, score_fn=score, max_evals=15,
+            [-0.63, 0.35, 1.23, 2.89, 7.0],
+            [3.0, 5.0],
+            flags=[True] * 4,
+            grow=False,
+            score_fn=score,
+            max_evals=15,
         )
         self.assertIn("stop_reason", res)
+
+
+def _n_leaves(tree):
+    return sum(1 for _ in qo._leaf_rects(tree["root"], (0.0, 1.0, 0.0, 1.0)))
+
+
+def _tree_dev_score(tau_target=1.5, lam_target=3.8):
+    """Analytic tree score_fn: rms grows with each internal cut's squared distance from its
+    axis target, so coordinate descent should drive the cuts to (tau_target, lam_target)."""
+
+    def score(tau, lam, flags, model, *, lambda_edges_per_tau=None, binning_tree=None, window=None):
+        rms = 1.0e8
+
+        def walk(node):
+            nonlocal rms
+            if node.get("leaf") or "axis" not in node:
+                return
+            tgt = tau_target if node["axis"] == "tau" else lam_target
+            rms += 1.0e7 * (float(node["at"]) - tgt) ** 2
+            walk(node["lo"])
+            walk(node["hi"])
+
+        walk(binning_tree["root"])
+        return {"rms": rms, "max_abs": 2 * rms, "int_q_pct": 0.0, "n_empty": 0, "n_groups": _n_leaves(binning_tree)}
+
+    return score
+
+
+def _tree_leafcount_score():
+    """Analytic tree score_fn: rms = 1e8 / n_leaves, so grow keeps splitting until the cap."""
+
+    def score(tau, lam, flags, model, *, lambda_edges_per_tau=None, binning_tree=None, window=None):
+        n = _n_leaves(binning_tree)
+        return {"rms": 1.0e8 / n, "max_abs": 1.0, "int_q_pct": 0.0, "n_empty": 0, "n_groups": n}
+
+    return score
+
+
+class TestTreeOptimizer(unittest.TestCase):
+    def test_tree_from_lpt_matches_per_tau(self):
+        # the warm-start tree reproduces the exact rectangles (and DFS order) of the per-tau mode.
+        tau = [-0.63, 0.35, 1.23, 7.0]
+        lpt = [[3.0, 3.8, 5.0], [3.0, 5.0], [3.0, 4.2, 5.0]]
+        tree = qo.tree_from_lpt(tau, lpt)
+        rects = list(qo._leaf_rects(tree["root"], qo._root_rect(tree)))
+        gte, gle, _off = ts.build_group_specs_per_tau(tau, lpt)
+        self.assertEqual(len(rects), gte.shape[0])
+        for i, (tlo, thi, llo, lhi) in enumerate(rects):
+            self.assertAlmostEqual(tlo, gte[i][0])
+            self.assertAlmostEqual(thi, gte[i][1])
+            self.assertAlmostEqual(llo, gle[i][0])
+            self.assertAlmostEqual(lhi, gle[i][1])
+
+    def test_tree_position_refinement(self):
+        res = qo.optimize_qrad(
+            [-0.63, 0.5, 7.0],
+            [3.0, 3.4, 5.0],
+            flags=[True, True],
+            tree=True,
+            grow=False,
+            score_fn=_tree_dev_score(),
+            max_evals=5000,
+        )
+        self.assertTrue(res["tree"])
+        self.assertLess(res["rms"], res["rms0"])
+        devs = []
+
+        def walk(node):
+            if node.get("leaf") or "axis" not in node:
+                return
+            tgt = 1.5 if node["axis"] == "tau" else 3.8
+            devs.append(abs(float(node["at"]) - tgt))
+            walk(node["lo"])
+            walk(node["hi"])
+
+        walk(res["binning_tree"]["root"])
+        self.assertTrue(devs and all(d < 0.12 for d in devs), devs)  # driven to the targets
+
+    def test_tree_grow_respects_max(self):
+        res = qo.optimize_qrad(
+            [-0.63, 7.0],
+            [3.0, 5.0],
+            flags=[True],
+            tree=True,
+            grow=True,
+            max_groups=5,
+            score_fn=_tree_leafcount_score(),
+            max_evals=5000,
+        )
+        self.assertTrue(res["tree"])
+        self.assertLessEqual(res["n_leaves"], 5)  # never exceeds the cap
+        self.assertGreater(res["n_leaves"], 1)  # it grew
+        self.assertLess(res["rms"], res["rms0"])
+
+    def test_tree_result_is_feasible(self):
+        res = qo.optimize_qrad(
+            [-0.63, 0.5, 7.0],
+            [3.0, 3.4, 5.0],
+            flags=[True, True],
+            tree=True,
+            grow=True,
+            max_groups=6,
+            score_fn=_tree_dev_score(),
+            max_evals=5000,
+        )
+        self.assertTrue(qo._tree_feasible(res["binning_tree"], qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
 
 
 if __name__ == "__main__":

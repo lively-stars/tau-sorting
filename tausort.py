@@ -1831,6 +1831,104 @@ def assign_per_tau_lambda(
     return group_index
 
 
+# --- general 2D guillotine partition (arbitrary rectangular tiling of the (-log10 tau, log10 lambda) plane) ---
+def _tree_is_leaf(node: dict) -> bool:
+    """A guillotine-tree node is a leaf when it carries no split axis."""
+    return node.get("leaf", False) or "axis" not in node
+
+
+def _iter_leaf_rects(node: dict, rect: tuple[float, float, float, float]):
+    """Yield each leaf's (tau_lo, tau_hi, lam_lo, lam_hi) rectangle in lo-before-hi DFS
+    pre-order — the group-id ordering shared by build_group_specs_tree and assign_tree.
+    `rect` is the current node's rectangle; a "tau" cut splits it in -log10(tau), a "lam"
+    cut in log10(lambda)."""
+    if _tree_is_leaf(node):
+        yield rect
+        return
+    tlo, thi, llo, lhi = rect
+    at = float(node["at"])
+    if node["axis"] == "tau":
+        yield from _iter_leaf_rects(node["lo"], (tlo, at, llo, lhi))
+        yield from _iter_leaf_rects(node["hi"], (at, thi, llo, lhi))
+    else:  # "lam"
+        yield from _iter_leaf_rects(node["lo"], (tlo, thi, llo, at))
+        yield from _iter_leaf_rects(node["hi"], (tlo, thi, at, lhi))
+
+
+def build_group_specs_tree(
+    root: dict,
+    tau_window: tuple[float, float] | list[float],
+    lambda_window: tuple[float, float] | list[float],
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Per-group descriptor for a general 2D guillotine partition.
+
+    A guillotine tree recursively cuts a rectangle along tau or lambda; its leaves are the
+    final (tau, lambda) groups. Leaves are enumerated in lo-before-hi DFS pre-order (the same
+    order assign_tree assigns), so this topology plugs into the shared downstream
+    (sort_weighted_opacity_per_tau_bin / build_split_band_index / calculate_tau_bin_opacities)
+    exactly like the other grouping modes — they consume only band_index + group_tau_edges +
+    group_lam_edges.
+
+    Pass a ``tau_window`` whose ``[0]`` is the atmosphere-top-clamped edge (as the caller clamps
+    for the other modes); leaves touching the top boundary inherit it automatically.
+
+    Returns:
+        group_tau_edges: [n_groups, 2] -log10(tau) (lo, hi).
+        group_lam_edges: [n_groups, 2] log10(lambda/A) (lo, hi).
+    """
+    rect0 = (float(tau_window[0]), float(tau_window[1]), float(lambda_window[0]), float(lambda_window[1]))
+    tau_rows: list[tuple[float, float]] = []
+    lam_rows: list[tuple[float, float]] = []
+    for tlo, thi, llo, lhi in _iter_leaf_rects(root, rect0):
+        tau_rows.append((tlo, thi))
+        lam_rows.append((llo, lhi))
+    return (
+        np.asarray(tau_rows, dtype=np.float64).reshape(-1, 2),
+        np.asarray(lam_rows, dtype=np.float64).reshape(-1, 2),
+    )
+
+
+def assign_tree(
+    tau_rosseland: NDArray[np.float64],
+    wavelength_grid_input: NDArray[np.float64],
+    root: dict,
+    tau_window: tuple[float, float] | list[float],
+    lambda_window: tuple[float, float] | list[float],
+) -> NDArray[np.int32]:
+    """Assign each sub-bin to a guillotine-tree leaf group (vectorized).
+
+    A sub-bin's coordinate is (x = log10 lambda[A], y = -log10 tau). Starting from the root
+    rectangle, at each cut it goes to the lo child when its coordinate is ``< at`` else the hi
+    child (matching the digitize(right=False) convention of assign_per_tau_lambda /
+    assign_tau_to_bin), down to a leaf. Sub-bins outside the root rectangle are -1. Uses the RAW
+    (un-clamped) ``tau_window`` for membership; the descriptor's top-edge clamp is applied
+    separately by build_group_specs_tree.
+
+    Returns int32[nsubbins] leaf group id in [0, n_groups) or -1, in lo-before-hi DFS order.
+    """
+    x_data = np.log10(wavelength_grid_input * 1e8)  # log10 lambda [Angstrom]
+    y_data = -np.log10(np.clip(tau_rosseland, 1.0e-300, None))  # -log10 tau
+    tw0, tw1 = float(tau_window[0]), float(tau_window[1])
+    lw0, lw1 = float(lambda_window[0]), float(lambda_window[1])
+    group_index = np.full(x_data.shape, -1, dtype=np.int32)
+    inside = np.flatnonzero((y_data >= tw0) & (y_data < tw1) & (x_data >= lw0) & (x_data < lw1))
+
+    counter = [0]  # next leaf id; incremented per leaf in DFS order, even for empty leaves
+
+    def _recurse(node: dict, idx: NDArray[np.int64]) -> None:
+        if _tree_is_leaf(node):
+            group_index[idx] = counter[0]  # empty idx -> no-op, but the leaf id is still consumed
+            counter[0] += 1
+            return
+        coord = y_data if node["axis"] == "tau" else x_data
+        go_lo = coord[idx] < float(node["at"])
+        _recurse(node["lo"], idx[go_lo])
+        _recurse(node["hi"], idx[~go_lo])
+
+    _recurse(root, inside)
+    return group_index
+
+
 def assign_tau_to_bin(
     tau_rosseland: NDArray[np.float64],
     wavelength_grid_input: NDArray[np.float64],
@@ -2817,11 +2915,12 @@ def save_tau_bin_opacities_npy(
 def build_kappa_dat_filename(
     nbands: int,
     n_splits: int,
-    lambda_bin_edges: list[float],
+    lambda_bin_edges: list[float] | None = None,
     tau_edges_per_lambda: list[list[float]] | None = None,
     tau_bin_edges: list[float] | None = None,
     split_along_lambda: list[bool] | None = None,
     lambda_edges_per_tau: list[list[float]] | None = None,
+    binning_tree: dict | None = None,
 ) -> str:
     """
     Build a .dat filename that encodes the binning parameters.
@@ -2841,6 +2940,16 @@ def build_kappa_dat_filename(
 
     def _fmt(vals: list[float]) -> str:
         return "_".join(f"{round(float(v), 4):g}" for v in vals)
+
+    if binning_tree is not None:
+        # General guillotine tree: ragged edges make a full name unbounded, so encode leaf
+        # count + a short structural hash of the canonical tree (full tree lives in the .npy).
+        import hashlib
+
+        canon = json.dumps(binning_tree, sort_keys=True, separators=(",", ":"))
+        sig = hashlib.blake2s(canon.encode(), digest_size=4).hexdigest()
+        n_leaves = nbands // n_splits
+        return f"kappa_{nbands}band_tree{n_leaves}_sp{n_splits}_{sig}.dat"
 
     if lambda_edges_per_tau is not None and tau_bin_edges is not None:
         lmin, lmax = lambda_edges_per_tau[0][0], lambda_edges_per_tau[0][-1]

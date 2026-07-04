@@ -126,6 +126,7 @@
       <label class="flag"><input type="checkbox" id="qv_flags" checked> flags</label>
       <label class="flag"><input type="checkbox" id="qv_grow" checked> grow N</label>
       <label class="flag"><input type="checkbox" id="qv_pergroup" checked> per-group &lambda;</label>
+      <label class="flag"><input type="checkbox" id="qv_tree"> general 2D</label>
     </div>
     <div class="opt-row">
       <button id="qopt" class="secondary">Optimize Q_rad &rarr;</button>
@@ -191,6 +192,7 @@ const $ = id => document.getElementById(id);
 const parseEdges = s => s.split(/[,\s]+/).map(t=>t.trim()).filter(Boolean).map(Number);
 let LAST = null;
 let PG_LAMBDA = null;   // active per-tau-group lambda edges (null = shared-lambda + flags mode)
+let BINNING_TREE = null;  // active general 2D guillotine tree (null = not in tree mode)
 let _editTimer = null;  // debounce for auto-recompute after editing the tau/lambda edge boxes
 const edgesValid = a => a.length >= 2 && a.every(Number.isFinite) && a.every((v,i)=>i===0 || v>a[i-1]);
 
@@ -226,6 +228,27 @@ function clearPerGroup() {
   PG_LAMBDA = null;
   $('pergroup-info').style.display = 'none';
   $('flags').classList.remove('moot');
+}
+
+// Enter general 2D (guillotine) mode: a whole binning tree drives the plot; the shared/per-group
+// controls are moot. Read-only in v1 (produced by the optimizer; edit the tau/lambda boxes to exit).
+function setTree(tree) {
+  BINNING_TREE = tree;
+  clearPerGroup();
+  const info = $('pergroup-info');
+  info.innerHTML = `<b>general 2D binning active</b> — ${_countLeaves(tree.root)} leaf groups `
+                 + `(edit the &tau;/&lambda; boxes to exit)`;
+  info.style.display = 'block';
+  $('flags').classList.add('moot');
+}
+function clearTree() {
+  if (!BINNING_TREE) return;
+  BINNING_TREE = null;
+  $('pergroup-info').style.display = 'none';
+  $('flags').classList.remove('moot');
+}
+function _countLeaves(node) {
+  return (node.leaf || !node.axis) ? 1 : _countLeaves(node.lo) + _countLeaves(node.hi);
 }
 
 // Populate the model dropdown (valid models only) and the per-file validation report.
@@ -302,7 +325,8 @@ async function compute() {
   const split = [...document.querySelectorAll('#flags input')].map(c=>c.checked);
   const body = {tau_edges:tau, lambda_edges:lam, split_lambda:split, model:$('model').value,
                 window_lo:+$('win_lo').value, window_hi:+$('win_hi').value};
-  if (PG_LAMBDA && PG_LAMBDA.length === tau.length-1) body.lambda_edges_per_tau = PG_LAMBDA;
+  if (BINNING_TREE) body.binning_tree = BINNING_TREE;
+  else if (PG_LAMBDA && PG_LAMBDA.length === tau.length-1) body.lambda_edges_per_tau = PG_LAMBDA;
   $('go').disabled = true; setStatus('computing… (binning + radiative transfer)');
   try {
     const r = await fetch('/api/compute', {method:'POST', headers:{'Content-Type':'application/json'},
@@ -370,6 +394,7 @@ async function qoptStart() {
     opt_tau: $('qv_tau').checked, opt_lambda: $('qv_lam').checked,
     opt_flags: $('qv_flags').checked, grow: $('qv_grow').checked,
     per_group_lambda: $('qv_pergroup').checked,
+    tree: $('qv_tree').checked,
     max_seconds: Math.max(20, Math.min(1800, parseInt($('qbudget').value,10)||180)),
     window_lo: +$('win_lo').value, window_hi: +$('win_hi').value,
     metric: $('qv_metric').value, method: $('qv_method').value,
@@ -381,8 +406,9 @@ async function qoptStart() {
     min_gap_tau: parseFloat($('qv_gaptau').value) || undefined,
     min_gap_lam: parseFloat($('qv_gaplam').value) || undefined,
   };
-  // warm-start a per-group re-run from the current cuts so it keeps refining (not resetting to the shared box)
-  if ($('qv_pergroup').checked && PG_LAMBDA && PG_LAMBDA.length === tau.length-1) body.lambda_edges_per_tau = PG_LAMBDA;
+  // warm-start a re-run from the current binning so it keeps refining (not resetting to the box)
+  if ($('qv_tree').checked && BINNING_TREE) body.binning_tree = BINNING_TREE;
+  else if ($('qv_pergroup').checked && PG_LAMBDA && PG_LAMBDA.length === tau.length-1) body.lambda_edges_per_tau = PG_LAMBDA;
   qoptBusy(true); setQStatus('starting Q_rad optimization…'); QLASTDIAG = null;
   try {
     const r = await fetch('/api/optimize_qrad', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
@@ -414,16 +440,21 @@ function qoptFinish(result) {
   $('qcancel').style.display = 'none';
   qoptBusy(false);
   if (!result) return;
-  $('tau').value = result.tau_edges.join(', ');
-  buildFlags();
-  if (result.per_group_lambda) {
-    // each tau group has its own lambda split; shared flags are moot
-    setPerGroup(result.lambda_edges_per_tau);
+  if (result.tree) {
+    // general 2D guillotine: the whole tree drives the plot; tau/lambda boxes are stale (exit = edit them)
+    setTree(result.binning_tree);
   } else {
-    clearPerGroup();
-    $('lambda').value = result.lambda_edges.join(', ');
-    const boxes = [...document.querySelectorAll('#flags input')];
-    result.flags.forEach((f,i)=>{ if(boxes[i]) boxes[i].checked = f; });
+    $('tau').value = result.tau_edges.join(', ');
+    buildFlags();
+    if (result.per_group_lambda) {
+      // each tau group has its own lambda split; shared flags are moot
+      setPerGroup(result.lambda_edges_per_tau);
+    } else {
+      clearPerGroup();
+      $('lambda').value = result.lambda_edges.join(', ');
+      const boxes = [...document.querySelectorAll('#flags input')];
+      result.flags.forEach((f,i)=>{ if(boxes[i]) boxes[i].checked = f; });
+    }
   }
   const imp = (100*(result.rms0-result.rms)/result.rms0).toFixed(1);
   const why = result.stop_reason ? ` · stopped: ${result.stop_reason}` : '';
@@ -438,7 +469,8 @@ async function downloadKappa() {
   if (tau.length<2 || lam.length<2) return setStatus('need ≥2 τ and ≥2 λ edges', true);
   const split = [...document.querySelectorAll('#flags input')].map(c=>c.checked);
   const body = {tau_edges:tau, lambda_edges:lam, split_lambda:split, model:$('model').value};
-  if (PG_LAMBDA && PG_LAMBDA.length === tau.length-1) body.lambda_edges_per_tau = PG_LAMBDA;
+  if (BINNING_TREE) body.binning_tree = BINNING_TREE;
+  else if (PG_LAMBDA && PG_LAMBDA.length === tau.length-1) body.lambda_edges_per_tau = PG_LAMBDA;
   $('dl').disabled = true; setStatus('building kappa table…');
   try {
     const r = await fetch('/api/kappa_dat', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
@@ -615,9 +647,9 @@ function switchTab(tab){
   else Plotly.Plots.resize('chart');  // resize the (was-hidden) Q_rad chart
 }
 
-// a manual edge edit invalidates any active per-group-lambda binning (it's tied to the tau binning)
+// a manual edge edit invalidates any active per-group-lambda or general-2D binning (tied to the boxes)
 const onEdgeEdit = () => {
-  clearPerGroup(); buildFlags();
+  clearPerGroup(); clearTree(); buildFlags();
   // auto-recompute the plot once edits settle and are valid (debounced; compute is ~1.5-3s)
   clearTimeout(_editTimer);
   _editTimer = setTimeout(() => {
@@ -638,6 +670,9 @@ document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () =>
 $('opt').addEventListener('click', optimize);
 $('qopt').addEventListener('click', qoptStart);
 $('qcancel').addEventListener('click', qoptCancel);
+// general-2D and per-group-λ are alternative optimizer modes — checking one unchecks the other
+$('qv_tree').addEventListener('change', e => { if (e.target.checked) $('qv_pergroup').checked = false; });
+$('qv_pergroup').addEventListener('change', e => { if (e.target.checked) $('qv_tree').checked = false; });
 $('dl').addEventListener('click', downloadKappa);
 ['tau','lambda'].forEach(id=>$(id).addEventListener('keydown', e=>{ if(e.key==='Enter') compute(); }));
 

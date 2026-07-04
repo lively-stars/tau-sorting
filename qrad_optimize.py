@@ -21,6 +21,7 @@ CLI:  uv run python qrad_optimize.py --help
 
 from __future__ import annotations
 
+import copy
 import sys
 import time
 from dataclasses import dataclass
@@ -82,8 +83,10 @@ def make_evaluator(model, *, metric="rms", empty_penalty=EMPTY_PENALTY, score_fn
     _key = {"rms": "rms", "maxabs": "max_abs", "int_q": "int_q_pct"}[metric]
     _win = {} if window is None else {"window": (float(window[0]), float(window[1]))}
 
-    def evaluate(tau_edges, lambda_edges, flags, *, lambda_edges_per_tau=None):
-        if lambda_edges_per_tau is not None:
+    def evaluate(tau_edges, lambda_edges, flags, *, lambda_edges_per_tau=None, binning_tree=None):
+        if binning_tree is not None:
+            r = score(None, None, None, model, binning_tree=binning_tree, **_win)
+        elif lambda_edges_per_tau is not None:
             r = score(
                 list(tau_edges), None, None, model, lambda_edges_per_tau=[list(x) for x in lambda_edges_per_tau], **_win
             )
@@ -402,6 +405,217 @@ def _block_fixed_point_pg(tau, lpt, evaluate, *, opt_tau, opt_lambda, lmin, lmax
     return tau, lpt, best
 
 
+# --- general 2D guillotine tree search ------------------------------------------
+# A binning tree is {"window_tau": [tlo,thi], "window_lam": [llo,lhi], "root": <node>},
+# node = leaf {"leaf": True} or internal {"axis": "tau"|"lam", "at": float, "lo": .., "hi": ..}.
+def _is_leaf(node) -> bool:
+    return node.get("leaf", False) or "axis" not in node
+
+
+def _count_leaves(node) -> int:
+    return 1 if _is_leaf(node) else _count_leaves(node["lo"]) + _count_leaves(node["hi"])
+
+
+def _n_leaves(tree) -> int:
+    return _count_leaves(tree["root"])
+
+
+def _leaf_rects(node, rect):
+    """(tlo,thi,llo,lhi) per leaf, lo-before-hi DFS."""
+    if _is_leaf(node):
+        yield rect
+        return
+    tlo, thi, llo, lhi = rect
+    at = float(node["at"])
+    if node["axis"] == "tau":
+        yield from _leaf_rects(node["lo"], (tlo, at, llo, lhi))
+        yield from _leaf_rects(node["hi"], (at, thi, llo, lhi))
+    else:
+        yield from _leaf_rects(node["lo"], (tlo, thi, llo, at))
+        yield from _leaf_rects(node["hi"], (tlo, thi, at, lhi))
+
+
+def _root_rect(tree):
+    wt, wl = tree["window_tau"], tree["window_lam"]
+    return (float(wt[0]), float(wt[1]), float(wl[0]), float(wl[1]))
+
+
+def _tree_feasible(tree, min_gap_tau, min_gap_lam) -> bool:
+    """Every leaf rectangle must be non-inverted and respect the per-axis min gap."""
+    for tlo, thi, llo, lhi in _leaf_rects(tree["root"], _root_rect(tree)):
+        if thi <= tlo or lhi <= llo:
+            return False
+        if (thi - tlo) < min_gap_tau - 1e-12 or (lhi - llo) < min_gap_lam - 1e-12:
+            return False
+    return True
+
+
+def _iter_internal(node, rect):
+    """(node_ref, axis_lo, axis_hi) for each internal node (axis span = the range its `at` may move in)."""
+    if _is_leaf(node):
+        return
+    tlo, thi, llo, lhi = rect
+    at = float(node["at"])
+    if node["axis"] == "tau":
+        yield (node, tlo, thi)
+        yield from _iter_internal(node["lo"], (tlo, at, llo, lhi))
+        yield from _iter_internal(node["hi"], (at, thi, llo, lhi))
+    else:
+        yield (node, llo, lhi)
+        yield from _iter_internal(node["lo"], (tlo, thi, llo, at))
+        yield from _iter_internal(node["hi"], (tlo, thi, at, lhi))
+
+
+def _iter_leaves_with_path(node, rect, path=()):
+    """(path, rect) per leaf — path is a tuple of 'lo'/'hi' from the root, for in-place grow."""
+    if _is_leaf(node):
+        yield (path, rect)
+        return
+    tlo, thi, llo, lhi = rect
+    at = float(node["at"])
+    if node["axis"] == "tau":
+        yield from _iter_leaves_with_path(node["lo"], (tlo, at, llo, lhi), (*path, "lo"))
+        yield from _iter_leaves_with_path(node["hi"], (at, thi, llo, lhi), (*path, "hi"))
+    else:
+        yield from _iter_leaves_with_path(node["lo"], (tlo, thi, llo, at), (*path, "lo"))
+        yield from _iter_leaves_with_path(node["hi"], (tlo, thi, at, lhi), (*path, "hi"))
+
+
+def _node_at_path(root, path):
+    n = root
+    for step in path:
+        n = n[step]
+    return n
+
+
+def _round_tree(tree) -> dict:
+    """Deep-copy a tree with cut positions rounded to 4 decimals — a tidy wire/return payload."""
+
+    def rec(node):
+        if _is_leaf(node):
+            return {"leaf": True}
+        return {"axis": node["axis"], "at": round(float(node["at"]), 4), "lo": rec(node["lo"]), "hi": rec(node["hi"])}
+
+    return {
+        "window_tau": [round(float(v), 4) for v in tree["window_tau"]],
+        "window_lam": [round(float(v), 4) for v in tree["window_lam"]],
+        "root": rec(tree["root"]),
+    }
+
+
+def _lam_chain(lam_edges):
+    """Right-leaning lambda chain over interior cuts; a bare leaf when there is no split."""
+    node = {"leaf": True}
+    for c in reversed([float(v) for v in lam_edges[1:-1]]):
+        node = {"axis": "lam", "at": c, "lo": {"leaf": True}, "hi": node}
+    return node
+
+
+def tree_from_lpt(tau_edges, lambda_edges_per_tau) -> dict:
+    """Convert a shared-tau + per-tau-group-lambda binning to an equivalent guillotine tree
+    (tau cuts at the root, a lambda chain per band) — same rectangle set AND DFS order as
+    build_group_specs_per_tau, so it scores identically."""
+    tau = [float(e) for e in tau_edges]
+    lmin, lmax = float(lambda_edges_per_tau[0][0]), float(lambda_edges_per_tau[0][-1])
+    bands = [_lam_chain(x) for x in lambda_edges_per_tau]
+    node = bands[-1]
+    for k in range(len(tau) - 2, 0, -1):  # interior tau cuts only (tau[1..n-1]); tau[0]/tau[-1] are the window
+        node = {"axis": "tau", "at": tau[k], "lo": bands[k - 1], "hi": node}
+    return {"window_tau": [tau[0], tau[-1]], "window_lam": [lmin, lmax], "root": node}
+
+
+def tree_from_flags(tau_edges, lambda_edges, flags) -> dict:
+    lmin, lmax = float(lambda_edges[0]), float(lambda_edges[-1])
+    lpt = [list(lambda_edges) if flags[k] else [lmin, lmax] for k in range(len(tau_edges) - 1)]
+    return tree_from_lpt(tau_edges, lpt)
+
+
+def _tree_position_search(tree, cost_tree, *, cfg, budget, min_gap_tau, min_gap_lam):
+    """Gauss-Seidel coordinate descent on every internal cut's position, generalizing
+    _coord_descent. Each candidate must stay in its node's axis span (per-axis min gap) and
+    keep the whole tree feasible; the best strict improvement per node is committed in place."""
+    best = cost_tree(tree)
+    for _ in range(cfg.max_sweeps):
+        improved = False
+        for node, span_lo, span_hi in list(_iter_internal(tree["root"], _root_rect(tree))):
+            mg = min_gap_tau if node["axis"] == "tau" else min_gap_lam
+            old = float(node["at"])
+            best_at, best_c = old, best
+            for step in cfg.adjust_steps:
+                for d in (-1.0, +1.0):
+                    if budget.exhausted():
+                        node["at"] = best_at
+                        return tree, best_c
+                    cand = old + d * step
+                    if cand <= span_lo + mg - 1e-12 or cand >= span_hi - mg + 1e-12:
+                        continue
+                    node["at"] = cand
+                    if not _tree_feasible(tree, min_gap_tau, min_gap_lam):
+                        continue
+                    c = cost_tree(tree)
+                    if c < best_c - 1e-12:
+                        best_c, best_at = c, cand
+            node["at"] = best_at
+            if best_c < best - 1e-12:
+                best, improved = best_c, True
+        if not improved:
+            break
+    return tree, best
+
+
+def _block_fixed_point_tree(tree, cost_tree, *, cfg, budget, min_gap_tau, min_gap_lam, report=None):
+    best = cost_tree(tree)
+    for _ in range(cfg.max_block_rounds):
+        start = best
+        tree, best = _tree_position_search(
+            tree, cost_tree, cfg=cfg, budget=budget, min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam
+        )
+        if report:
+            report("tree", best, _n_leaves(tree))
+        if budget.exhausted() or (start - best) <= cfg.block_tol * max(abs(start), 1.0):
+            break
+    return tree, best
+
+
+def _grow_tree(tree, cost_tree, *, cfg, budget, min_gap_tau, min_gap_lam, max_try=3):
+    """Structural grow: among the widest few leaves, split each on tau AND on lambda at its
+    midpoint, refine positions, and return the (tree, cost) of the best split found. None if no
+    leaf can be split within the min gap."""
+    leaves = sorted(
+        _iter_leaves_with_path(tree["root"], _root_rect(tree)),
+        key=lambda pr: (pr[1][1] - pr[1][0]) * (pr[1][3] - pr[1][2]),
+        reverse=True,
+    )
+    best_tree, best_c = None, float("inf")
+    tried = 0
+    for path, (tlo, thi, llo, lhi) in leaves:
+        if tried >= max_try or budget.exhausted():
+            break
+        cands = []
+        if (thi - tlo) >= 2 * min_gap_tau:
+            cands.append(("tau", 0.5 * (tlo + thi)))
+        if (lhi - llo) >= 2 * min_gap_lam:
+            cands.append(("lam", 0.5 * (llo + lhi)))
+        if not cands:
+            continue
+        tried += 1
+        for axis, mid in cands:
+            if budget.exhausted():
+                break
+            cand = copy.deepcopy(tree)
+            leaf = _node_at_path(cand["root"], path)
+            leaf.clear()
+            leaf.update({"axis": axis, "at": mid, "lo": {"leaf": True}, "hi": {"leaf": True}})
+            if not _tree_feasible(cand, min_gap_tau, min_gap_lam):
+                continue
+            cand, c = _block_fixed_point_tree(
+                cand, cost_tree, cfg=cfg, budget=budget, min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam
+            )
+            if c < best_c:
+                best_tree, best_c = cand, c
+    return (best_tree, best_c) if best_tree is not None else None
+
+
 # --- public API -----------------------------------------------------------------
 def optimize_qrad(
     tau_edges,
@@ -430,6 +644,8 @@ def optimize_qrad(
     plateau_rel=0.005,  # plateau "improvement" threshold (fraction of the reference rms)
     per_group_lambda=False,
     lambda_edges_per_tau=None,  # per-group-lambda warm start (one lambda-edge list per tau group)
+    tree=False,  # general 2D guillotine mode (both tau and lambda locally free)
+    binning_tree=None,  # guillotine-tree warm start {window_tau, window_lam, root}
     score_fn=None,
     on_progress=None,
     on_eval=None,
@@ -499,6 +715,56 @@ def optimize_qrad(
         """Lightweight live line inside a long block (penalized cost, no extra eval)."""
         if on_progress:
             on_progress(tag, float(cost), int(groups), state["n_evals"])
+
+    if tree or binning_tree is not None:
+        # General 2D guillotine: warm-start from the passed tree, else convert the legacy binning.
+        if binning_tree is not None:
+            btree = copy.deepcopy(binning_tree)
+        elif lambda_edges_per_tau is not None and len(lambda_edges_per_tau) == n_tau0:
+            btree = tree_from_lpt(tau_edges, lambda_edges_per_tau)
+        else:
+            btree = tree_from_flags(tau_edges, lambda_edges, flags)
+
+        def cost_tree(t):
+            return evaluate(None, None, None, binning_tree=t)[0]
+
+        _, r0 = evaluate(None, None, None, binning_tree=btree)
+        rms0 = float(r0["rms"])
+        checkpoint("start", r0)
+        btree, best = _block_fixed_point_tree(
+            btree, cost_tree, cfg=cfg, budget=budget, min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam, report=on_step
+        )
+        checkpoint("blocks", evaluate(None, None, None, binning_tree=btree)[1])
+        if grow:
+            while _n_leaves(btree) < max_groups and not budget.exhausted():
+                cand = _grow_tree(
+                    btree, cost_tree, cfg=cfg, budget=budget, min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam
+                )
+                if cand is None:
+                    break
+                ctree, cbest = cand
+                gtol = grow_tol if grow_tol is not None else grow_tol_rel * best
+                if (best - cbest) > gtol:
+                    btree, best = ctree, cbest
+                    budget.reset_plateau(state["n_evals"])
+                    checkpoint("grow", evaluate(None, None, None, binning_tree=btree)[1])
+                else:
+                    break
+        final_r = evaluate(None, None, None, binning_tree=btree)[1]
+        return {
+            "binning_tree": _round_tree(btree),
+            "tree": True,
+            "rms": float(final_r["rms"]),
+            "rms0": rms0,
+            "n_empty": int(final_r.get("n_empty", 0)),
+            "n_leaves": _n_leaves(btree),
+            "n_bands_total": int(final_r.get("n_groups", 0)),
+            "n_evals": state["n_evals"],
+            "elapsed": round(time.perf_counter() - t0, 2),
+            "stop_reason": budget.stop_reason or "converged",
+            "window": list(final_r.get("window", [])),
+            "history": history,
+        }
 
     if per_group_lambda:
         lmin, lmax = float(lambda_edges[0]), float(lambda_edges[-1])
@@ -665,7 +931,9 @@ def main(
     window_hi: float = typer.Option(4.0, "--window-hi", help="Score rms over log10(tau_Ros) <= this."),
     target_rms: float = typer.Option(0.0, "--target-rms", help="Stop once rms <= this (0 = off)."),
     plateau_evals: int = typer.Option(0, "--plateau-evals", help="Stop if rms stalls this many evals (0 = off)."),
-    grow_tol_rel: float = typer.Option(0.01, "--grow-tol-rel", help="Grow a tau group only if rms improves > this frac."),
+    grow_tol_rel: float = typer.Option(
+        0.01, "--grow-tol-rel", help="Grow a tau group only if rms improves > this frac."
+    ),
     save_plot: str = typer.Option("", "--save-plot", help="Write a before/after Q/rho plot to this path."),
     save_dat: bool = typer.Option(
         False, "--save-dat/--no-save-dat", help="After optimizing, write the optimized binning's kappa .dat table."

@@ -290,15 +290,17 @@ def precompute(model=None) -> dict:
     return inv
 
 
-def score_binning(tau_edges, lambda_edges, flags, model=None, *, n_splits=3, lambda_edges_per_tau=None, window=None) -> dict:
+def score_binning(
+    tau_edges, lambda_edges, flags, model=None, *, n_splits=3, lambda_edges_per_tau=None, binning_tree=None, window=None
+) -> dict:
     """Map a binning to Q_rad + residual metrics against the full-ODF reference.
 
     `model` selects the atmosphere the binning + RTE run on (a bare filename under models/;
-    None -> DEFAULT_MODEL). It is precomputed on first use. Two grouping modes:
+    None -> DEFAULT_MODEL). It is precomputed on first use. Grouping modes (highest priority first):
+      - general 2D guillotine: pass `binning_tree` (a {window_tau, window_lam, root} tree); the
+        other edge args are ignored. Any rectangular tiling (see `build_group_specs_tree`).
+      - per-tau-group lambda: pass `lambda_edges_per_tau` (one lambda-edge list per tau group).
       - shared lambda + flags (default): `flags` resolved (one bool per tau group).
-      - per-tau-group lambda: pass `lambda_edges_per_tau` (one lambda-edge list per tau
-        group); `lambda_edges`/`flags` are then ignored. Each tau group gets its own
-        wavelength split (see `build_group_specs_per_tau`).
 
     Returns raw full-length arrays (`q`, `resid`, `ltau`, `rho`, `q_full`, `q_gray`) plus
     scalar metrics and the descriptor/membership the binning diagram needs.
@@ -306,17 +308,25 @@ def score_binning(tau_edges, lambda_edges, flags, model=None, *, n_splits=3, lam
     inv = inv_for(model)
     odf, cont, atm = inv["odf"], inv["cont"], inv["atm"]
     ref = reference(model)
-    clamped = list(tau_edges)
-    clamped[0] = float(-np.log10(inv["tau_ross"][inv["max_height_idx"]] + 0.2))
+    clamped_top = float(-np.log10(inv["tau_ross"][inv["max_height_idx"]] + 0.2))
 
-    if lambda_edges_per_tau is not None:
+    if binning_tree is not None:
+        # guillotine tree: membership from the raw window, descriptor with the clamped top edge
+        tw, lw, root = binning_tree["window_tau"], binning_tree["window_lam"], binning_tree["root"]
+        band_index = ts.assign_tree(inv["tau_at_lam1"], inv["wl_centers"], root, tw, lw)
+        group_tau_edges, group_lam_edges = ts.build_group_specs_tree(root, [clamped_top, float(tw[1])], lw)
+    elif lambda_edges_per_tau is not None:
         # per-tau-group lambda: membership from un-clamped tau, descriptor from clamped
+        clamped = list(tau_edges)
+        clamped[0] = clamped_top
         _gt0, _gl0, offs = ts.build_group_specs_per_tau(tau_edges, lambda_edges_per_tau)
         band_index = ts.assign_per_tau_lambda(
             inv["tau_at_lam1"], inv["wl_centers"], tau_edges, lambda_edges_per_tau, offs
         )
         group_tau_edges, group_lam_edges, _offc = ts.build_group_specs_per_tau(clamped, lambda_edges_per_tau)
     else:
+        clamped = list(tau_edges)
+        clamped[0] = clamped_top
         # shared-tau + per-group split flags
         _gt0, _gl0, s2cg, s2sg = ts.build_group_specs_split_lambda(tau_edges, lambda_edges, flags)
         band_index = ts.assign_split_lambda(inv["tau_at_lam1"], inv["wl_centers"], tau_edges, lambda_edges, s2cg, s2sg)
@@ -389,8 +399,12 @@ def score_binning(tau_edges, lambda_edges, flags, model=None, *, n_splits=3, lam
     }
 
 
-def _kappa_dat_name(tau_edges, lambda_edges, flags, lambda_edges_per_tau, clamped_tau, n_bands, n_splits):
+def _kappa_dat_name(
+    tau_edges, lambda_edges, flags, lambda_edges_per_tau, clamped_tau, n_bands, n_splits, binning_tree=None
+):
     """Self-describing .dat filename for a binning (delegates to tausort per mode)."""
+    if binning_tree is not None:
+        return ts.build_kappa_dat_filename(nbands=n_bands, n_splits=n_splits, binning_tree=binning_tree)
     if lambda_edges_per_tau is not None:
         return ts.build_kappa_dat_filename(
             nbands=n_bands,
@@ -408,7 +422,9 @@ def _kappa_dat_name(tau_edges, lambda_edges, flags, lambda_edges_per_tau, clampe
     )
 
 
-def save_kappa_dat(tau_edges, lambda_edges, flags, model=None, *, lambda_edges_per_tau=None, n_splits=3, path=None):
+def save_kappa_dat(
+    tau_edges, lambda_edges, flags, model=None, *, lambda_edges_per_tau=None, binning_tree=None, n_splits=3, path=None
+):
     """Build the binning's C-format kappa table and write it to disk.
 
     Runs the same grouping + sort + band-average pipeline as `score_binning` but keeps the
@@ -421,16 +437,24 @@ def save_kappa_dat(tau_edges, lambda_edges, flags, model=None, *, lambda_edges_p
     """
     inv = inv_for(model)
     odf, cont, atm = inv["odf"], inv["cont"], inv["atm"]
-    clamped = list(tau_edges)
-    clamped[0] = float(-np.log10(inv["tau_ross"][inv["max_height_idx"]] + 0.2))
+    clamped_top = float(-np.log10(inv["tau_ross"][inv["max_height_idx"]] + 0.2))
+    clamped = None
 
-    if lambda_edges_per_tau is not None:
+    if binning_tree is not None:
+        tw, lw, root = binning_tree["window_tau"], binning_tree["window_lam"], binning_tree["root"]
+        band_index = ts.assign_tree(inv["tau_at_lam1"], inv["wl_centers"], root, tw, lw)
+        group_tau_edges, _gl = ts.build_group_specs_tree(root, [clamped_top, float(tw[1])], lw)
+    elif lambda_edges_per_tau is not None:
+        clamped = list(tau_edges)
+        clamped[0] = clamped_top
         _gt0, _gl0, offs = ts.build_group_specs_per_tau(tau_edges, lambda_edges_per_tau)
         band_index = ts.assign_per_tau_lambda(
             inv["tau_at_lam1"], inv["wl_centers"], tau_edges, lambda_edges_per_tau, offs
         )
         group_tau_edges, _gl, _o = ts.build_group_specs_per_tau(clamped, lambda_edges_per_tau)
     else:
+        clamped = list(tau_edges)
+        clamped[0] = clamped_top
         _gt0, _gl0, s2cg, s2sg = ts.build_group_specs_split_lambda(tau_edges, lambda_edges, flags)
         band_index = ts.assign_split_lambda(inv["tau_at_lam1"], inv["wl_centers"], tau_edges, lambda_edges, s2cg, s2sg)
         group_tau_edges, _gl, _a, _b = ts.build_group_specs_split_lambda(clamped, lambda_edges, flags)
@@ -459,7 +483,9 @@ def save_kappa_dat(tau_edges, lambda_edges, flags, model=None, *, lambda_edges_p
         res[key][:, :, empty] = np.nan
 
     comparison = ts.build_kappa_band_comparison(res, odf)
-    name = _kappa_dat_name(tau_edges, lambda_edges, flags, lambda_edges_per_tau, clamped, n_bands, n_splits)
+    name = _kappa_dat_name(
+        tau_edges, lambda_edges, flags, lambda_edges_per_tau, clamped, n_bands, n_splits, binning_tree=binning_tree
+    )
     written = str(path) if path is not None else name
     ts.write_kappa_4_band_comparison(written, comparison)
     return written, name

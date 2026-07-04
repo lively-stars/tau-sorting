@@ -144,6 +144,8 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
             plateau_rel=opt["plateau_rel"],
             per_group_lambda=opt["per_group_lambda"],
             lambda_edges_per_tau=opt["lambda_edges_per_tau"],
+            tree=opt["tree"],
+            binning_tree=opt["binning_tree"],
             on_eval=on_eval,
             on_progress=on_progress,
             should_stop=lambda: _QOPT["cancel"],
@@ -155,16 +157,18 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
         _QOPT["running"] = False
 
 
-def compute(tau_edges, lambda_edges, split_lambda, model, lambda_edges_per_tau=None, window=None):
+def compute(tau_edges, lambda_edges, split_lambda, model, lambda_edges_per_tau=None, binning_tree=None, window=None):
     """Run the per-edge pipeline (via qrad_core) and shape the Q_rad curves + metrics for the UI.
 
     `model` selects the atmosphere the binning + RTE run on (validated file under models/).
     `window` (log10 tau_Ross (lo,hi)) narrows the rms/max_abs scoring range (None -> default).
-    If `lambda_edges_per_tau` is given (one lambda-edge list per tau group), each tau group
-    uses its own wavelength split; otherwise the shared-lambda + split-flag model is used.
+    Grouping (highest priority first): `binning_tree` (general 2D guillotine), then
+    `lambda_edges_per_tau` (per-tau-group lambda), else the shared-lambda + split-flag model.
     """
     with _LOCK:
-        if lambda_edges_per_tau is not None:
+        if binning_tree is not None:
+            r = qc.score_binning(None, None, None, model, binning_tree=binning_tree, window=window)
+        elif lambda_edges_per_tau is not None:
             r = qc.score_binning(tau_edges, None, None, model, lambda_edges_per_tau=lambda_edges_per_tau, window=window)
         else:
             flags = qc.resolve_flags(split_lambda, len(tau_edges) - 1)
@@ -403,6 +407,9 @@ class Handler(BaseHTTPRequestHandler):
                         "per_group_lambda": bool(req.get("per_group_lambda", False)),
                         # per-group-lambda warm start (re-running keeps refining the current cuts)
                         "lambda_edges_per_tau": req.get("lambda_edges_per_tau") or None,
+                        # general 2D guillotine mode + warm start (a {window_tau, window_lam, root} tree)
+                        "tree": bool(req.get("tree", False)),
+                        "binning_tree": req.get("binning_tree") or None,
                         "metric": metric,
                         "method": method,
                         "max_seconds": float(req.get("max_seconds", 300.0)),
@@ -428,11 +435,14 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/kappa_dat":
                 # Build the current binning's kappa table and stream it back as a download.
                 lpt = req.get("lambda_edges_per_tau") or None
+                btree = req.get("binning_tree") or None
                 fd, tmp = tempfile.mkstemp(suffix=".dat")
                 os.close(fd)
                 try:
                     with _LOCK:
-                        if lpt is not None:
+                        if btree is not None:
+                            _w, name = qc.save_kappa_dat(None, None, None, model, binning_tree=btree, path=tmp)
+                        elif lpt is not None:
                             _w, name = qc.save_kappa_dat(
                                 tau_edges, None, None, model, lambda_edges_per_tau=lpt, path=tmp
                             )
@@ -449,7 +459,16 @@ class Handler(BaseHTTPRequestHandler):
                 return
             split_lambda = req.get("split_lambda") or None
             lpt = req.get("lambda_edges_per_tau") or None
-            out = compute(tau_edges, lambda_edges, split_lambda, model, lambda_edges_per_tau=lpt, window=_window(req))
+            btree = req.get("binning_tree") or None
+            out = compute(
+                tau_edges,
+                lambda_edges,
+                split_lambda,
+                model,
+                lambda_edges_per_tau=lpt,
+                binning_tree=btree,
+                window=_window(req),
+            )
             out["elapsed"] = round(time.perf_counter() - t0, 2)
             self._send(200, json.dumps(out))
         except Exception as e:
