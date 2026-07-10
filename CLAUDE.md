@@ -175,3 +175,4 @@ optimized edges and saves both outputs (the `.dat` filename then encodes the opt
 - Wavelength grids use `FreqG` (frequency edges) with 329 edges for 328 bins.
 - Saved opacity bands factorize as `band = group * nSplits + split` (`nSplits = 3`: low/mid/high), where a `group` is a `(lambda cell, tau index)` pair (`nGroups = Σ_cell nTau[cell]`; with one lambda cell `group == tau index`). The `.npy` stores **linear** opacity with linear `T`/`p`; the `.dat` stores **natural-log** opacity (`kap_mean = ln(mixed)`) with `log10(T)`/`log10(p)` axes and a leading band axis `[nBands, NT, Np]`. Lambda edges are fixed; tau edges are per-lambda-cell (`tau_edges_per_lambda`) so the optimizer can grow each cell independently.
 - Version control uses `jj` (Jujutsu), not git.
+- **Commit messages carry no AI authorship attribution** — never add `Co-Authored-By:` lines or "Generated with …" footers (the Claude Code / Codex boilerplate). Plain commit messages only.

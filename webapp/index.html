@@ -33,15 +33,20 @@
   .qprog { display:none; height:6px; margin-top:8px; background:#0e1420; border:1px solid var(--line); border-radius:4px; overflow:hidden; }
   .qprog.on { display:block; }
   #qprogbar { height:100%; width:0%; background:var(--accent); transition:width .2s linear; }
-  #flags, #qvars { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
-  #flags.disabled, #flags.moot { opacity:.4; pointer-events:none; }
+  #qvars { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
   #qcancel { display:none; margin-left:8px; color:var(--accent); font-weight:600; }
-  #pergroup-info { display:none; margin-top:6px; line-height:1.55; }
-  #pergroup-info code { color:var(--accent); }
-  .pggrid { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
-  .pgrow { display:inline-flex; align-items:center; gap:4px; margin:0; font-weight:500; font-size:12px; color:var(--ink); }
-  .pgcut { width:60px; padding:4px 6px; background:#0e1420; color:var(--ink); border:1px solid var(--line); border-radius:7px; font:inherit; font-size:12px; }
+  #pg_host { margin-top:6px; min-height:1.2em; }
+  .pggrid { display:flex; flex-direction:column; gap:5px; margin-top:6px; }
+  .pgrow { display:flex; flex-wrap:wrap; align-items:center; gap:4px; font-weight:500; font-size:12px; color:var(--ink); }
+  .pglab { min-width:20px; }
+  .pgcutwrap { display:inline-flex; align-items:center; gap:1px; }
+  .pgcut { width:56px; padding:4px 6px; background:#0e1420; color:var(--ink); border:1px solid var(--line); border-radius:7px; font:inherit; font-size:12px; }
   .pgcut:focus { outline:none; border-color:var(--accent); }
+  .pgadd, .pgdel { width:auto; margin:0; padding:3px 7px; font:inherit; font-size:13px; font-weight:700; line-height:1; border-radius:6px; cursor:pointer; }
+  .pgadd { color:var(--accent); background:#0e1420; border:1px solid var(--line); }
+  .pgadd:hover { border-color:var(--accent); }
+  .pgdel { color:var(--muted); background:transparent; border:none; padding:3px 5px; }
+  .pgdel:hover { color:var(--bad); }
   .flag { display:inline-flex; align-items:center; gap:5px; margin:0; background:#0e1420; border:1px solid var(--line);
           border-radius:7px; padding:5px 8px; font-size:12px; cursor:pointer; user-select:none; }
   .flag input { accent-color:var(--accent); }
@@ -102,19 +107,14 @@
     <div class="hint">Grows to N optimally-placed &tau; groups over the whole &lambda; range (keeps the outer window),
        then fills the box above and recomputes.</div>
 
-    <label>&lambda; cell edges &nbsp;<span class="hint">(log₁₀ &lambda;/Å, increasing)</span></label>
-    <input type="text" id="lambda" />
-    <div class="hint">2 edges = one cell (no wavelength split). Add an interior edge (e.g. 3.8) to split.</div>
-
-    <label>Split which &tau;-groups along &lambda;?</label>
-    <div id="flags"></div>
-    <div class="hint">Only matters with &gt;1 &lambda; cell. Off = that group stays one band over all &lambda;.</div>
-    <div id="pergroup-info" class="hint"></div>
+    <label>&lambda; cuts per &tau;-group &nbsp;<span class="hint">(log₁₀ &lambda;/Å; outer window fixed at 3–5)</span></label>
+    <div id="pg_host"></div>
+    <div class="hint">Each &tau; group carries its own wavelength cut(s). <b>+</b> adds a cut, <b>&times;</b> removes one; a group with no cuts is unsplit. Edits recompute.</div>
 
     <label>Scoring window &nbsp;<span class="hint">(log₁₀ τ_Ros, lo → hi)</span></label>
     <div class="opt-row">
       <span class="opt-n"><input type="number" id="win_lo" step="0.5" value="-5" /> to
-        <input type="number" id="win_hi" step="0.5" value="4" /></span>
+        <input type="number" id="win_hi" step="0.5" value="2.5" /></span>
     </div>
     <div class="hint">The depth range the rms/max residual is measured over (used by both Compute and Optimize;
        the plot shades it). Narrow it to focus the fit, e.g. <code>-1</code> to <code>2</code> for the photosphere.</div>
@@ -123,9 +123,7 @@
     <div id="qvars">
       <label class="flag"><input type="checkbox" id="qv_tau" checked> &tau;</label>
       <label class="flag"><input type="checkbox" id="qv_lam" checked> &lambda;</label>
-      <label class="flag"><input type="checkbox" id="qv_flags" checked> flags</label>
       <label class="flag"><input type="checkbox" id="qv_grow" checked> grow N</label>
-      <label class="flag"><input type="checkbox" id="qv_pergroup" checked> per-group &lambda;</label>
       <label class="flag"><input type="checkbox" id="qv_tree"> general 2D</label>
     </div>
     <div class="opt-row">
@@ -152,8 +150,8 @@
     </details>
     <div class="hint">Minimizes the Q_rad residual <em>directly</em> (full RTE per step, ~2.5&nbsp;s). Warm-starts
        from the current binning and loads the result when done.<a href="#" id="qcancel">cancel</a><br>
-       <b>per-group &lambda;</b>: each &tau; group gets its own wavelength split (its own cut, or none) &mdash;
-       replaces the shared cut + flags.</div>
+       Uncheck <b>&lambda;</b> to keep your manual cuts fixed (the search otherwise reduces each group to 0–1 cut).
+       <b>general 2D</b> switches to a free-form guillotine tiling.</div>
 
     <button id="go">Compute Q_rad</button>
     <div id="status"></div>
@@ -191,61 +189,103 @@
 const $ = id => document.getElementById(id);
 const parseEdges = s => s.split(/[,\s]+/).map(t=>t.trim()).filter(Boolean).map(Number);
 let LAST = null;
-let PG_LAMBDA = null;   // active per-tau-group lambda edges (null = shared-lambda + flags mode)
-let BINNING_TREE = null;  // active general 2D guillotine tree (null = not in tree mode)
-let _editTimer = null;  // debounce for auto-recompute after editing the tau/lambda edge boxes
+let LAM_WINDOW = [3, 5];      // shared outer λ window [lmin, lmax] (log₁₀ Å) — fixed, from /api/init
+let DEFAULT_CUTS = [3.8];     // interior λ cuts seeded into every new τ group (from /api/init)
+let PG_LAMBDA = null;   // per-tau-group λ edges; ALWAYS length == τ-group count (always-on editor)
+let BINNING_TREE = null;  // active general 2D guillotine tree (non-null = tree-mode overlay)
+let _editTimer = null;  // debounce for auto-recompute after editing the τ edges
 const edgesValid = a => a.length >= 2 && a.every(Number.isFinite) && a.every((v,i)=>i===0 || v>a[i-1]);
 
-// Enter per-group-lambda mode: show an EDITABLE λ-cut per τ group, dim the (now-moot) shared flags.
+// Load a per-tau-group λ binning (e.g. from the optimizer) into the always-on editor. Per-group λ
+// is the default mode, so this also clears any general-2D tree overlay.
 function setPerGroup(lpt) {
   PG_LAMBDA = lpt.map(x => x.slice());
-  const lmin = PG_LAMBDA[0][0], lmax = PG_LAMBDA[0][PG_LAMBDA[0].length-1];
-  const rows = PG_LAMBDA.map((l,k) => {
-    const cut = l.length >= 3 ? (+l[1]).toFixed(2) : '';
-    return `<label class="pgrow">τ${k} <input type="number" class="pgcut" data-k="${k}" step="0.05" `
-         + `min="${lmin}" max="${lmax}" value="${cut}" placeholder="—" title="log₁₀λ cut for τ${k} (blank = no split)"></label>`;
-  }).join('');
-  const info = $('pergroup-info');
-  info.innerHTML = `<b>per-group λ</b> <span class="hint">— log₁₀λ cut per τ group (blank = no split); edits recompute</span>`
-                 + `<div class="pggrid">${rows}</div>`;
-  info.style.display = 'block';
-  $('flags').classList.add('moot');
-  info.querySelectorAll('.pgcut').forEach(inp => inp.addEventListener('input', onPgCutEdit));
+  BINNING_TREE = null;
+  renderPgGrid();
 }
-// Rebuild PG_LAMBDA from the per-group cut inputs and recompute (debounced). Blank/out-of-range = no split.
-function onPgCutEdit() {
-  if (!PG_LAMBDA) return;
-  const lmin = PG_LAMBDA[0][0], lmax = PG_LAMBDA[0][PG_LAMBDA[0].length-1];
-  $('pergroup-info').querySelectorAll('.pgcut').forEach(inp => {
-    const k = +inp.dataset.k, v = parseFloat(inp.value);
-    PG_LAMBDA[k] = (isFinite(v) && v > lmin && v < lmax) ? [lmin, v, lmax] : [lmin, lmax];
+
+// (Re)build the always-on per-group-λ editor into #pg_host from PG_LAMBDA. Each τ group renders
+// ALL its interior cuts (as many as it has), each with a "×" to remove it, plus a "+" to add one.
+// The outer window edges [lmin, lmax] = LAM_WINDOW are fixed; only the interior cuts are editable.
+function renderPgGrid() {
+  const lmin = LAM_WINDOW[0], lmax = LAM_WINDOW[1];
+  const rows = PG_LAMBDA.map((l, k) => {
+    const inputs = l.slice(1, -1).map(c =>   // interior λ cuts for this τ group
+      `<span class="pgcutwrap">
+         <input type="number" class="pgcut" data-k="${k}" step="0.05" value="${(+c).toFixed(2)}"
+                min="${lmin}" max="${lmax}" title="log₁₀λ cut for τ${k}">
+         <button type="button" class="pgdel" data-k="${k}" title="remove this cut">&times;</button>
+       </span>`).join('');
+    return `<div class="pgrow" data-k="${k}">
+              <span class="pglab">τ${k}</span>${inputs}
+              <button type="button" class="pgadd" data-k="${k}" title="add a λ cut for τ${k}">+</button>
+            </div>`;
+  }).join('');
+  const host = $('pg_host');
+  host.innerHTML = `<div class="pggrid">${rows}</div>`;
+  host.querySelectorAll('.pgcut').forEach(inp => inp.addEventListener('input', onPgCutEdit));
+  host.querySelectorAll('.pgadd').forEach(b => b.addEventListener('click', () => onPgAddCut(+b.dataset.k)));
+  host.querySelectorAll('.pgdel').forEach(b => b.addEventListener('click', () => onPgDelCut(+b.dataset.k, b.closest('.pgcutwrap'))));
+}
+
+// Rebuild PG_LAMBDA from the editor's cut inputs: per group, collect all finite in-window values,
+// then sort + dedupe (so crossing/duplicate cuts silently normalize). [lmin, lmax] is re-pinned.
+function rebuildPgFromInputs() {
+  const lmin = LAM_WINDOW[0], lmax = LAM_WINDOW[1];
+  $('pg_host').querySelectorAll('.pgrow').forEach(row => {
+    const k = +row.dataset.k;
+    const vals = [...row.querySelectorAll('.pgcut')].map(inp => parseFloat(inp.value))
+      .filter(v => Number.isFinite(v) && v > lmin && v < lmax).map(v => +v.toFixed(4));
+    vals.sort((a, b) => a - b);
+    const cuts = vals.filter((v, i) => i === 0 || v - vals[i - 1] > 1e-4);
+    PG_LAMBDA[k] = [lmin, ...cuts, lmax];
   });
+}
+// Typing in a cut box: normalize into PG_LAMBDA and recompute (debounced). DOM untouched (focus kept).
+function onPgCutEdit() {
+  rebuildPgFromInputs();
   clearTimeout(_editTimer);
   _editTimer = setTimeout(() => compute(), 500);
 }
-function clearPerGroup() {
-  if (!PG_LAMBDA) return;
-  PG_LAMBDA = null;
-  $('pergroup-info').style.display = 'none';
-  $('flags').classList.remove('moot');
+// "+" button: place a new cut at the midpoint of the current widest sub-interval for τk.
+function onPgAddCut(k) {
+  rebuildPgFromInputs();  // fold in any pending typed edits before extending
+  const edges = PG_LAMBDA[k].slice();
+  let bi = 0, bw = -1;
+  for (let i = 0; i < edges.length - 1; i++) { const w = edges[i + 1] - edges[i]; if (w > bw) { bw = w; bi = i; } }
+  PG_LAMBDA[k].splice(bi + 1, 0, +((edges[bi] + edges[bi + 1]) / 2).toFixed(2));
+  renderPgGrid();
+  compute();
+}
+// "×" button: drop that cut's input, normalize, recompute (debounced).
+function onPgDelCut(k, wrap) {
+  wrap.remove();
+  rebuildPgFromInputs();
+  clearTimeout(_editTimer);
+  _editTimer = setTimeout(() => compute(), 300);
+}
+// Resize PG_LAMBDA to match nTau τ-groups, preserving each group's cuts BY INDEX (group k stays
+// group k); groups beyond the old count are seeded with DEFAULT_CUTS. Returns whether the count
+// changed, so callers re-render the editor only then (keeps τ-box focus while typing).
+function adaptPgToTauCount(nTau) {
+  const prev = PG_LAMBDA || [];
+  const deflt = [LAM_WINDOW[0], ...DEFAULT_CUTS, LAM_WINDOW[1]];
+  PG_LAMBDA = Array.from({length: nTau}, (_, k) => k < prev.length ? prev[k].slice() : deflt.slice());
+  return prev.length !== nTau;
 }
 
-// Enter general 2D (guillotine) mode: a whole binning tree drives the plot; the shared/per-group
-// controls are moot. Read-only in v1 (produced by the optimizer; edit the tau/lambda boxes to exit).
+// Enter general 2D (guillotine) overlay: a whole binning tree drives the plot, so the per-group
+// editor is replaced by a read-only note. PG_LAMBDA is left intact for when the user exits tree
+// mode by editing the τ box. Produced by the optimizer; read-only.
 function setTree(tree) {
   BINNING_TREE = tree;
-  clearPerGroup();
-  const info = $('pergroup-info');
-  info.innerHTML = `<b>general 2D binning active</b> — ${_countLeaves(tree.root)} leaf groups `
-                 + `(edit the &tau;/&lambda; boxes to exit)`;
-  info.style.display = 'block';
-  $('flags').classList.add('moot');
+  $('pg_host').innerHTML = `<div class="hint" style="margin-top:4px"><b>general 2D binning active</b> — `
+    + `${_countLeaves(tree.root)} leaf groups (edit the &tau; box to exit).</div>`;
 }
 function clearTree() {
   if (!BINNING_TREE) return;
   BINNING_TREE = null;
-  $('pergroup-info').style.display = 'none';
-  $('flags').classList.remove('moot');
+  renderPgGrid();   // restore the always-on per-group editor
 }
 function _countLeaves(node) {
   return (node.leaf || !node.axis) ? 1 : _countLeaves(node.lo) + _countLeaves(node.hi);
@@ -282,11 +322,16 @@ async function refreshModels() {
 async function init() {
   const r = await fetch('/api/init'); const d = await r.json();
   $('tau').value = d.default_tau_edges.join(', ');
-  $('lambda').value = d.default_lambda_edges.join(', ');
+  // fixed outer λ window + default interior cuts, both derived from the server's default λ edges
+  const le = d.default_lambda_edges;
+  LAM_WINDOW = [le[0], le[le.length - 1]];
+  DEFAULT_CUTS = le.slice(1, -1);
   if (Array.isArray(d.default_window)) { $('win_lo').value = d.default_window[0]; $('win_hi').value = d.default_window[1]; }
   if (d.max_groups_ceiling) { $('qv_maxgroups').max = d.max_groups_ceiling; $('qv_maxgroups').value = Math.min(+$('qv_maxgroups').value, d.max_groups_ceiling); }
   renderModels(d);
-  buildFlags();
+  // seed the always-on per-group editor: every τ group starts with the default cut(s)
+  adaptPgToTauCount(parseEdges($('tau').value).length - 1);
+  renderPgGrid();
   // resume a Q_rad optimization that's already running (e.g. after a page reload)
   try {
     const s = await (await fetch('/api/optimize_qrad_status')).json();
@@ -295,38 +340,21 @@ async function init() {
   compute();
 }
 
-function buildFlags() {
-  const tau = parseEdges($('tau').value);
-  const nGroups = Math.max(tau.length - 1, 0);
-  const nLambda = Math.max(parseEdges($('lambda').value).length - 1, 0);
-  const prev = [...document.querySelectorAll('#flags input')].map(c=>c.checked);
-  const box = $('flags'); box.innerHTML = '';
-  for (let k=0;k<nGroups;k++) {
-    const checked = prev.length===nGroups ? prev[k] : true;
-    const lo = tau[k], hi = tau[k+1];
-    const el = document.createElement('label'); el.className='flag';
-    el.innerHTML = `<input type="checkbox" ${checked?'checked':''}> τ${k} <span class="hint">[${(+lo).toFixed(2)},${(+hi).toFixed(2)}]</span>`;
-    box.appendChild(el);
-  }
-  box.classList.toggle('disabled', nLambda < 2);
-}
-
 function setStatus(msg, err=false){ const s=$('status'); s.textContent=msg; s.className=err?'err':''; }
 // Optimizer status line, shown under the Optimize Q_rad button + progress bar (not the global status).
 function setQStatus(msg, err=false){ const e=$('qstatus'); e.textContent=msg; e.style.color = err ? 'var(--bad)' : ''; }
 
 async function compute() {
   clearTimeout(_editTimer);  // cancel any pending debounced auto-compute
-  let tau, lam;
-  try { tau = parseEdges($('tau').value); lam = parseEdges($('lambda').value); }
+  let tau;
+  try { tau = parseEdges($('tau').value); }
   catch(e){ return setStatus('could not parse edges', true); }
   if (tau.length<2) return setStatus('need ≥2 tau edges', true);
-  if (lam.length<2) return setStatus('need ≥2 lambda edges', true);
-  const split = [...document.querySelectorAll('#flags input')].map(c=>c.checked);
-  const body = {tau_edges:tau, lambda_edges:lam, split_lambda:split, model:$('model').value,
+  adaptPgToTauCount(tau.length - 1);  // defensive: keep PG_LAMBDA length-matched to the τ groups
+  const body = {tau_edges:tau, lambda_edges:LAM_WINDOW.slice(), model:$('model').value,
                 window_lo:+$('win_lo').value, window_hi:+$('win_hi').value};
   if (BINNING_TREE) body.binning_tree = BINNING_TREE;
-  else if (PG_LAMBDA && PG_LAMBDA.length === tau.length-1) body.lambda_edges_per_tau = PG_LAMBDA;
+  else body.lambda_edges_per_tau = PG_LAMBDA;
   $('go').disabled = true; setStatus('computing… (binning + radiative transfer)');
   try {
     const r = await fetch('/api/compute', {method:'POST', headers:{'Content-Type':'application/json'},
@@ -340,22 +368,21 @@ async function compute() {
 }
 
 async function optimize() {
-  let tau, lam;
-  try { tau = parseEdges($('tau').value); lam = parseEdges($('lambda').value); }
+  let tau;
+  try { tau = parseEdges($('tau').value); }
   catch(e){ return setStatus('could not parse edges', true); }
   if (tau.length<2) return setStatus('need ≥2 τ edges for the window', true);
-  if (lam.length<2) return setStatus('need ≥2 λ edges', true);
   const maxbins = Math.max(2, Math.min(12, parseInt($('maxbins').value,10)||4));
   $('opt').disabled = $('go').disabled = true;
   setStatus(`optimizing τ edges → ${maxbins} groups… (greedy search, a few seconds)`);
   try {
     const r = await fetch('/api/optimize', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({tau_edges:tau, lambda_edges:lam, max_bins:maxbins, model:$('model').value})});
+      body: JSON.stringify({tau_edges:tau, lambda_edges:LAM_WINDOW.slice(), max_bins:maxbins, model:$('model').value})});
     const d = await r.json();
     if (!r.ok) throw new Error(d.error||'optimize failed');
     $('tau').value = d.tau_edges.join(', ');
-    clearPerGroup();
-    buildFlags();
+    adaptPgToTauCount(d.tau_edges.length - 1);  // keep cuts by index; seed new groups with the default
+    renderPgGrid();
     setStatus(`optimized to ${d.tau_edges.length-1} τ groups in ${d.elapsed}s · computing Q_rad…`);
     await compute();
   } catch(e){ setStatus(e.message, true); }
@@ -384,17 +411,18 @@ function stopQBar(){
 }
 
 async function qoptStart() {
-  let tau, lam;
-  try { tau = parseEdges($('tau').value); lam = parseEdges($('lambda').value); }
+  let tau;
+  try { tau = parseEdges($('tau').value); }
   catch(e){ return setQStatus('could not parse edges', true); }
-  if (tau.length<2 || lam.length<2) return setQStatus('need ≥2 τ and ≥2 λ edges', true);
-  const split = [...document.querySelectorAll('#flags input')].map(c=>c.checked);
+  if (tau.length<2) return setQStatus('need ≥2 τ edges', true);
+  adaptPgToTauCount(tau.length - 1);  // keep PG_LAMBDA matched to the τ groups before warm-starting
+  const wantTree = $('qv_tree').checked;
   const body = {
-    tau_edges: tau, lambda_edges: lam, split_lambda: split, model: $('model').value,
+    tau_edges: tau, lambda_edges: LAM_WINDOW.slice(), model: $('model').value,
     opt_tau: $('qv_tau').checked, opt_lambda: $('qv_lam').checked,
-    opt_flags: $('qv_flags').checked, grow: $('qv_grow').checked,
-    per_group_lambda: $('qv_pergroup').checked,
-    tree: $('qv_tree').checked,
+    grow: $('qv_grow').checked,
+    per_group_lambda: !wantTree,
+    tree: wantTree,
     max_seconds: Math.max(20, Math.min(1800, parseInt($('qbudget').value,10)||180)),
     window_lo: +$('win_lo').value, window_hi: +$('win_hi').value,
     metric: $('qv_metric').value, method: $('qv_method').value,
@@ -407,8 +435,8 @@ async function qoptStart() {
     min_gap_lam: parseFloat($('qv_gaplam').value) || undefined,
   };
   // warm-start a re-run from the current binning so it keeps refining (not resetting to the box)
-  if ($('qv_tree').checked && BINNING_TREE) body.binning_tree = BINNING_TREE;
-  else if ($('qv_pergroup').checked && PG_LAMBDA && PG_LAMBDA.length === tau.length-1) body.lambda_edges_per_tau = PG_LAMBDA;
+  if (wantTree && BINNING_TREE) body.binning_tree = BINNING_TREE;
+  else body.lambda_edges_per_tau = PG_LAMBDA;
   qoptBusy(true); setQStatus('starting Q_rad optimization…'); QLASTDIAG = null;
   try {
     const r = await fetch('/api/optimize_qrad', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
@@ -444,17 +472,9 @@ function qoptFinish(result) {
     // general 2D guillotine: the whole tree drives the plot; tau/lambda boxes are stale (exit = edit them)
     setTree(result.binning_tree);
   } else {
+    // per-group λ is the only non-tree mode: load the optimizer's τ edges + per-group cuts
     $('tau').value = result.tau_edges.join(', ');
-    buildFlags();
-    if (result.per_group_lambda) {
-      // each tau group has its own lambda split; shared flags are moot
-      setPerGroup(result.lambda_edges_per_tau);
-    } else {
-      clearPerGroup();
-      $('lambda').value = result.lambda_edges.join(', ');
-      const boxes = [...document.querySelectorAll('#flags input')];
-      result.flags.forEach((f,i)=>{ if(boxes[i]) boxes[i].checked = f; });
-    }
+    setPerGroup(result.lambda_edges_per_tau);
   }
   const imp = (100*(result.rms0-result.rms)/result.rms0).toFixed(1);
   const why = result.stop_reason ? ` · stopped: ${result.stop_reason}` : '';
@@ -463,14 +483,14 @@ function qoptFinish(result) {
 }
 
 async function downloadKappa() {
-  let tau, lam;
-  try { tau = parseEdges($('tau').value); lam = parseEdges($('lambda').value); }
+  let tau;
+  try { tau = parseEdges($('tau').value); }
   catch(e){ return setStatus('could not parse edges', true); }
-  if (tau.length<2 || lam.length<2) return setStatus('need ≥2 τ and ≥2 λ edges', true);
-  const split = [...document.querySelectorAll('#flags input')].map(c=>c.checked);
-  const body = {tau_edges:tau, lambda_edges:lam, split_lambda:split, model:$('model').value};
+  if (tau.length<2) return setStatus('need ≥2 τ edges', true);
+  adaptPgToTauCount(tau.length - 1);
+  const body = {tau_edges:tau, lambda_edges:LAM_WINDOW.slice(), model:$('model').value};
   if (BINNING_TREE) body.binning_tree = BINNING_TREE;
-  else if (PG_LAMBDA && PG_LAMBDA.length === tau.length-1) body.lambda_edges_per_tau = PG_LAMBDA;
+  else body.lambda_edges_per_tau = PG_LAMBDA;
   $('dl').disabled = true; setStatus('building kappa table…');
   try {
     const r = await fetch('/api/kappa_dat', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
@@ -647,17 +667,19 @@ function switchTab(tab){
   else Plotly.Plots.resize('chart');  // resize the (was-hidden) Q_rad chart
 }
 
-// a manual edge edit invalidates any active per-group-lambda or general-2D binning (tied to the boxes)
+// a manual τ-edge edit may change the τ-group count, so sync PG_LAMBDA (and exit any tree overlay);
+// re-render the per-group editor only when the count actually changed (keeps focus while typing).
 const onEdgeEdit = () => {
-  clearPerGroup(); clearTree(); buildFlags();
-  // auto-recompute the plot once edits settle and are valid (debounced; compute is ~1.5-3s)
+  clearTree();
+  const tauArr = parseEdges($('tau').value);
+  if (tauArr.length >= 2 && adaptPgToTauCount(tauArr.length - 1)) renderPgGrid();
+  // auto-recompute once edits settle and are valid (debounced; compute is ~1.5-3s)
   clearTimeout(_editTimer);
   _editTimer = setTimeout(() => {
-    if (edgesValid(parseEdges($('tau').value)) && edgesValid(parseEdges($('lambda').value))) compute();
+    if (edgesValid(parseEdges($('tau').value))) compute();
   }, 600);
 };
 $('tau').addEventListener('input', onEdgeEdit);
-$('lambda').addEventListener('input', onEdgeEdit);
 $('go').addEventListener('click', compute);
 $('refresh').addEventListener('click', refreshModels);
 $('model').addEventListener('change', () => {
@@ -670,11 +692,8 @@ document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () =>
 $('opt').addEventListener('click', optimize);
 $('qopt').addEventListener('click', qoptStart);
 $('qcancel').addEventListener('click', qoptCancel);
-// general-2D and per-group-λ are alternative optimizer modes — checking one unchecks the other
-$('qv_tree').addEventListener('change', e => { if (e.target.checked) $('qv_pergroup').checked = false; });
-$('qv_pergroup').addEventListener('change', e => { if (e.target.checked) $('qv_tree').checked = false; });
 $('dl').addEventListener('click', downloadKappa);
-['tau','lambda'].forEach(id=>$(id).addEventListener('keydown', e=>{ if(e.key==='Enter') compute(); }));
+$('tau').addEventListener('keydown', e=>{ if(e.key==='Enter') compute(); });
 
 // Draggable splitter: resize the controls column (persisted). Reflows the active chart on release.
 (function(){
