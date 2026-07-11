@@ -371,7 +371,7 @@ async function compute() {
 // --- Q_rad optimizer: start a background job, poll it, apply the result ---
 let QPOLL = null;
 
-function qoptBusy(on){ $('qopt').disabled=on; $('go').disabled=on; $('opt').disabled=on; }
+function qoptBusy(on){ $('qopt').disabled=on; $('go').disabled=on; }
 
 // Progress bar under the Optimize Q_rad button: fills from 0 to the time budget as the run
 // elapses (smoothly via a client tick, re-synced to the server's elapsed on each poll).

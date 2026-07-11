@@ -630,6 +630,16 @@ def optimize_qrad(
         btree = copy.deepcopy(binning_tree)
     elif lambda_edges_per_tau is not None:
         btree = tree_from_lpt(tau_edges, [list(x) for x in lambda_edges_per_tau])
+        if grow and _n_leaves(btree) >= max_groups:
+            # The per-group-lambda warm start can already meet/exceed the leaf cap (the webapp's
+            # default is 4 tau-groups x 2 lambda-cells = 8 leaves == MAX_GROUPS). With the cap
+            # saturated the grow/beam guard `_n_leaves < max_groups` is never true, so the
+            # non-greedy beam search never fires and only position-polish runs. Drop the interior
+            # lambda cuts -- keep the tau skeleton + lambda window, exactly as the CLI seeds -- so
+            # the beam has room to re-discover lambda (and tau) splits up to max_groups. grow=False
+            # (refine-only) keeps the fine seed untouched; explicit binning_tree re-runs are above.
+            lmin, lmax = float(lambda_edges[0]), float(lambda_edges[-1])
+            btree = tree_from_lpt(tau_edges, [[lmin, lmax] for _ in range(n_tau0)])
     elif per_group_lambda:
         btree = tree_from_lpt(tau_edges, [list(lambda_edges) for _ in range(n_tau0)])
     else:

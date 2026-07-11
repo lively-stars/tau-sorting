@@ -112,7 +112,7 @@
    Here we take the partition to be an optimization variable. We
    represent the binning as a guillotine tree that tiles the
    $(-\log_{10}\tau,\,\log_{10}\lambda)$ plane into rectangular
-   $(\tau,\lambda)$ groups, and we drive a search over tree topologies
+   $(\tau,\lambda)$ groups, and we drive a non-greedy (beam) search over tree topologies
    and cut positions with the actual $Q_\mathrm{rad}$ residual computed
    from a radiative-transfer solve for every candidate binning. The
    question we address is simple and practical: for a given number of
@@ -397,7 +397,7 @@
 
    We have recast the opacity-binning partition as a guillotine-tree
    tiling of the $(-\log_{10}\tau,\log_{10}\lambda)$ plane and optimized
-   it directly against the radiative heating-rate residual from a full
+   it directly, by a non-greedy beam search, against the radiative heating-rate residual from a full
    transfer solve. At equal band budget, a wavelength-resolved,
    optimizer-found tiling reduces the rms $Q_\mathrm{rad}$ residual by a
    factor of several relative to a $\tau$-depth-only binning, and the

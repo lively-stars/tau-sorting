@@ -598,6 +598,29 @@ class TestBeamSearch(unittest.TestCase):
         self.assertTrue(qo._tree_feasible(again["binning_tree"], qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
         self.assertLessEqual(again["rms"], first["rms"] + 1e-6)
 
+    def test_beam_coarsens_saturated_per_group_lambda_seed(self):
+        # Regression: a per-group-lambda warm start that already meets/exceeds the leaf cap
+        # (the webapp's default: 4 tau-groups x 2 lambda-cells = 8 leaves) used to saturate the
+        # grow guard `_n_leaves < max_groups`, leaving the non-greedy beam search dead and the
+        # result pinned at the seed leaf count (8), ignoring max_groups. The optimizer must
+        # coarsen such a seed to the tau skeleton + lambda window so the beam can grow back out
+        # -- the result must respect the cap and reach it (leaf-count score rewards splitting).
+        res = qo.optimize_qrad(
+            [-0.63, 0.3488, 1.2275, 2.885, 7.0],
+            [3.0, 5.0],
+            flags=[True, True, True, True],
+            tree=True,
+            grow=True,
+            beam_width=3,
+            max_groups=5,
+            score_fn=_tree_leafcount_score(),
+            max_evals=5000,
+            lambda_edges_per_tau=[[3.0, 3.8, 5.0]] * 4,  # 4 tau-groups x 2 lambda-cells = 8 leaves
+        )
+        self.assertTrue(res["tree"])
+        self.assertEqual(res["n_leaves"], 5)  # coarsened to 4, then beam grew to the cap (was 8, stuck)
+        self.assertTrue(qo._tree_feasible(res["binning_tree"], qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
+
 
 class TestMainGroupingDispatch(unittest.TestCase):
     """Regression guard for the main() rewrite (P3): every CLI grouping mode resolves to the
