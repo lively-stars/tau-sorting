@@ -211,6 +211,10 @@ def compute(tau_edges, lambda_edges, split_lambda, model, lambda_edges_per_tau=N
             "bin_group": bg.astype(int).tolist(),
             "group_tau_edges": r["group_tau_edges"].tolist(),
             "group_lam_edges": r["group_lam_edges"].tolist(),
+            # per-band Q/ρ (signed) over the displayed depth slice — drives the 4th panel's
+            # stacked-area decomposition; the band axis aligns 1:1 with (group, split) via n_splits.
+            "q_per_band": (r["q_per_band"][:, idx] / rho[idx]).tolist(),
+            "n_splits": int(r.get("n_splits", 3)),
         }
         # optional golden-standard reference curve (only when data/kappa_goldenS.dat exists)
         q_golden = r.get("q_golden")

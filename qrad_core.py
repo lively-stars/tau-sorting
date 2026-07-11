@@ -147,13 +147,21 @@ def _atm_rt(inv):
 
 
 def _qrad_from_table(inv, kap_tab, b_tab, ttab, ptab):
-    """Q_rad(z) summed over bands on `inv`'s atmosphere, mirroring compare_Qrad's Q_from_kappa.
+    """Q_rad(z) on `inv`'s atmosphere, mirroring compare_Qrad's Q_from_kappa.
 
     kap_tab: [nband, nT, np] ln(kappa); b_tab: [nband, nT] ln(B); ttab/ptab log10.
-    Empty (all-NaN) bands are dropped; non-finite ln(B) -> B=0.
+    Empty (all-NaN) bands are dropped before the RTE solve; non-finite ln(B) -> B=0.
+
+    Returns (q_summed, k_z, q_per_band):
+      - q_summed:   [nz] net Q summed over bands (the score/plot curve).
+      - k_z:        [n_kept, nz] kappa interpolated onto the atmosphere (kept bands only).
+      - q_per_band: [nband, nz] signed Q per band per depth, empty bands = 0 (so the band
+                    axis still aligns 1:1 with `members` and the band -> (group, split) map).
     """
     z, rho, pre, tem = _atm_rt(inv)
+    n_bands = kap_tab.shape[0]
     keep = ~np.isnan(kap_tab).all(axis=(1, 2))
+    keep_idx = np.where(keep)[0]
     kap_tab = kap_tab[keep]
     b_tab = np.where(np.isfinite(b_tab[keep]), b_tab[keep], -700.0)
     nband = kap_tab.shape[0]
@@ -168,7 +176,10 @@ def _qrad_from_table(inv, kap_tab, b_tab, ttab, ptab):
         k_z[i] = np.exp(_bilin_interp(kap_tab[i], lt, lp))
     rt = Solver(z=z, rho=rho, kappa=k_z, S=b_z, nmu=NMU)
     rt.solve_rte()
-    return rt.get_Q().sum(axis=0), k_z
+    q_kept = rt.get_Q()  # [n_kept, nz] signed Q per kept band per depth
+    q_per_band = np.zeros((n_bands, nz))
+    q_per_band[keep_idx] = q_kept
+    return q_per_band.sum(axis=0), k_z, q_per_band
 
 
 def reference(model=None):
@@ -185,7 +196,7 @@ def reference(model=None):
 
         # gray reference -> tau axis
         g = read_kappa_4_band_comparison(str(_REPO / "data" / "kappa_grey.dat"))
-        q_gray, k_gray = _qrad_from_table(
+        q_gray, k_gray, _ = _qrad_from_table(
             inv,
             np.asarray(g.kap_mean),
             np.asarray(g.B_band, dtype=np.float64),
@@ -197,7 +208,7 @@ def reference(model=None):
 
         # full-ODF reference (the residual baseline)
         f = read_kappa_4_band_comparison(str(_REPO / "data" / "kappa_fullodf.dat"))
-        q_full, _ = _qrad_from_table(
+        q_full, _, _ = _qrad_from_table(
             inv,
             np.asarray(f.kap_mean),
             np.asarray(f.B_band, dtype=np.float64),
@@ -210,7 +221,7 @@ def reference(model=None):
         golden_path = _REPO / "data" / "kappa_goldenS.dat"
         if golden_path.exists():
             gd = read_kappa_4_band_comparison(str(golden_path))
-            q_golden, _ = _qrad_from_table(
+            q_golden, _, _ = _qrad_from_table(
                 inv,
                 np.asarray(gd.kap_mean),
                 np.asarray(gd.B_band, dtype=np.float64),
@@ -358,7 +369,7 @@ def score_binning(
         b_tab = np.log(np.where(b_band > 0, b_band, np.nan)).T  # [nBands, nT]
     kap_tab[members == 0] = np.nan
 
-    q, _kz = _qrad_from_table(inv, kap_tab, b_tab, np.asarray(odf.T), np.asarray(odf.P))
+    q, _kz, q_per_band = _qrad_from_table(inv, kap_tab, b_tab, np.asarray(odf.T), np.asarray(odf.P))
 
     ltau = ref["ltau"]
     rho = ref["rho"]
@@ -396,6 +407,8 @@ def score_binning(
         "band_index": band_index,
         "group_tau_edges": group_tau_edges,
         "group_lam_edges": group_lam_edges,
+        "q_per_band": q_per_band,
+        "n_splits": int(n_splits),
     }
 
 

@@ -66,7 +66,8 @@
   .metrics .big { font-size:16px; }
   #status { margin-top:10px; font-size:12.5px; color:var(--muted); min-height:1.2em; }
   #status.err { color:var(--bad); }
-  #chart, #atmchart { width:100%; height:860px; }
+  #chart { width:100%; height:1080px; }
+  #atmchart { width:100%; height:860px; }
   .tabs { display:flex; gap:6px; margin-bottom:12px; border-bottom:1px solid var(--line); }
   .tab { margin-top:0; width:auto; flex:0 0 auto; padding:8px 16px; font-weight:600; color:var(--muted);
          background:#0e1420; border:1px solid var(--line); border-bottom:none; border-radius:8px 8px 0 0;
@@ -528,6 +529,11 @@ const PAL = ['#ff9d3c','#3ecf8e','#5b9bd5','#e2555b','#b083f0','#f7c948','#4dd0e
              '#f06292','#a3be8c','#d0876f','#88c0d0','#ebcb8b','#c0a0ff','#7ec4ff',
              '#ffd479','#9ad1a0'];
 const groupColor = g => g>=0 ? PAL[g % PAL.length] : 'rgba(140,150,170,0.30)';
+// group palette color as an rgba() string at alpha `a` (for the per-band stacked-area fills).
+const groupRgba = (g, a) => {
+  const h = PAL[g>=0 ? g % PAL.length : 0].replace('#','');
+  return `rgba(${parseInt(h.slice(0,2),16)},${parseInt(h.slice(2,4),16)},${parseInt(h.slice(4,6),16)},${a})`;
+};
 
 let QLASTDIAG = null;   // rms of the last live-drawn optimizer diagram (skip redundant redraws)
 // Live-update ONLY the top binning diagram (sub-bin colors + group boxes + range) from the
@@ -539,7 +545,7 @@ function liveBinning(diag){
     return {type:'rect', xref:'x', yref:'y', x0:le[0], x1:le[1], y0:te[0], y1:te[1],
             line:{color:'rgba(240,244,250,0.7)', width:1}, fillcolor:'rgba(0,0,0,0)', layer:'above'}; });
   const wl = +$('win_lo').value, wh = +$('win_hi').value;   // keep the scoring-window shading on Q/ρ + residual
-  if (isFinite(wl) && isFinite(wh)) ['2','3'].forEach(ax => shapes.push({type:'rect', xref:'x'+ax, yref:'y'+ax+' domain',
+  if (isFinite(wl) && isFinite(wh)) ['2','3','4'].forEach(ax => shapes.push({type:'rect', xref:'x'+ax, yref:'y'+ax+' domain',
     x0:wl, x1:wh, y0:0, y1:1, fillcolor:'rgba(255,157,60,0.07)', line:{width:0}, layer:'below'}));
   const ax = LAST.bin_x.concat(diag.group_lam_edges.flat()), ay = LAST.bin_y.concat(diag.group_tau_edges.flat());
   const xlo=Math.min(...ax), xhi=Math.max(...ax), ylo=Math.min(...ay), yhi=Math.max(...ay);
@@ -571,7 +577,7 @@ function render(d){
   // shade the scoring window (where rms/max are measured) on the Q/ρ and residual panels
   if (Array.isArray(d.window) && d.window.length===2) {
     const [wl, wh] = d.window;
-    ['2','3'].forEach(ax => shapes.push({type:'rect', xref:'x'+ax, yref:'y'+ax+' domain',
+    ['2','3','4'].forEach(ax => shapes.push({type:'rect', xref:'x'+ax, yref:'y'+ax+' domain',
       x0:wl, x1:wh, y0:0, y1:1, fillcolor:'rgba(255,157,60,0.07)', line:{width:0}, layer:'below'}));
   }
 
@@ -591,6 +597,21 @@ function render(d){
     data.push({...base, y:d.q_golden_over_rho, name:'goldenS', line:{color:C.gold,width:1.6,dash:'dashdot'}, xaxis:'x2',yaxis:'y2'});
     data.push({...base, y:goldResid, name:'goldenS − full', line:{color:C.gold,width:1.6,dash:'dashdot'}, xaxis:'x3',yaxis:'y3', showlegend:false});
   }
+  // --- 4th panel: per-band Q/ρ contribution (stacked area, group-colored; heating stacks ↑, cooling ↓) ---
+  // Each band = group×split; the 3 splits of a group share its hue at 3 alphas. Empty bands
+  // (max|Q/ρ|=0) are skipped. Stacking is gross: +heating up, −cooling down (net = up − down).
+  const ns = d.n_splits || 3, splitAlpha = [0.45, 0.7, 0.9];
+  (Array.isArray(d.q_per_band) ? d.q_per_band : []).forEach((row, b) => {
+    if (!Array.isArray(row)) return;
+    let m = 0; for (const v of row) { const a = Math.abs(v||0); if (a > m) m = a; }
+    if (m === 0) return;  // empty band: nothing to stack
+    const group = Math.floor(b / ns), sp = b % ns;
+    data.push({
+      x:d.ltau, y:row, name:`τ${group}·${['lo','mid','hi'][sp] ?? sp}`, mode:'lines',
+      line:{color:groupRgba(group, splitAlpha[sp] ?? 0.7), width:0.5}, stackgroup:'qband',
+      legendgroup:'g'+group, showlegend:false, hoverinfo:'x+y', xaxis:'x4', yaxis:'y4',
+    });
+  });
   const font={color:'#cdd6e5'}; const grid='#2b3547';
   const layout = {
     paper_bgcolor:'#1a2130', plot_bgcolor:'#121826', font, shapes,
@@ -598,14 +619,18 @@ function render(d){
     legend:{orientation:'h', y:1.06, x:0, yanchor:'bottom', font:{size:11}},
     // top: binning diagram (its own λ x-axis)
     xaxis:{title:'log₁₀ λ [Å]', range:[_xlo-_xpad, _xhi+_xpad], gridcolor:grid, zeroline:false, domain:[0,1], anchor:'y'},
-    yaxis:{title:'−log₁₀ τ_Ros(τ_λ=1)', range:[_ylo-_ypad, _yhi+_ypad], gridcolor:grid, zeroline:false, domain:[0.70,0.99]},
-    // middle: Q/ρ (τ x-axis, shared with residual)
+    yaxis:{title:'−log₁₀ τ_Ros(τ_λ=1)', range:[_ylo-_ypad, _yhi+_ypad], gridcolor:grid, zeroline:false, domain:[0.77,0.99]},
+    // Q/ρ (τ x-axis, shared with the per-band + residual panels)
     xaxis2:{range:[4,-5], gridcolor:grid, zeroline:false, domain:[0,1], anchor:'y2',
             matches:'x3', showticklabels:false},
-    yaxis2:{title:'Q/ρ [erg/g/s]', gridcolor:grid, zeroline:true, zerolinecolor:'#40506a', domain:[0.37,0.62]},
+    yaxis2:{title:'Q/ρ [erg/g/s]', gridcolor:grid, zeroline:true, zerolinecolor:'#40506a', domain:[0.53,0.74]},
+    // per-band Q/ρ contribution (stacked area; heating stacks up, cooling down)
+    xaxis4:{range:[4,-5], gridcolor:grid, zeroline:false, domain:[0,1], anchor:'y4',
+            matches:'x3', showticklabels:false},
+    yaxis4:{title:'per-band Q/ρ [erg/g/s]', gridcolor:grid, zeroline:true, zerolinecolor:'#40506a', domain:[0.28,0.49]},
     // bottom: residual
     xaxis3:{title:'log₁₀ τ_Ros', range:[4,-5], gridcolor:grid, zeroline:false, domain:[0,1], anchor:'y3'},
-    yaxis3:{title:'(Q − Q_full)/ρ', gridcolor:grid, zeroline:true, zerolinecolor:'#40506a', domain:[0,0.28]},
+    yaxis3:{title:'(Q − Q_full)/ρ', gridcolor:grid, zeroline:true, zerolinecolor:'#40506a', domain:[0.0,0.23]},
   };
   Plotly.react('chart', data, layout, {responsive:true, displayModeBar:true, displaylogo:false, modeBarButtonsToRemove:['lasso2d','select2d']});
   LAST = d;

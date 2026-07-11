@@ -1,0 +1,3 @@
+{
+  "extensions": ["extensions/tausort-tools.ts", "extensions/protected-paths.ts"]
+}
