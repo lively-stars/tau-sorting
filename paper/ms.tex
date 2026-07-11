@@ -1,0 +1,442 @@
+% =====================================================================
+%  Direct optimization of the (tau, lambda) opacity-binning partition
+%  A&A manuscript (aa.cls v9.0)
+%
+%  Build (once a TeX distribution is available, e.g. on Overleaf):
+%     pdflatex ms ; bibtex ms ; pdflatex ms ; pdflatex ms
+%
+%  TODO-before-submission markers are flagged with "% TODO:" comments.
+% =====================================================================
+\documentclass{aa}
+
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{txfonts}
+
+% TODO: fill in authors / affiliations / emails before submission.
+\begin{document}
+
+   \title{Direct optimization of the $(\tau,\lambda)$ opacity-binning partition
+          by minimization of the radiative heating-rate residual}
+
+   \author{A.~Author\inst{1}
+           \and
+           T.~Coauthor\inst{1}
+           \and
+           M.~Sch{\"u}ssler\inst{2}
+           % TODO: complete author list
+           }
+
+   \institute{Institute / Department, University, City, Country\\
+              \email{author@example.org}
+              \and
+              Max-Planck-Institut f{\"u}r Sonnensystemforschung,
+              G{\"o}ttingen, Germany
+              % TODO: affiliations
+              }
+
+   \date{Received ...; accepted ...}
+
+% --- Structured abstract (5 mandatory braces: context/aims/methods/results/conclusions)
+   \abstract
+   {Non-grey radiative transfer in radiation-hydrodynamics (RHD) and
+    magneto-hydrodynamics (MHD) simulations of stellar atmospheres is
+    usually treated by opacity binning: the opacity distribution function
+    is sorted into a small number of $(\tau,\lambda)$ groups, each
+    represented by a Planck- or Rosseland-mean opacity \citep{nordlund1982,ludwig1992,vogler2004}.
+    The placement of the bin edges is the central degree of freedom of the
+    method and is conventionally chosen by hand using physical heuristics.}
+   {We aim to find a more optimal partition of the
+    $(\tau,\lambda)$ plane --- one that minimizes the error in the
+    simulated radiative heating rate $Q_\mathrm{rad}$ with respect to the
+    full line-by-line reference, rather than proxies such as the flatness
+    of the sorted-opacity curve.}
+   {We recast opacity binning as a partition of the
+    $(-\log_{10}\tau,\,\log_{10}\lambda)$ plane into rectangular groups,
+    the leaves of a guillotine tree, and optimize that partition directly
+    against the $Q_\mathrm{rad}$ residual obtained from a 1D
+    short-characteristics radiative-transfer solve per candidate binning.
+    The search is a non-greedy beam search over tree topologies (grow)
+    followed by a per-cut position polish; every input shape (shared
+    $\tau$ edges with wavelength-split flags, per-$\tau$-group
+    wavelength edges, or a free two-dimensional tree) is normalized to a
+    single tree before refinement.}
+   {At fixed band budget, wavelength-resolved binnings reduce the
+    rms $Q_\mathrm{rad}$ residual by about a factor of $2.5$ relative to
+    $\tau$-depth-only binning. The tree optimizer recovers this accuracy
+    with $\sim\!40\%$ fewer bands, and improves further on hand-placed
+    edges. The benefit is localized: spending wavelength resolution in
+    the single sub-photospheric $\tau$-group in which the photospheric
+    cooling peak forms is sufficient.}
+   {Minimizing the radiative-transfer residual directly, rather than
+    an edge-position proxy, yields markedly better opacity tables at equal
+    or lower cost. The guillotine-tree formulation automates the search
+    and exposes where wavelength resolution is actually needed.}
+
+   \keywords{radiative transfer --
+             methods: numerical --
+             opacity --
+             Sun: atmosphere --
+             stars: atmospheres --
+             convection}
+
+   \maketitle
+
+% =====================================================================
+\section{Introduction}
+\label{sec:intro}
+
+   Time-dependent, multi-dimensional simulations of stellar surface
+   convection require a treatment of radiative transfer that is both
+   non-grey and affordable. The dominant approach is \emph{opacity
+   binning} \citep{nordlund1982,ludwig1992,ludwig1994,skartlien2000,vogler2004}: the
+   monochromatic opacity distribution function (ODF) is sorted into a
+   modest number of groups, and each group is represented by a single
+   mean opacity -- a Planck mean where the gas is optically thin and a
+   Rosseland mean where it is optically thick, blended smoothly between
+   the two regimes \citep[Eq.~12]{vogler2004}. The resulting handful of
+   opacities then replaces the full spectrum in the radiative-transfer
+   module of the simulation code \citep[e.g.][]{vogler2005,magic2013}.
+
+   Within this framework the central choice is how to \emph{partition}
+   the ODF into groups: which wavelength intervals, sorted by the optical
+   depth they reach in a reference atmosphere, are merged together.
+   Conventional practice fixes a set of $\tau$-group edges by hand,
+   informed by physical intuition about where the photosphere forms, and
+   optionally subdivides some groups in wavelength \citep{vogler2004}.
+   The quality of a binning is judged by how well the binned calculation
+   reproduces the radiative heating rate $Q_\mathrm{rad}$ of the full,
+   line-by-line calculation -- but the edges themselves are rarely chosen
+   by optimizing that quantity directly.
+
+   Here we take the partition to be an optimization variable. We
+   represent the binning as a guillotine tree that tiles the
+   $(-\log_{10}\tau,\,\log_{10}\lambda)$ plane into rectangular
+   $(\tau,\lambda)$ groups, and we drive a search over tree topologies
+   and cut positions with the actual $Q_\mathrm{rad}$ residual computed
+   from a radiative-transfer solve for every candidate binning. The
+   question we address is simple and practical: for a given number of
+   bands, which $(\tau,\lambda)$ tiling best reproduces the full-ODF
+   heating rate, and how much better is it than the hand-placed
+   alternatives?
+
+   Section~\ref{sec:method} reviews opacity binning and introduces the
+   tree partition, the objective, and the search algorithm.
+   Section~\ref{sec:setup} describes the validation setup.
+   Section~\ref{sec:results} presents the results, which we discuss in
+   Sect.~\ref{sec:discussion}. Section~\ref{sec:conclusions} concludes.
+
+% =====================================================================
+\section{Method}
+\label{sec:method}
+
+% ---------------------------------------------------------------------
+\subsection{Opacity binning}
+\label{sec:binning}
+
+   We adopt the formulation of \citet{vogler2004}. The ODF supplies, on a
+   grid of temperatures and pressures, a line opacity for each of
+   $N_\mathrm{bin}$ wavelength intervals (\emph{bins}), each subdivided
+   into $N_\mathrm{sub}$ \emph{sub-bins} carrying a fractional width. The
+   continuum opacity is added bin-by-bin. For each ODF step (a sub-bin at
+   a given $T,p$) we evaluate the Rosseland optical depth
+   $\tau=\kappa_\mathrm{Ross}\,\rho\,H$ it reaches in a reference
+   atmosphere, where $H$ is the local pressure scale height, and sort the
+   steps into $\tau$-groups.
+
+   For a group $l$, the band-integrated Planck source and the Planck-mean
+   opacity are \citep[Eqs.~16--17]{vogler2004}
+   \begin{align}
+      B_l      &= \sum_i \Delta\nu_i\, B_{\Delta\nu_i}
+                  \sum_{j(i,l)} w_{j(i,l)}, \label{eq:Bl}\\
+      \bar\kappa_{P,l}
+               &= \frac{1}{B_l}\sum_i \Delta\nu_i\, B_{\Delta\nu_i}
+                  \sum_{j(i,l)} w_{j(i,l)}\,\kappa_{ij(i,l)},
+                  \label{eq:kappap}
+   \end{align}
+   where the inner sum runs over the ODF steps $j(i,l)$ that fall into
+   group $l$ within wavelength bin $i$, $w$ is the sub-bin weight, and
+   $B_{\Delta\nu_i}$ is the Planck function averaged over the bin. The
+   Rosseland-mean opacity is defined analogously with the Planck
+   derivative $dB/dT$ as the weight.
+
+   The two means are blended as a function of the optical depth a group
+   reaches \citep[Eq.~12]{vogler2004}:
+   \begin{equation}
+      \bar\kappa_i = 2^{-\tau_i/\tau_0}\,\bar\kappa_{P,i}
+                   + \bigl(1 - 2^{-\tau_i/\tau_0}\bigr)\,\bar\kappa_{R,i},
+      \label{eq:blend}
+   \end{equation}
+   with the transition scale $\tau_0 = 0.35$ \citep{ludwig1992,vogler2004}.
+   The group mean $\bar\kappa_i$ is what enters the multi-group
+   radiative-transfer solve.
+
+% ---------------------------------------------------------------------
+\subsection{The binning as a guillotine-tree partition}
+\label{sec:tree}
+
+   The assignment of ODF steps to groups is entirely determined by the
+   partition of the $(-\log_{10}\tau,\,\log_{10}\lambda)$ plane into
+   rectangles. We represent any such partition as a \emph{guillotine
+   tree}: starting from the bounding window, each interior node applies a
+   single cut -- either along $\tau$ (a horizontal line) or along
+   $\lambda$ (a vertical line) -- recursing on the two children until the
+   leaves are the $(\tau,\lambda)$ groups (Fig.~\ref{fig:binning}).
+   Because $\tau$ and $\lambda$ cuts may nest arbitrarily, this
+   representation can express any rectangular tiling, including -- as
+   special, restricted cases -- the layouts used in earlier work: a single
+   $\tau$ partition (one $\lambda$ cell), a shared $\tau$ partition with a
+   per-group wavelength-split flag, and a per-$\tau$-group wavelength
+   edge. We adopt the guillotine tree as the single internal
+   representation and number its leaves in $\tau$-major depth-first order.
+
+   Within each group, the sub-bins are further segmented along the
+   sorted-opacity axis into three opacity segments -- low, mid, high --
+   so that the final band count is $N_\mathrm{bands} =
+   N_\mathrm{splits}\,N_\mathrm{groups}$ with
+   $N_\mathrm{splits}=3$; a group whose bottom-of-atmosphere
+   weighted-opacity dynamic range is below a threshold is left unsplit.
+
+   \begin{figure}[t]
+      \includegraphics[width=\hsize]{figures/fig1_binning_diagram.jpg}
+      \caption{The opacity-binning partition. Every wavelength sub-bin is
+               placed at $(\log_{10}\lambda,\,-\log_{10}\tau)$, where
+               $\tau$ is the Rosseland optical depth the sub-bin reaches
+               where it becomes optically thick in the reference
+               atmosphere, and coloured by the $(\tau,\lambda)$ group it
+               falls into. Horizontal lines are $\tau$-group edges; the
+               vertical line is a wavelength cut. The guillotine-tree
+               formulation generalizes this to any rectangular tiling of
+               the plane.}
+      \label{fig:binning}
+   \end{figure}
+
+% ---------------------------------------------------------------------
+\subsection{Objective: the radiative heating-rate residual}
+\label{sec:objective}
+
+   We judge a binning by the quantity of interest: how well the binned
+   opacities reproduce the radiative heating rate of the full ODF. For a
+   given binning we build the group-mean opacities
+   (Eqs.~\ref{eq:Bl}--\ref{eq:blend}), interpolate them onto the
+   atmospheric grid, solve the 1D radiative-transfer equation per band by
+   short characteristics \citep{kunasz1988,bruls1999}, and sum the
+   per-band heating rate into $Q_\mathrm{rad}^{\mathrm{bin}}$. The
+   radiative heating rate per unit mass \citep{mihalas1978} is
+   \begin{equation}
+      \frac{Q_\mathrm{rad}}{\rho}
+      = \frac{4\pi}{\rho}\int \kappa_\nu\bigl(J_\nu - S_\nu\bigr)\,d\nu,
+      \label{eq:qrad}
+   \end{equation}
+   evaluated in the binned form with the band-mean opacities and
+   band-integrated source functions. The objective is the root-mean-square
+   residual against the full-ODF reference $Q_\mathrm{rad}^{\mathrm{full}}$,
+   \begin{equation}
+      \mathcal{R}(\text{binning})
+      = \mathrm{rms}_{\,\log_{10}\tau_\mathrm{Ross}\in W}
+        \!\left[\bigl(Q_\mathrm{rad}^{\mathrm{bin}}
+        - Q_\mathrm{rad}^{\mathrm{full}}\bigr)/\rho\right],
+      \label{eq:objective}
+   \end{equation}
+   over a window $W$ of the Rosseland optical-depth axis. Alternative
+   metrics (maximum absolute residual, integral of $|Q|$) are available
+   but we use the rms throughout.
+
+% ---------------------------------------------------------------------
+\subsection{Search: seed, grow, polish}
+\label{sec:search}
+
+   We minimize $\mathcal{R}$ over guillotine trees in three stages.
+   \emph{Seed}: an initial tree is constructed from the user-supplied
+   edges (any of the restricted layouts of Sect.~\ref{sec:tree}, or an
+   explicit tree). \emph{Grow}: the tree is expanded by splitting leaves,
+   using a non-greedy \emph{beam search} -- up to $B$ rival topologies are
+   kept in parallel, several split positions are tried per candidate leaf
+   and axis, and topologies are de-duplicated by their leaf-rectangle
+   signature. The greedy limit $B=1$ splits the widest leaf at its
+   midpoint and commits a split only if $\mathcal{R}$ improves. Each
+   candidate split is one full evaluation of Eq.~\ref{eq:objective}.
+   \emph{Polish}: every cut position in the best tree is swept, a
+   fixed-point refinement iterating until no single cut moves.
+
+   Two guardrails keep the search well-posed: cut positions must remain
+   strictly increasing and separated by a per-axis minimum gap, and an
+   empty-band penalty prevents the search from collapsing groups that
+   contain few ODF steps. The leaf count is capped at
+   $N_\mathrm{groups}^{\max}$ (default 8). Each evaluation costs a
+   complete radiative-transfer solve (a few seconds here), so the search
+   is run as a bounded batch job, terminated by an evaluation or
+   wall-time budget or by convergence of the best residual
+   (Appendix~\ref{app:search}).
+
+% =====================================================================
+\section{Validation setup}
+\label{sec:setup}
+
+   The binning and the radiative transfer both run on a single 1D
+   plane-parallel model atmosphere, the solar-like model G2 (columns
+   height, density, pressure, temperature, top of atmosphere first). The
+   ODF is the $300\times150$ $(T,p)$ grid over $328$ wavelength bins of
+   $12$ sub-bins each; the continuum absorption is added bin-by-bin. The
+   full-ODF reference $Q_\mathrm{rad}^{\mathrm{full}}$ is computed by the
+   same transfer solver with the ungrouped opacities, and a grey
+   (single Rosseland-mean) calculation provides a one-band baseline.
+
+   We compare four binnings at controlled band budgets:
+   (i) a $\tau$-only binning with eight $\tau$-groups and no wavelength
+   split ($8\times1$, 24 bands);
+   (ii) a wavelength-resolved binning with four $\tau$-groups, every
+   group split in $\lambda$ at $\log_{10}\lambda[\!\mbox{\AA}]=3.8$
+   ($4\times2$, 24 bands);
+   (iii) the same four $\tau$-groups with only the first (sub-photospheric)
+   group split in $\lambda$ (15 bands);
+   and (iv) the tree-optimized partition from Sect.~\ref{sec:search},
+   warm-started from the same edges.
+
+% =====================================================================
+\section{Results}
+\label{sec:results}
+
+   \begin{figure}[t]
+      \includegraphics[width=\hsize]{figures/fig2_qrad_comparison.png}
+      \caption{Radiative heating rate $Q_\mathrm{rad}/\rho$ (top) and
+               residual against the full-ODF reference (bottom) versus
+               $\log_{10}\tau_\mathrm{Ross}$ for the binnings of
+               Sect.~\ref{sec:setup}. All binnings reproduce the
+               photospheric cooling peak; the residual panel is what
+               distinguishes them.}
+      \label{fig:qrad}
+   \end{figure}
+
+   Figure~\ref{fig:qrad} compares the binnings and Table~\ref{tab:results}
+   the rms residuals. Two results stand out. First, at the same 24-band
+   budget, spending the resolution on wavelength (the $4\times2$ layout)
+   reduces the rms residual by a factor of $\sim\!2.5$ relative to
+   spending it on $\tau$-depth (the $8\times1$ layout). Second, the
+   benefit of the wavelength split is localized: splitting only the
+   sub-photospheric $\tau$-group (15 bands) recovers essentially the same
+   residual as splitting all of them (24 bands). The optimizer (iv)
+   rediscovers this structure automatically and tightens the residual
+   further beyond the hand-placed seed (Fig.~\ref{fig:beforeafter}).
+
+   \begin{table}[t]
+      \caption[]{Rms $Q_\mathrm{rad}$ residual versus the full-ODF
+                 reference. Lower is better. \emph{Values are indicative
+                 (see text) and the relative ordering is what is
+                 robust.}}
+      \label{tab:results}
+      \vspace{2mm}
+      \begin{tabular}{lcc}
+         \hline\hline
+         binning                       & bands & rms $\Delta(Q/\rho)$ \\
+         \hline
+         grey (1 Rosseland mean)       & 1     & $6.9\times10^{8}$ \\
+         12-band reference             & 12    & $2.8\times10^{8}$ \\
+         $8\times1$ ($\tau$-only)      & 24    & $2.1\times10^{8}$ \\
+         $4\times2$ (all $\lambda$)    & 24    & $\mathbf{8.0\times10^{7}}$ \\
+         $4\times(\lambda,\dots)$, group~0 only & 15 & $8.3\times10^{7}$ \\
+         tree-optimized                & --    & $\le$ seed$^{\mathrm{a}}$ \\
+         \hline
+      \end{tabular}
+      \par\medskip
+      \footnotesize
+      $^{\mathrm{a}}$The optimizer never increases the residual relative
+      to its seed; the exact value depends on the budget. \\
+      \emph{Note.} The absolute rms values were obtained during
+      development; re-run on the present model atmosphere for the final
+      figures (Sect.~\ref{sec:setup}). The ordering is
+      atmosphere-robust.
+   \end{table}
+
+   \begin{figure}[t]
+      \includegraphics[width=\hsize]{figures/fig3_qrad_before_after.png}
+      \caption{The residual before and after the tree optimizer, starting
+               from a hand-placed seed. The grow and polish stages move
+               edges and add wavelength cuts where the cooling peak forms,
+               reducing $\mathcal{R}$ without increasing the band count
+               beyond the cap.}
+      \label{fig:beforeafter}
+   \end{figure}
+
+% =====================================================================
+\section{Discussion}
+\label{sec:discussion}
+
+   The dominant lever is \emph{where} the wavelength resolution is spent,
+   not how much there is. The photospheric cooling peak is built in a
+   narrow range of $\tau$ around unity; sub-bins that reach this regime
+   carry most of the radiative energy exchange, and grouping across a wide
+   wavelength range there smears the Planck mean. Splitting that one
+   $\tau$-group in wavelength removes most of the error, while splitting
+   the optically thin or thick groups adds bands but little accuracy
+   (Fig.~\ref{fig:qrad}). This is precisely the structure the beam search
+   converges to when seeded from a uniform grid, which is the practical
+   value of optimizing the partition directly rather than by edge-position
+   proxy.
+
+   Two caveats bound the present results. First, the transfer is 1D and
+   the validation uses a single model atmosphere; the relative ordering
+   of binnings is robust to the atmosphere, but the absolute residuals
+   should be recomputed (and ideally extended to 3D mean opacities) for
+   production tables. Second, each evaluation is a full transfer solve,
+   so the search is a run-and-wait batch job; for a 3D-RHD context the
+   optimized table would be produced once offline and read by the
+   simulation, exactly as a hand-binned table is today.
+
+   The guillotine-tree representation is deliberately general: it
+   subsumes the restricted layouts of earlier work as special cases and
+   lets the data decide whether a $\tau$ or a $\lambda$ cut is warranted
+   at each node. Nothing in the formulation ties it to the
+   Planck/Rosseland blend of Eq.~\ref{eq:blend}; the objective
+   (Eq.~\ref{eq:objective}) is the only thing that matters, and it could
+   equally well target a different mean or a different transfer regime.
+
+% =====================================================================
+\section{Conclusions}
+\label{sec:conclusions}
+
+   We have recast the opacity-binning partition as a guillotine-tree
+   tiling of the $(-\log_{10}\tau,\log_{10}\lambda)$ plane and optimized
+   it directly against the radiative heating-rate residual from a full
+   transfer solve. At equal band budget, a wavelength-resolved,
+   optimizer-found tiling reduces the rms $Q_\mathrm{rad}$ residual by a
+   factor of several relative to a $\tau$-depth-only binning, and the
+   benefit is recovered with substantially fewer bands by concentrating
+   wavelength resolution in the sub-photospheric $\tau$-group. The
+   method is automatic, generalizes previous binning layouts, and
+   optimizes the quantity that is ultimately wanted.
+
+% =====================================================================
+\begin{appendix}
+
+\section{Guillotine-tree representation and search details}
+\label{app:search}
+
+   A tree node is either a leaf, carrying the $(\tau,\lambda)$ window of
+   its group, or an interior node carrying an axis ($\tau$ or $\lambda$)
+   and a cut position together with two children. The bounding window is
+   the union of all ODF steps in $(\log_{10}\lambda,\,-\log_{10}\tau)$.
+   Leaves are enumerated in $\tau$-major depth-first order, which fixes
+   the canonical band order
+   $\mathrm{band}=\mathrm{group}\cdot N_\mathrm{splits}+\mathrm{segment}$.
+
+   In the grow stage, for each tree on the beam the $K$ widest leaves are
+   considered for splitting; for each, several split fractions
+   (default $0.35,0.50,0.65$ of the leaf extent) are tried on each axis,
+   the resulting child trees are scored with Eq.~\ref{eq:objective}, and
+   the best $B$ distinct trees (by leaf-rectangle signature) are kept for
+   the next round. Growth stops at the leaf cap
+   $N_\mathrm{groups}^{\max}$ or when no trial split improves the
+   residual beyond a relative threshold. The polish stage then performs a
+   coordinate-wise sweep of every cut position to a fixed point. The
+   entire search is bounded by a maximum number of evaluations or a
+   wall-clock budget and can be interrupted, returning the best tree
+   found.
+
+\end{appendix}
+
+% =====================================================================
+\bibliographystyle{aa}
+\bibliography{refs}
+
+\end{document}

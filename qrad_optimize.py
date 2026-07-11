@@ -541,6 +541,7 @@ def optimize_qrad(
     score_fn=None,
     on_progress=None,
     on_eval=None,
+    on_improve=None,
     should_stop=None,
 ) -> dict:
     """Minimize the Q_rad residual over the binning. Returns a tree result dict with the
@@ -558,6 +559,9 @@ def optimize_qrad(
     `on_eval(n_evals, cost, raw_dict)` fires after every evaluation and `should_stop() -> bool`
     is polled at each budget check — both let a caller (e.g. the webapp) show live progress
     and abort a long run gracefully, returning the best binning found so far.
+    `on_improve(tree, raw_dict, n_evals)` fires whenever a strictly better binning is found (a
+    new global-best penalized cost); `tree` is a deep-copied snapshot of the leaf tiling — used
+    by the CLI `--plot` to render every improved binning found during the search.
     """
     tau_edges = [float(e) for e in tau_edges]
     lambda_edges = [float(e) for e in lambda_edges]
@@ -632,8 +636,17 @@ def optimize_qrad(
         lmin, lmax = float(lambda_edges[0]), float(lambda_edges[-1])
         btree = tree_from_lpt(tau_edges, [list(lambda_edges) if bool(f) else [lmin, lmax] for f in flags])
 
+    _best_cost = float("inf")
+
     def cost_tree(t):
-        return evaluate(binning_tree=t)[0]
+        # Wrapped evaluator: fires `on_improve` on every strictly better binning (new global-best
+        # penalized cost). One hook covers grow, beam, and polish since they all route here.
+        nonlocal _best_cost
+        c, r = evaluate(binning_tree=t)
+        if on_improve is not None and c < _best_cost - 1e-12:
+            _best_cost = c
+            on_improve(copy.deepcopy(t), r, state["n_evals"])
+        return c
 
     _, r0 = evaluate(binning_tree=btree)
     rms0 = float(r0["rms"])
@@ -764,6 +777,11 @@ def main(
     save_dat: bool = typer.Option(
         False, "--save-dat/--no-save-dat", help="After optimizing, write the optimized binning's kappa .dat table."
     ),
+    plot: str = typer.Option(
+        "",
+        "--plot",
+        help="Directory: write a tau-lambda binning plot for every improved binning found during the search.",
+    ),
     tree: bool = typer.Option(False, "--tree/--no-tree", help="General 2D guillotine mode."),
     beam_width: int = typer.Option(
         3, "--beam-width", help="Rival tree topologies kept in parallel each grow round (1 = greedy grow)."
@@ -794,6 +812,32 @@ def main(
     def _progress(tag, value, groups, n):
         print(f"  [{n:4d} evals] {tag:8s} rms={value:.4e} groups={groups}")
 
+    plot_dir = Path(plot).expanduser() if plot.strip() else None
+    if plot_dir:
+        plot_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[qrad-opt] binning plots -> {plot_dir}")
+    _plot_seen: set[tuple] = set()
+    _plot_n = [0]
+
+    def _on_improve(tree, r, n_evals):
+        if plot_dir is None:
+            return
+        sig = _tree_signature(tree)  # dedupe identical tilings (e.g. sub-1e-3 position wiggles)
+        if sig in _plot_seen:
+            return
+        _plot_seen.add(sig)
+        _plot_n[0] += 1
+        out = plot_dir / f"step_{n_evals:04d}_rms_{float(r['rms']):.3e}.png"
+        _plot_tree_binning(
+            tree,
+            out,
+            rms=float(r["rms"]),
+            n_empty=int(r.get("n_empty", 0)),
+            groups=int(r.get("n_groups", 0)),
+            n_evals=n_evals,
+            seq=_plot_n[0],
+        )
+
     result = optimize_qrad(
         tau_bin_edges,
         lambda_bin_edges,
@@ -820,6 +864,7 @@ def main(
         beam_leaves=beam_leaves,
         min_opacity_delta=min_opacity_delta,
         on_progress=_progress,
+        on_improve=_on_improve if plot_dir else None,
     )
 
     imp = (result["rms0"] - result["rms"]) / result["rms0"] * 100.0
@@ -828,6 +873,8 @@ def main(
     print(f"  general-2D tree: {result['n_leaves']} leaf bands, n_empty={result['n_empty']}")
     print("    " + _tree_bands_str(result["binning_tree"]))
     print(f"  {result['n_evals']} evals in {result['elapsed']}s")
+    if plot_dir:
+        print(f"  binning plots -> {plot_dir} ({_plot_n[0]} improved binnings)")
 
     if save_plot:
         seed_tree = tree_from_lpt(
@@ -897,6 +944,50 @@ def _plot_before_after(before_tree, after_tree, path, model=None, min_opacity_de
     ax[1].legend(fontsize=9)
     fig.tight_layout()
     fig.savefig(path, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_tree_binning(tree, path, *, rms=None, n_empty=None, groups=None, n_evals=None, seq=None):
+    """Render a binning tree's tau-lambda leaf rectangles to `path` (one patch per group)."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
+
+    rects = list(_leaf_rects(tree["root"], _root_rect(tree)))
+    wt, wl = tree["window_tau"], tree["window_lam"]
+    cmap = plt.get_cmap("tab20")
+
+    fig, ax = plt.subplots(figsize=(7.5, 6))
+    for i, (tlo, thi, llo, lhi) in enumerate(rects):
+        ax.add_patch(
+            Rectangle((llo, tlo), lhi - llo, thi - tlo, facecolor=cmap(i % 20), edgecolor="black", lw=1.4, alpha=0.5)
+        )
+        ax.text(
+            0.5 * (llo + lhi), 0.5 * (tlo + thi), str(i + 1), ha="center", va="center", fontsize=9, fontweight="bold"
+        )
+    ax.set_xlim(float(wl[0]), float(wl[1]))
+    ax.set_ylim(float(wt[0]), float(wt[1]))
+    ax.set_xlabel(r"$\log_{10}(\lambda/\mathrm{\AA})$")
+    ax.set_ylabel(r"$-\log_{10}\,\tau$")
+    bits = []
+    if seq is not None:
+        bits.append(f"#{seq}")
+    if n_evals is not None:
+        bits.append(f"{n_evals} evals")
+    if groups is not None:
+        bits.append(f"{groups} bands")
+    if n_empty:
+        bits.append(f"{n_empty} empty")
+    subtitle = "   ".join(bits)
+    title = "tau-lambda binning"
+    if rms is not None:
+        title += f"   rms={rms:.3e}"
+    ax.set_title(title + (f"\n{subtitle}" if subtitle else ""))
+    ax.grid(True, color="#ddd", lw=0.5)
+    fig.tight_layout()
+    fig.savefig(path, dpi=120, bbox_inches="tight")
     plt.close(fig)
 
 
