@@ -1,8 +1,9 @@
 """Data-free unit tests for the Q_rad optimizer's search logic.
 
 These never touch the ODF: they inject an analytic `score_fn` with a known optimum
-(mirroring `test_build_split_band_index.py`'s data-free style) so the coordinate
-descent / Nelder-Mead / greedy-flag / grow logic and the guardrails can be checked fast.
+(mirroring `test_build_split_band_index.py`'s data-free style) so the guillotine-tree
+grow/polish logic and the guardrails can be checked fast. The optimizer is tree-only, so
+every score_fn is invoked as ``score(None, None, None, model, binning_tree=tree, **kw)``.
 """
 
 from __future__ import annotations
@@ -16,75 +17,38 @@ import qrad_optimize as qo
 import tausort as ts
 
 
-def bowl(target_interior, *, reward_groups=False, flag_target=None):
-    """Analytic score_fn: a quadratic bowl in the interior tau edges (min at
-    `target_interior`), optionally rewarding more groups and/or a target flag pattern."""
+def bowl(target_interior, *, reward_groups=False):
+    """Analytic tree-aware score_fn: a quadratic bowl in the tree's interior TAU cut positions
+    (min when each interior tau cut equals the corresponding target), optionally rewarding more
+    leaves. The optimizer is tree-only, so this reads the cuts from `binning_tree` (the positional
+    tau/lam/flags are None); it ignores lambda cuts and the scoring window."""
     target = np.asarray(target_interior, float)
 
-    def score(tau, lam, flags, star):
-        interior = np.asarray(tau[1:-1], float)
+    def score(tau, lam, flags, model, *, binning_tree=None, window=None):
+        t = binning_tree
+        tau_cuts = []
+
+        def walk(node):
+            if node.get("leaf") or "axis" not in node:
+                return
+            if node["axis"] == "tau":
+                tau_cuts.append(float(node["at"]))
+            walk(node["lo"])
+            walk(node["hi"])
+
+        walk(t["root"])
+        n_leaves = sum(1 for _ in qo._leaf_rects(t["root"], qo._root_rect(t)))
+        interior = np.asarray(sorted(tau_cuts), float)
         n = min(len(interior), len(target))
         rms = 1e8 + 1e7 * float(np.sum((interior[:n] - target[:n]) ** 2))
         if reward_groups:
-            rms -= 1.5e6 * (len(tau) - 1)
-        if flag_target is not None:
-            m = min(len(flags), len(flag_target))
-            rms += 5e6 * int(np.sum(np.asarray(flags[:m], int) != np.asarray(flag_target[:m], int)))
-        return {"rms": rms, "max_abs": 2 * rms, "int_q_pct": 0.1, "n_empty": 0, "n_groups": len(tau) - 1}
+            rms -= 1.5e6 * n_leaves
+        return {"rms": rms, "max_abs": 2 * rms, "int_q_pct": 0.1, "n_empty": 0, "n_groups": n_leaves}
 
     return score
 
 
-class TestCoordinateDescent(unittest.TestCase):
-    def test_cd_converges_to_optimum(self):
-        score = bowl([0.0, 2.0])
-        res = qo.optimize_qrad(
-            [-0.63, 0.35, 1.23, 7.0],
-            [3.0, 5.0],
-            flags=[True] * 3,
-            grow=False,
-            opt_lambda=False,
-            opt_flags=False,
-            method="cd",
-            score_fn=score,
-        )
-        self.assertLess(res["rms"], res["rms0"])
-        self.assertAlmostEqual(res["rms"], 1e8, delta=1e5)  # bowl floor
-        self.assertEqual(res["tau_edges"], sorted(res["tau_edges"]))
-
-    def test_nm_converges_to_optimum(self):
-        score = bowl([0.0, 2.0])
-        res = qo.optimize_qrad(
-            [-0.63, 0.35, 1.23, 7.0],
-            [3.0, 5.0],
-            flags=[True] * 3,
-            grow=False,
-            opt_lambda=False,
-            opt_flags=False,
-            method="nm",
-            score_fn=score,
-        )
-        self.assertLess(res["rms"], res["rms0"])
-        self.assertAlmostEqual(res["rms"], 1e8, delta=5e5)
-
-
 class TestGuardrails(unittest.TestCase):
-    def test_result_edges_monotone_and_min_gap(self):
-        score = bowl([0.0, 2.0])
-        res = qo.optimize_qrad(
-            [-0.63, 0.35, 1.23, 7.0],
-            [3.0, 5.0],
-            flags=[True] * 3,
-            grow=True,
-            opt_lambda=False,
-            opt_flags=False,
-            method="cd",
-            score_fn=score,
-        )
-        te = res["tau_edges"]
-        self.assertEqual(te, sorted(te))
-        self.assertTrue(qo._min_gap_ok(te, qo.MIN_GAP_TAU))
-
     def test_infeasible_raises(self):
         # 1 group needs span >= min_gap; 0.1 < 0.5 -> ValueError
         with self.assertRaises(ValueError):
@@ -95,159 +59,20 @@ class TestGuardrails(unittest.TestCase):
             qo.optimize_qrad([-0.63, 1.0, 7.0], [3.0, 5.0], flags=[True], score_fn=bowl([]))
 
 
-class TestFlagSearch(unittest.TestCase):
-    def test_greedy_flip_finds_target_pattern(self):
-        target = [True, False, True, False]
-        score = bowl([0.0, 1.0, 2.0, 3.0], flag_target=target)
-        # start from the opposite pattern; only the flag block runs (2 lambda cells)
-        res = qo.optimize_qrad(
-            [-0.63, -0.1, 0.5, 1.5, 7.0],
-            [3.0, 3.8, 5.0],
-            flags=[False, True, False, True],
-            grow=False,
-            opt_tau=False,
-            opt_lambda=False,
-            opt_flags=True,
-            method="cd",
-            score_fn=score,
-        )
-        self.assertEqual(res["flags"], target)
-
-
-class TestGrow(unittest.TestCase):
-    def test_grow_adds_groups_when_rewarded(self):
-        score = bowl([0.0, 2.0, 4.0, 5.0, 6.0], reward_groups=True)
-        res = qo.optimize_qrad(
-            [-0.63, 3.5, 7.0],
-            [3.0, 5.0],
-            flags=[True] * 2,
-            grow=True,
-            opt_lambda=False,
-            opt_flags=False,
-            method="cd",
-            max_groups=6,
-            score_fn=score,
-        )
-        self.assertGreater(res["n_groups"], 2)
-        self.assertIn("grow", [h["tag"] for h in res["history"]])
-
-    def test_grow_declines_when_no_improvement(self):
-        # bowl minimized at the current single interior edge; extra groups only add error
-        score = bowl([2.0])  # not reward_groups
-        res = qo.optimize_qrad(
-            [-0.63, 2.0, 7.0],
-            [3.0, 5.0],
-            flags=[True] * 2,
-            grow=True,
-            opt_lambda=False,
-            opt_flags=False,
-            method="cd",
-            max_groups=6,
-            score_fn=score,
-        )
-        self.assertEqual(res["n_groups"], 2)
-        self.assertNotIn("grow", [h["tag"] for h in res["history"]])
-
-
-class TestReparameterization(unittest.TestCase):
-    def test_roundtrip(self):
-        a, b, mg = -0.63, 7.0, 0.15
-        interior = [0.35, 1.23, 2.885]
-        back = qo._edges_from_u(qo._u_from_edges(interior, a, b, mg), a, b, mg)
-        self.assertTrue(np.allclose(interior, back, atol=1e-9))
-
-    def test_random_u_always_feasible(self):
-        a, b, mg = -0.63, 7.0, 0.15
-        rng = np.random.default_rng(0)
-        for _ in range(1000):
-            full = [a, *qo._edges_from_u(rng.normal(size=4) * 3, a, b, mg), b]
-            self.assertEqual(full, sorted(full))
-            self.assertTrue(qo._min_gap_ok(full, mg))
-
-
 class TestEmptyPenalty(unittest.TestCase):
     def test_empty_band_scores_worse(self):
+        tree = qo.tree_from_lpt([-0.63, 7.0], [[3.0, 5.0]])
         ev0, _ = qo.make_evaluator(
-            "X", score_fn=lambda t, l, f, s: {"rms": 1e8, "max_abs": 0, "int_q_pct": 0, "n_empty": 0}
+            "X",
+            score_fn=lambda t, l, f, s, *, binning_tree=None: {"rms": 1e8, "max_abs": 0, "int_q_pct": 0, "n_empty": 0},
         )
         ev1, _ = qo.make_evaluator(
-            "X", score_fn=lambda t, l, f, s: {"rms": 1e8, "max_abs": 0, "int_q_pct": 0, "n_empty": 1}
+            "X",
+            score_fn=lambda t, l, f, s, *, binning_tree=None: {"rms": 1e8, "max_abs": 0, "int_q_pct": 0, "n_empty": 1},
         )
-        c0 = ev0([-0.63, 7.0], [3.0, 5.0], [True])[0]
-        c1 = ev1([-0.63, 7.0], [3.0, 5.0], [True])[0]
+        c0 = ev0(binning_tree=tree)[0]
+        c1 = ev1(binning_tree=tree)[0]
         self.assertGreater(c1, c0)
-
-
-class TestPerGroupLambdaOptimizer(unittest.TestCase):
-    def test_each_group_finds_its_own_split(self):
-        targets = [3.5, None, 4.2, 3.9]  # group1 should NOT split; others split at these cuts
-
-        def score(tau, lam, flags, star, *, lambda_edges_per_tau=None):
-            lpt = lambda_edges_per_tau
-            rms = 1e8
-            for k, tgt in enumerate(targets):
-                lk = lpt[k]
-                split = len(lk) >= 3
-                if tgt is None:
-                    rms += 0.0 if not split else 6e6
-                else:
-                    rms += 1e7 * (lk[1] - tgt) ** 2 if split else 8e6
-            return {
-                "rms": rms,
-                "max_abs": 2 * rms,
-                "int_q_pct": 0.1,
-                "n_empty": 0,
-                "n_groups": sum(len(x) - 1 for x in lpt),
-            }
-
-        res = qo.optimize_qrad(
-            [-0.63, 0.35, 1.23, 2.89, 7.0],
-            [3.0, 3.8, 5.0],
-            flags=[True] * 4,
-            model="X",
-            per_group_lambda=True,
-            opt_tau=False,
-            grow=False,
-            method="cd",
-            score_fn=score,
-            max_evals=3000,
-        )
-        self.assertTrue(res["per_group_lambda"])
-        self.assertLess(res["rms"], res["rms0"])
-        got = res["lambda_edges_per_tau"]
-        self.assertEqual(len(got[1]), 2)  # group 1 unsplit
-        for k in (0, 2, 3):
-            self.assertEqual(len(got[k]), 3)  # group k split (one interior cut)
-            self.assertAlmostEqual(got[k][1], targets[k], delta=0.05)
-
-    def test_warm_start_is_honored(self):
-        # A re-run must resume from the passed per-group cuts, not reset to the shared box.
-        seen = {}
-
-        def score(tau, lam, flags, model, *, lambda_edges_per_tau=None):
-            seen.setdefault("lpt0", [list(x) for x in lambda_edges_per_tau])
-            return {
-                "rms": 1e8,
-                "max_abs": 2e8,
-                "int_q_pct": 0.0,
-                "n_empty": 0,
-                "n_groups": sum(len(x) - 1 for x in lambda_edges_per_tau),
-            }
-
-        warm = [[3.0, 3.55, 5.0], [3.0, 5.0], [3.0, 4.4, 5.0], [3.0, 3.7, 5.0]]
-        qo.optimize_qrad(
-            [-0.63, 0.35, 1.23, 2.89, 7.0],
-            [3.0, 3.8, 5.0],
-            flags=[True] * 4,
-            per_group_lambda=True,
-            lambda_edges_per_tau=warm,
-            opt_tau=False,
-            opt_lambda=False,
-            grow=False,
-            score_fn=score,
-            max_evals=50,
-        )
-        self.assertEqual(seen["lpt0"], warm)  # started from the warm-start cuts, not [3,3.8,5]×4
 
 
 class TestPerTauLambdaCLI(unittest.TestCase):
@@ -338,8 +163,9 @@ class TestStoppingAndWindow(unittest.TestCase):
 
     @staticmethod
     def _flat(rms=5e7):
-        def score(tau, lam, flags, model, *, lambda_edges_per_tau=None, window=None):
-            return {"rms": rms, "max_abs": 2 * rms, "int_q_pct": 0.0, "n_empty": 0, "n_groups": len(tau) - 1}
+        def score(tau, lam, flags, model, *, binning_tree=None, window=None):
+            n = sum(1 for _ in qo._leaf_rects(binning_tree["root"], qo._root_rect(binning_tree)))
+            return {"rms": rms, "max_abs": 2 * rms, "int_q_pct": 0.0, "n_empty": 0, "n_groups": n}
 
         return score
 
@@ -393,9 +219,10 @@ class TestStoppingAndWindow(unittest.TestCase):
     def test_window_forwarded_only_when_set(self):
         seen = []
 
-        def score(tau, lam, flags, model, *, lambda_edges_per_tau=None, window="MISSING"):
+        def score(tau, lam, flags, model, *, binning_tree=None, window="MISSING"):
             seen.append(window)
-            return {"rms": 5e7, "max_abs": 1e8, "int_q_pct": 0.0, "n_empty": 0, "n_groups": len(tau) - 1}
+            n = sum(1 for _ in qo._leaf_rects(binning_tree["root"], qo._root_rect(binning_tree)))
+            return {"rms": 5e7, "max_abs": 1e8, "int_q_pct": 0.0, "n_empty": 0, "n_groups": n}
 
         qo.optimize_qrad(
             [-0.63, 0.35, 1.23, 2.89, 7.0],
@@ -412,9 +239,10 @@ class TestStoppingAndWindow(unittest.TestCase):
         self.assertTrue(all(w == (-2.0, 2.0) for w in seen))  # window passed through every call
 
     def test_window_absent_keeps_positional_signature(self):
-        # a 4-positional score_fn (no window kwarg) must still work when window is None
-        def score(tau, lam, flags, model):
-            return {"rms": 5e7, "max_abs": 1e8, "int_q_pct": 0.0, "n_empty": 0, "n_groups": len(tau) - 1}
+        # when window is None, score is NOT passed a window kwarg (only the now-mandatory binning_tree=)
+        def score(tau, lam, flags, model, *, binning_tree=None):
+            n = sum(1 for _ in qo._leaf_rects(binning_tree["root"], qo._root_rect(binning_tree)))
+            return {"rms": 5e7, "max_abs": 1e8, "int_q_pct": 0.0, "n_empty": 0, "n_groups": n}
 
         res = qo.optimize_qrad(
             [-0.63, 0.35, 1.23, 2.89, 7.0],
@@ -840,6 +668,70 @@ class TestMainGroupingDispatch(unittest.TestCase):
         )
         n_groups = self._verify(gi, tau, seed=3)
         self.assertEqual(n_groups, 2 + 2 + 1 + 2)  # (len(edges_k) - 1) per group
+
+
+class TestFlatParamShim(unittest.TestCase):
+    """The flat-input params (flags / per_group_lambda) no longer drive separate optimizers —
+    they seed a guillotine tree (the shim in optimize_qrad). Calling optimize_qrad WITHOUT
+    tree=True must still return a tree result whose leaf rectangles match tree_from_lpt of the
+    equivalent flat inputs. grow is off so the structure is exactly the seed; a constant
+    tree-aware score_fn means the polish never moves a cut (no strict improvement), so the
+    seed rectangles are preserved verbatim."""
+
+    @staticmethod
+    def _const_score(tau, lam, flags, model, *, binning_tree=None, window=None):
+        n = sum(1 for _ in qo._leaf_rects(binning_tree["root"], qo._root_rect(binning_tree)))
+        return {"rms": 1e8, "max_abs": 2e8, "int_q_pct": 0.0, "n_empty": 0, "n_groups": n}
+
+    @staticmethod
+    def _rects(tree):
+        return [
+            (round(tlo, 4), round(thi, 4), round(llo, 4), round(lhi, 4))
+            for tlo, thi, llo, lhi in qo._leaf_rects(tree["root"], qo._root_rect(tree))
+        ]
+
+    def test_flags_seed_matches_tree_from_lpt(self):
+        tau = [-0.63, 0.35, 1.23, 7.0]
+        lam = [3.0, 3.8, 5.0]
+        flags = [True, False, True]
+        lmin, lmax = lam[0], lam[-1]
+        expected = qo.tree_from_lpt(tau, [list(lam) if f else [lmin, lmax] for f in flags])
+        res = qo.optimize_qrad(
+            tau,
+            lam,
+            flags=flags,
+            grow=False,
+            opt_tau=False,
+            opt_lambda=False,
+            opt_flags=False,
+            method="cd",
+            score_fn=self._const_score,
+            max_evals=200,
+        )
+        self.assertTrue(res["tree"])
+        self.assertTrue(qo._tree_feasible(res["binning_tree"], qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
+        self.assertEqual(self._rects(res["binning_tree"]), self._rects(expected))
+
+    def test_per_group_lambda_seed_matches_tree_from_lpt(self):
+        tau = [-0.63, 0.35, 1.23, 7.0]
+        lam = [3.0, 3.8, 5.0]
+        expected = qo.tree_from_lpt(tau, [list(lam) for _ in range(len(tau) - 1)])
+        res = qo.optimize_qrad(
+            tau,
+            lam,
+            flags=[True] * (len(tau) - 1),
+            per_group_lambda=True,
+            grow=False,
+            opt_tau=False,
+            opt_lambda=False,
+            opt_flags=False,
+            method="cd",
+            score_fn=self._const_score,
+            max_evals=200,
+        )
+        self.assertTrue(res["tree"])
+        self.assertTrue(qo._tree_feasible(res["binning_tree"], qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
+        self.assertEqual(self._rects(res["binning_tree"]), self._rects(expected))
 
 
 if __name__ == "__main__":

@@ -5,21 +5,23 @@ the full-ODF reference — unlike tausort's `optimize_tau_bin_edges`, which maxi
 proxy (per-group high-segment overlap). As we saw in the webapp, the proxy and the real
 target disagree, so this optimizes the metric that actually matters.
 
-Decision variables (chosen scope): the interior tau edges (count may grow), the interior
-lambda-cell edge positions, and the per-tau-group split flags. The outer tau/lambda
-window is held fixed, as is the number of lambda cells. The atmosphere is selectable via
-`model` (a validated 1D model under models/; None -> DEFAULT_MODEL).
+Decision variables (chosen scope): the interior tau/lambda cut positions of a guillotine
+binnings tree (every grid is a guillotine tree), whose leaf count may grow. The outer
+tau/lambda window is held fixed. The atmosphere is selectable via `model` (a validated 1D
+model under models/; None -> DEFAULT_MODEL).
 
-Search is block-coordinate: alternate (A) coordinate descent on tau edges, (B) greedy
-split-flag flips, (C) coordinate descent on lambda edges, to a fixed point; then
-optionally grow the tau-group count by inserting an edge, accepting only real rms
-improvements. Each evaluation is a full RTE solve (~3 s via `qrad_core.score_binning`),
-so this is a run-and-wait / batch tool, bounded by an eval + wall-clock budget.
+The optimizer is **tree-only**: every grouping (an explicit guillotine tree, per-tau-group
+lambda edges, or shared tau + split flags) is normalized to a guillotine tree and refined via
+a single seed/grow/polish path. `method` selects the *grow* strategy — `"beam"` (non-greedy
+beam search over tree topologies) vs the default greedy grow (one midpoint split per round,
+committed immediately); `cd`/`nm` behave as greedy. Each evaluation is a full RTE solve (~3 s
+via `qrad_core.score_binning`), so this is a run-and-wait / batch tool, bounded by an eval +
+wall-clock budget.
 
-In tree mode (`tree=True`), `method="beam"` swaps the greedy grow (one midpoint split,
-committed immediately, no backtracking) for a beam search that keeps rival topologies
-alive and tries several split positions per leaf — a bounded exploration of the tiling
-space rather than a single greedy trajectory.
+In tree mode, `method="beam"` swaps the greedy grow (one midpoint split, committed
+immediately, no backtracking) for a beam search that keeps rival topologies alive and tries
+several split positions per leaf — a bounded exploration of the tiling space rather than a
+single greedy trajectory.
 
 CLI:  uv run python qrad_optimize.py --help
 """
@@ -80,7 +82,7 @@ def make_evaluator(
     window=None,
     min_opacity_delta=None,
 ):
-    """Return (evaluate, state). `evaluate(tau, lam, flags) -> (cost, raw_dict)`.
+    """Return (evaluate, state). `evaluate(*, binning_tree) -> (cost, raw_dict)`.
 
     cost = base_metric * (1 + empty_penalty * n_empty). The multiplicative empty-band
     penalty counteracts the fact that an empty band is silently dropped from the Q sum
@@ -99,15 +101,11 @@ def make_evaluator(
     if min_opacity_delta is not None:
         _kw["min_opacity_delta"] = float(min_opacity_delta)
 
-    def evaluate(tau_edges, lambda_edges, flags, *, lambda_edges_per_tau=None, binning_tree=None):
-        if binning_tree is not None:
-            r = score(None, None, None, model, binning_tree=binning_tree, **_kw)
-        elif lambda_edges_per_tau is not None:
-            r = score(
-                list(tau_edges), None, None, model, lambda_edges_per_tau=[list(x) for x in lambda_edges_per_tau], **_kw
-            )
-        else:
-            r = score(list(tau_edges), list(lambda_edges), list(flags), model, **_kw)
+    def evaluate(*, binning_tree):
+        # Tree-only: the optimizer always calls this with a guillotine tree. The positional
+        # (tau, lambda, flags) / lambda_edges_per_tau branches are gone — those groupings are now
+        # normalized to a tree before evaluation (see optimize_qrad's seeding shim).
+        r = score(None, None, None, model, binning_tree=binning_tree, **_kw)
         base = abs(float(r[_key]))
         cost = base * (1.0 + empty_penalty * int(r.get("n_empty", 0)))
         state["n_evals"] += 1
@@ -176,249 +174,6 @@ class _Cfg:
     max_sweeps: int = 2
     max_block_rounds: int = 12
     block_tol: float = 1e-4  # relative improvement to keep iterating blocks
-
-
-# --- continuous-position search (tau edges or lambda edges) ---------------------
-def _coord_descent(edges, cost, *, adjust_steps, min_gap, max_sweeps, budget):
-    """Gauss-Seidel coordinate descent on interior edges (outer pair fixed).
-
-    For each interior edge, try +/- each adjust step, apply the best strict improvement,
-    then move on; repeat sweeps until a full sweep yields no improvement. Rejects any
-    candidate that breaks monotonicity or the min-gap. Mirrors tausort's nudge pattern.
-    """
-    edges = list(edges)
-    best = cost(edges)
-    for _ in range(max_sweeps):
-        improved = False
-        for i in range(1, len(edges) - 1):
-            best_cand, best_cost = None, best
-            for step in adjust_steps:
-                for d in (-1.0, +1.0):
-                    if budget.exhausted():
-                        if best_cand is not None:  # don't discard a found improvement on cutoff
-                            edges, best = best_cand, best_cost
-                        return edges, best
-                    cand = list(edges)
-                    cand[i] += d * step
-                    if not _valid_monotone(cand) or not _min_gap_ok(cand, min_gap):
-                        continue
-                    c = cost(cand)
-                    if c < best_cost - 1e-12:
-                        best_cost, best_cand = c, cand
-            if best_cand is not None:
-                edges, best, improved = best_cand, best_cost, True
-        if not improved:
-            break
-    return edges, best
-
-
-def _softmax(logits):
-    e = np.exp(logits - np.max(logits))
-    return e / e.sum()
-
-
-def _edges_from_u(u, a, b, min_gap):
-    """Map unconstrained u in R^N to N interior edges via a softmax simplex over the
-    N+1 gaps, so the result is always strictly increasing, in (a,b), and min-gap feasible."""
-    logits = np.concatenate([[0.0], np.asarray(u, float)])  # fix one d.o.f.
-    w = _softmax(logits)
-    n = len(u)
-    free = (b - a) - (n + 1) * min_gap
-    gaps = min_gap + free * w
-    return (a + np.cumsum(gaps)[:-1]).tolist()
-
-
-def _u_from_edges(interior, a, b, min_gap):
-    edges = np.concatenate([[a], np.asarray(interior, float), [b]])
-    gaps = np.diff(edges)
-    free = (b - a) - (len(interior) + 1) * min_gap
-    w = np.clip((gaps - min_gap) / free, 1e-9, None)
-    w = w / w.sum()
-    return (np.log(w[1:]) - np.log(w[0])).tolist()
-
-
-def _nelder_mead_edges(edges, cost, *, min_gap, budget):
-    """Nelder-Mead over the softmax-simplex reparameterization (bounds + monotonicity
-    automatic). Warm-started from `edges`; returns the better of NM and the start."""
-    from scipy.optimize import minimize
-
-    a, b = edges[0], edges[-1]
-    interior = list(edges[1:-1])
-    c0 = cost(list(edges))
-    if not interior or (b - a) - (len(interior) + 1) * min_gap <= 0:
-        return list(edges), c0
-    x0 = _u_from_edges(interior, a, b, min_gap)
-
-    def obj(u):
-        if budget.exhausted():
-            return 1e30
-        return cost([a, *_edges_from_u(u, a, b, min_gap), b])
-
-    remaining = max(int(budget.max_evals - budget.state["n_evals"]), len(x0) + 2)
-    res = minimize(
-        obj,
-        np.asarray(x0, float),
-        method="Nelder-Mead",
-        options={"xatol": 1e-2, "fatol": max(c0 * 1e-4, 1e-9), "maxfev": remaining, "disp": False},
-    )
-    cand = [a, *_edges_from_u(res.x, a, b, min_gap), b]
-    c = cost(cand)
-    return (cand, c) if c < c0 - 1e-12 else (list(edges), c0)
-
-
-def _optimize_positions(edges, cost, *, cfg, min_gap, budget):
-    if cfg.method == "nm":
-        return _nelder_mead_edges(edges, cost, min_gap=min_gap, budget=budget)
-    return _coord_descent(
-        edges, cost, adjust_steps=cfg.adjust_steps, min_gap=min_gap, max_sweeps=cfg.max_sweeps, budget=budget
-    )
-
-
-# --- discrete split-flag search -------------------------------------------------
-def _flag_search(tau, lam, flags, cost3, *, budget):
-    """Greedy single-flip: repeatedly flip the one tau-group flag that most lowers the
-    cost, until no flip helps. Only meaningful with >1 lambda cell."""
-    flags = list(flags)
-    best = cost3(tau, lam, flags)
-    while True:
-        best_cand, best_cost = None, best
-        for i in range(len(flags)):
-            if budget.exhausted():
-                if best_cand is not None:  # commit a found flip on cutoff
-                    flags, best = best_cand, best_cost
-                return flags, best
-            cand = list(flags)
-            cand[i] = not cand[i]
-            c = cost3(tau, lam, cand)
-            if c < best_cost - 1e-12:
-                best_cost, best_cand = c, cand
-        if best_cand is None:
-            return flags, best
-        flags, best = best_cand, best_cost
-
-
-# --- grow: insert a tau edge at the widest group --------------------------------
-def _insert_edge(tau, flags, min_gap):
-    """Insert a midpoint edge in the widest tau group that can still respect min_gap;
-    the new group inherits the parent's split flag. Returns (None, None) if none fits."""
-    for k in sorted(range(len(tau) - 1), key=lambda j: tau[j + 1] - tau[j], reverse=True):
-        mid = 0.5 * (tau[k] + tau[k + 1])
-        if (mid - tau[k]) >= min_gap and (tau[k + 1] - mid) >= min_gap:
-            return tau[: k + 1] + [mid] + tau[k + 1 :], flags[: k + 1] + [flags[k]] + flags[k + 1 :]
-    return None, None
-
-
-# --- block-coordinate fixed point ----------------------------------------------
-def _block_fixed_point(tau, lam, flags, evaluate, *, opt_tau, opt_lambda, opt_flags, cfg, budget, report=None):
-    tau, lam, flags = list(tau), list(lam), list(flags)
-    n_lambda = len(lam) - 1
-    best = evaluate(tau, lam, flags)[0]
-    for _ in range(cfg.max_block_rounds):
-        start = best
-        # Cheap blocks first (few evals each) so they always run before the expensive
-        # tau block; tau is capped to `max_sweeps` per visit and revisited over rounds.
-        if opt_lambda and len(lam) > 2:
-            lam, best = _optimize_positions(
-                lam, lambda e: evaluate(tau, e, flags)[0], cfg=cfg, min_gap=cfg.min_gap_lam, budget=budget
-            )
-            if report:
-                report("lambda", best, len(tau) - 1)
-        if opt_flags and n_lambda > 1:
-            flags, best = _flag_search(tau, lam, flags, lambda t, ll, f: evaluate(t, ll, f)[0], budget=budget)
-            if report:
-                report("flags", best, len(tau) - 1)
-        if opt_tau:
-            tau, best = _optimize_positions(
-                tau, lambda e: evaluate(e, lam, flags)[0], cfg=cfg, min_gap=cfg.min_gap_tau, budget=budget
-            )
-            if report:
-                report("tau", best, len(tau) - 1)
-        if budget.exhausted() or (start - best) <= cfg.block_tol * max(abs(start), 1.0):
-            break
-    return tau, lam, flags, best
-
-
-# --- per-tau-group lambda variant -----------------------------------------------
-def _per_group_lambda_search(lam_per_tau, cost_pg, lmin, lmax, *, cfg, budget):
-    """For each tau group independently, keep the better of *no split* vs a *single
-    lambda cut* (its position optimized by coordinate descent). This lets each tau
-    group choose its own wavelength split, generalizing the shared cut + on/off flag.
-    `cost_pg(lambda_edges_per_tau) -> cost` scores the whole binning (tau fixed)."""
-    lam_per_tau = [list(x) for x in lam_per_tau]
-    best = cost_pg(lam_per_tau)
-    can_split = (lmax - lmin) - 2.0 * cfg.min_gap_lam > 0
-    for k in range(len(lam_per_tau)):
-        if budget.exhausted():
-            return lam_per_tau, best
-
-        def cost_k(edges, _k=k):
-            cand = [list(x) for x in lam_per_tau]
-            cand[_k] = list(edges)
-            return cost_pg(cand)
-
-        c_nosplit = cost_k([lmin, lmax])
-        split_edges, c_split = [lmin, lmax], float("inf")
-        if can_split:
-            cur = lam_per_tau[k]
-            p0 = cur[1] if len(cur) >= 3 else 0.5 * (lmin + lmax)
-            p0 = min(max(p0, lmin + cfg.min_gap_lam), lmax - cfg.min_gap_lam)
-            split_edges, c_split = _optimize_positions(
-                [lmin, p0, lmax], cost_k, cfg=cfg, min_gap=cfg.min_gap_lam, budget=budget
-            )
-        # tie or no gain -> prefer no split (parsimony)
-        if c_split < c_nosplit - 1e-12:
-            lam_per_tau[k], best = list(split_edges), c_split
-        else:
-            lam_per_tau[k], best = [lmin, lmax], c_nosplit
-    return lam_per_tau, best
-
-
-def _insert_edge_pg(tau, lam_per_tau, min_gap):
-    """Grow: split the widest tau group; the new group inherits the parent's lambda edges."""
-    for k in sorted(range(len(tau) - 1), key=lambda j: tau[j + 1] - tau[j], reverse=True):
-        mid = 0.5 * (tau[k] + tau[k + 1])
-        if (mid - tau[k]) >= min_gap and (tau[k + 1] - mid) >= min_gap:
-            new_tau = tau[: k + 1] + [mid] + tau[k + 1 :]
-            new_lpt = (
-                [list(x) for x in lam_per_tau[: k + 1]]
-                + [list(lam_per_tau[k])]
-                + [list(x) for x in lam_per_tau[k + 1 :]]
-            )
-            return new_tau, new_lpt
-    return None, None
-
-
-def _block_fixed_point_pg(tau, lpt, evaluate, *, opt_tau, opt_lambda, lmin, lmax, cfg, budget, report=None):
-    """Block-coordinate fixed point for per-tau-group lambda: alternate per-group lambda
-    choice and shared-tau coordinate descent, to a fixed point."""
-    tau, lpt = list(tau), [list(x) for x in lpt]
-    best = evaluate(tau, None, None, lambda_edges_per_tau=lpt)[0]
-    for _ in range(cfg.max_block_rounds):
-        start = best
-        if opt_lambda:
-            lpt, best = _per_group_lambda_search(
-                lpt,
-                lambda cand: evaluate(tau, None, None, lambda_edges_per_tau=cand)[0],
-                lmin,
-                lmax,
-                cfg=cfg,
-                budget=budget,
-            )
-            if report:
-                report("lambda", best, len(tau) - 1)
-        if opt_tau:
-            tau, best = _optimize_positions(
-                tau,
-                lambda e: evaluate(e, None, None, lambda_edges_per_tau=lpt)[0],
-                cfg=cfg,
-                min_gap=cfg.min_gap_tau,
-                budget=budget,
-            )
-            if report:
-                report("tau", best, len(tau) - 1)
-        if budget.exhausted() or (start - best) <= cfg.block_tol * max(abs(start), 1.0):
-            break
-    return tau, lpt, best
 
 
 # --- general 2D guillotine tree search ------------------------------------------
@@ -547,9 +302,9 @@ def tree_from_flags(tau_edges, lambda_edges, flags) -> dict:
 
 
 def _tree_position_search(tree, cost_tree, *, cfg, budget, min_gap_tau, min_gap_lam):
-    """Gauss-Seidel coordinate descent on every internal cut's position, generalizing
-    _coord_descent. Each candidate must stay in its node's axis span (per-axis min gap) and
-    keep the whole tree feasible; the best strict improvement per node is committed in place."""
+    """Gauss-Seidel coordinate descent on every internal cut's position. Each candidate must
+    stay in its node's axis span (per-axis min gap) and keep the whole tree feasible; the best
+    strict improvement per node is committed in place."""
     best = cost_tree(tree)
     for _ in range(cfg.max_sweeps):
         improved = False
@@ -801,13 +556,17 @@ def optimize_qrad(
     on_eval=None,
     should_stop=None,
 ) -> dict:
-    """Minimize the Q_rad residual over the binning. Returns a result dict with the
-    optimized `tau_edges`/`lambda_edges`/`flags`, `rms`/`rms0`, `n_evals`, `elapsed`,
-    `n_empty`, and a `history` of (n_evals, rms, groups) checkpoints.
+    """Minimize the Q_rad residual over the binning. Returns a tree result dict with the
+    optimized `binning_tree`, `rms`/`rms0`, `n_evals`, `elapsed`, `n_empty`, and a `history`
+    of (n_evals, rms, groups) checkpoints.
 
-    Warm-starts from the passed binning. Blocks are individually toggleable via
-    opt_tau/opt_lambda/opt_flags, and `grow` enables inserting tau groups (accepted
-    only when rms improves by > grow_tol, default 1% of the current rms).
+    Tree-only: every input shape (an explicit `binning_tree`, `lambda_edges_per_tau`,
+    `per_group_lambda`, or shared tau + `flags`) is normalized to a guillotine tree and refined
+    via a single seed/grow/polish path. `grow` enables splitting leaves (accepted only when rms
+    improves by > grow_tol, default an absolute 0); `method="beam"` swaps the greedy grow for a
+    non-greedy beam search over tree topologies (cd/nm behave as greedy). The opt_tau/
+    opt_lambda/opt_flags toggles are retained for API compatibility but are inert under the
+    tree path.
 
     `on_eval(n_evals, cost, raw_dict)` fires after every evaluation and `should_stop() -> bool`
     is polled at each budget check — both let a caller (e.g. the webapp) show live progress
@@ -872,223 +631,97 @@ def optimize_qrad(
         if on_progress:
             on_progress(tag, float(cost), int(groups), state["n_evals"])
 
-    if tree or binning_tree is not None:
-        # General 2D guillotine. Re-run (binning_tree given) continues refining that tree; a first
-        # run seeds a COARSE tree (the tau bands, no lambda splits) and lets grow BUILD the tiling.
-        # Seeding from the full per-group grid at max_leaves would leave grow no room, so it could
-        # only nudge a fixed grid; from the coarse seed, grow splits leaves on either axis — including
-        # a tau sub-split inside a single lambda region, which is what makes the tiling non-grid.
-        if binning_tree is not None:
-            btree = copy.deepcopy(binning_tree)
-        else:
-            lmin, lmax = float(lambda_edges[0]), float(lambda_edges[-1])
-            btree = tree_from_lpt(tau_edges, [[lmin, lmax] for _ in range(n_tau0)])
+    # The optimizer is tree-only: every grouping (explicit guillotine tree, per-tau-group
+    # lambda, or shared tau + split flags) is normalized to a guillotine tree and refined via a
+    # single seed/grow/polish path. The shim below seeds the working tree from whichever input
+    # was passed; every result is a {"tree": True, "binning_tree": ...} dict.
+    if binning_tree is not None:
+        btree = copy.deepcopy(binning_tree)
+    elif lambda_edges_per_tau is not None:
+        btree = tree_from_lpt(tau_edges, [list(x) for x in lambda_edges_per_tau])
+    elif per_group_lambda:
+        btree = tree_from_lpt(tau_edges, [list(lambda_edges) for _ in range(n_tau0)])
+    else:
+        lmin, lmax = float(lambda_edges[0]), float(lambda_edges[-1])
+        btree = tree_from_lpt(tau_edges, [list(lambda_edges) if bool(f) else [lmin, lmax] for f in flags])
 
-        def cost_tree(t):
-            return evaluate(None, None, None, binning_tree=t)[0]
+    def cost_tree(t):
+        return evaluate(binning_tree=t)[0]
 
-        _, r0 = evaluate(None, None, None, binning_tree=btree)
-        rms0 = float(r0["rms"])
-        best = cost_tree(btree)
-        checkpoint("start", r0)
-        # Grow FIRST so the budget builds structure (each grow cheaply refines only its new cut).
-        # A heavy refine of the coarse seed up front would, at RTE cost, exhaust the budget before
-        # a single leaf is split — leaving a plain grid. Grow lets tau/lambda cuts nest to any
-        # depth (a tau sub-split inside one lambda region == the non-grid tiling we want).
-        if grow:
-            gtol = grow_tol if grow_tol is not None else 0.0
-            if cfg.method == "beam":
-                # Non-greedy: keep rival topologies alive (beam search) instead of committing the
-                # single best midpoint split. Explores a beam-bounded slice of the tiling space;
-                # the final _block_fixed_point_tree polish below optimizes the winner's positions.
-                btree, best = _beam_grow_tree(
-                    btree,
-                    cost_tree,
-                    cfg=cfg,
-                    budget=budget,
-                    min_gap_tau=min_gap_tau,
-                    min_gap_lam=min_gap_lam,
-                    max_groups=max_groups,
-                    beam_width=beam_width,
-                    beam_positions=tuple(beam_positions),
-                    beam_leaves=beam_leaves,
-                    grow_tol=gtol,
-                    report=on_step,
-                )
-                budget.reset_plateau(state["n_evals"])
-                checkpoint("grow", evaluate(None, None, None, binning_tree=btree)[1])
-            else:
-                # Greedy: one midpoint split per round, committed immediately (no backtracking).
-                while _n_leaves(btree) < max_groups and not budget.exhausted():
-                    cand = _grow_tree(
-                        btree,
-                        cost_tree,
-                        cfg=cfg,
-                        budget=budget,
-                        min_gap_tau=min_gap_tau,
-                        min_gap_lam=min_gap_lam,
-                        light=True,
-                    )
-                    if cand is None:
-                        break
-                    ctree, cbest = cand
-                    # A guillotine split adds DOF so it almost always helps a little; the empty-band
-                    # penalty + min-gap still reject degenerate/empty splits (those raise the cost).
-                    if (best - cbest) > gtol:
-                        btree, best = ctree, cbest
-                        budget.reset_plateau(state["n_evals"])
-                        checkpoint("grow", evaluate(None, None, None, binning_tree=btree)[1])
-                    else:
-                        break
-        # Final polish: sweep every cut position with whatever budget is left.
-        if not budget.exhausted():
-            btree, best = _block_fixed_point_tree(
+    _, r0 = evaluate(binning_tree=btree)
+    rms0 = float(r0["rms"])
+    best = cost_tree(btree)
+    checkpoint("start", r0)
+    # Grow FIRST so the budget builds structure (each grow cheaply refines only its new cut).
+    # A heavy refine of the coarse seed up front would, at RTE cost, exhaust the budget before
+    # a single leaf is split — leaving a plain grid. Grow lets tau/lambda cuts nest to any
+    # depth (a tau sub-split inside one lambda region == the non-grid tiling we want).
+    if grow:
+        gtol = grow_tol if grow_tol is not None else 0.0
+        if cfg.method == "beam":
+            # Non-greedy: keep rival topologies alive (beam search) instead of committing the
+            # single best midpoint split. Explores a beam-bounded slice of the tiling space;
+            # the final _block_fixed_point_tree polish below optimizes the winner's positions.
+            btree, best = _beam_grow_tree(
                 btree,
                 cost_tree,
                 cfg=cfg,
                 budget=budget,
                 min_gap_tau=min_gap_tau,
                 min_gap_lam=min_gap_lam,
+                max_groups=max_groups,
+                beam_width=beam_width,
+                beam_positions=tuple(beam_positions),
+                beam_leaves=beam_leaves,
+                grow_tol=gtol,
                 report=on_step,
             )
-            checkpoint("blocks", evaluate(None, None, None, binning_tree=btree)[1])
-        final_r = evaluate(None, None, None, binning_tree=btree)[1]
-        return {
-            "binning_tree": _round_tree(btree),
-            "tree": True,
-            "rms": float(final_r["rms"]),
-            "rms0": rms0,
-            "n_empty": int(final_r.get("n_empty", 0)),
-            "n_leaves": _n_leaves(btree),
-            "n_bands_total": int(final_r.get("n_groups", 0)),
-            "n_evals": state["n_evals"],
-            "elapsed": round(time.perf_counter() - t0, 2),
-            "stop_reason": budget.stop_reason or "converged",
-            "window": list(final_r.get("window", [])),
-            "history": history,
-        }
-
-    if per_group_lambda:
-        lmin, lmax = float(lambda_edges[0]), float(lambda_edges[-1])
-        if lambda_edges_per_tau is not None and len(lambda_edges_per_tau) == n_tau0:
-            # continue from a prior per-group binning (so re-running keeps refining the cuts),
-            # clamping each interior cut into the current [lmin, lmax] window.
-            lpt = [
-                [lmin, *[min(max(float(e), lmin), lmax) for e in x[1:-1]], lmax] if len(x) >= 3 else [lmin, lmax]
-                for x in lambda_edges_per_tau
-            ]
+            budget.reset_plateau(state["n_evals"])
+            checkpoint("grow", evaluate(binning_tree=btree)[1])
         else:
-            # warm start: each split tau group gets the shared lambda edges; unsplit -> [lmin, lmax]
-            lpt = [list(lambda_edges) if flags[k] else [lmin, lmax] for k in range(n_tau0)]
-        _, r0 = evaluate(tau_edges, None, None, lambda_edges_per_tau=lpt)
-        rms0 = float(r0["rms"])
-        checkpoint("start", r0)
-        tau, lpt, best = _block_fixed_point_pg(
-            tau_edges,
-            lpt,
-            evaluate,
-            opt_tau=opt_tau,
-            opt_lambda=opt_lambda,
-            lmin=lmin,
-            lmax=lmax,
-            cfg=cfg,
-            budget=budget,
-            report=on_step,
-        )
-        checkpoint("blocks", evaluate(tau, None, None, lambda_edges_per_tau=lpt)[1])
-        if grow:
-            while (len(tau) - 1) < max_groups and not budget.exhausted():
-                cand_tau, cand_lpt = _insert_edge_pg(tau, lpt, min_gap_tau)
-                if cand_tau is None:
-                    break
-                gtol = grow_tol if grow_tol is not None else grow_tol_rel * best
-                ct, clpt, cbest = _block_fixed_point_pg(
-                    cand_tau,
-                    cand_lpt,
-                    evaluate,
-                    opt_tau=opt_tau,
-                    opt_lambda=opt_lambda,
-                    lmin=lmin,
-                    lmax=lmax,
+            # Greedy: one midpoint split per round, committed immediately (no backtracking).
+            while _n_leaves(btree) < max_groups and not budget.exhausted():
+                cand = _grow_tree(
+                    btree,
+                    cost_tree,
                     cfg=cfg,
                     budget=budget,
-                    report=on_step,
+                    min_gap_tau=min_gap_tau,
+                    min_gap_lam=min_gap_lam,
+                    light=True,
                 )
+                if cand is None:
+                    break
+                ctree, cbest = cand
+                # A guillotine split adds DOF so it almost always helps a little; the empty-band
+                # penalty + min-gap still reject degenerate/empty splits (those raise the cost).
                 if (best - cbest) > gtol:
-                    tau, lpt, best = ct, clpt, cbest
-                    budget.reset_plateau(state["n_evals"])  # a real grow shouldn't be cut short by plateau
-                    checkpoint("grow", evaluate(tau, None, None, lambda_edges_per_tau=lpt)[1])
+                    btree, best = ctree, cbest
+                    budget.reset_plateau(state["n_evals"])
+                    checkpoint("grow", evaluate(binning_tree=btree)[1])
                 else:
                     break
-        final_r = evaluate(tau, None, None, lambda_edges_per_tau=lpt)[1]
-        return {
-            "tau_edges": [round(float(e), 4) for e in tau],
-            "lambda_edges_per_tau": [[round(float(e), 4) for e in x] for x in lpt],
-            "per_group_lambda": True,
-            "rms": float(final_r["rms"]),
-            "rms0": rms0,
-            "n_empty": int(final_r.get("n_empty", 0)),
-            "n_groups": len(tau) - 1,
-            "n_bands_total": int(final_r.get("n_groups", 0)),
-            "n_evals": state["n_evals"],
-            "elapsed": round(time.perf_counter() - t0, 2),
-            "stop_reason": budget.stop_reason or "converged",
-            "window": list(final_r.get("window", [])),
-            "history": history,
-        }
-
-    _, r0 = evaluate(tau_edges, lambda_edges, flags)
-    rms0 = float(r0["rms"])
-    checkpoint("start", r0)
-
-    tau, lam, flg, best = _block_fixed_point(
-        tau_edges,
-        lambda_edges,
-        flags,
-        evaluate,
-        opt_tau=opt_tau,
-        opt_lambda=opt_lambda,
-        opt_flags=opt_flags,
-        cfg=cfg,
-        budget=budget,
-        report=on_step,
-    )
-    checkpoint("blocks", evaluate(tau, lam, flg)[1])
-
-    if grow:
-        while (len(tau) - 1) < max_groups and not budget.exhausted():
-            cand_tau, cand_flags = _insert_edge(tau, flg, min_gap_tau)
-            if cand_tau is None:
-                break
-            gtol = grow_tol if grow_tol is not None else 0.01 * best
-            ct, cl, cf, cbest = _block_fixed_point(
-                cand_tau,
-                lam,
-                cand_flags,
-                evaluate,
-                opt_tau=opt_tau,
-                opt_lambda=opt_lambda,
-                opt_flags=opt_flags,
-                cfg=cfg,
-                budget=budget,
-                report=on_step,
-            )
-            if (best - cbest) > gtol:
-                tau, lam, flg, best = ct, cl, cf, cbest
-                budget.reset_plateau(state["n_evals"])  # a real grow shouldn't be cut short by plateau
-                checkpoint("grow", evaluate(tau, lam, flg)[1])
-            else:
-                break
-
-    final_r = evaluate(tau, lam, flg)[1]
+    # Final polish: sweep every cut position with whatever budget is left.
+    if not budget.exhausted():
+        btree, best = _block_fixed_point_tree(
+            btree,
+            cost_tree,
+            cfg=cfg,
+            budget=budget,
+            min_gap_tau=min_gap_tau,
+            min_gap_lam=min_gap_lam,
+            report=on_step,
+        )
+        checkpoint("blocks", evaluate(binning_tree=btree)[1])
+    final_r = evaluate(binning_tree=btree)[1]
     return {
-        "tau_edges": [round(float(e), 4) for e in tau],
-        "lambda_edges": [round(float(e), 4) for e in lam],
-        "flags": [bool(b) for b in flg],
+        "binning_tree": _round_tree(btree),
+        "tree": True,
         "rms": float(final_r["rms"]),
         "rms0": rms0,
         "n_empty": int(final_r.get("n_empty", 0)),
-        "n_groups": len(tau) - 1,
+        "n_leaves": _n_leaves(btree),
+        "n_bands_total": int(final_r.get("n_groups", 0)),
         "n_evals": state["n_evals"],
         "elapsed": round(time.perf_counter() - t0, 2),
         "stop_reason": budget.stop_reason or "converged",
@@ -1126,8 +759,9 @@ def main(
     method: str = typer.Option(
         "cd",
         "--method",
-        help="Position/structure search: cd (coordinate descent) | nm (Nelder-Mead) | beam "
-        "(non-greedy beam search over tree topologies; tree mode + grow only).",
+        help="Grow strategy: beam (non-greedy beam search over guillotine-tree topologies) "
+        "vs the default greedy grow (one midpoint split per round); cd/nm behave as greedy "
+        "(the optimizer is tree-only).",
     ),
     min_gap_tau: float = typer.Option(MIN_GAP_TAU, "--min-gap-tau"),
     min_gap_lam: float = typer.Option(MIN_GAP_LAM, "--min-gap-lam"),
