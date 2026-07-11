@@ -620,17 +620,17 @@ function render(d){
     // top: binning diagram (its own λ x-axis)
     xaxis:{title:'log₁₀ λ [Å]', range:[_xlo-_xpad, _xhi+_xpad], gridcolor:grid, zeroline:false, domain:[0,1], anchor:'y'},
     yaxis:{title:'−log₁₀ τ_Ros(τ_λ=1)', range:[_ylo-_ypad, _yhi+_ypad], gridcolor:grid, zeroline:false, domain:[0.77,0.99]},
-    // Q/ρ (τ x-axis, shared with the per-band + residual panels)
+    // Q/ρ (τ x-axis, shared with the residual + per-band panels)
     xaxis2:{range:[4,-5], gridcolor:grid, zeroline:false, domain:[0,1], anchor:'y2',
             matches:'x3', showticklabels:false},
     yaxis2:{title:'Q/ρ [erg/g/s]', gridcolor:grid, zeroline:true, zerolinecolor:'#40506a', domain:[0.53,0.74]},
-    // per-band Q/ρ contribution (stacked area; heating stacks up, cooling down)
-    xaxis4:{range:[4,-5], gridcolor:grid, zeroline:false, domain:[0,1], anchor:'y4',
-            matches:'x3', showticklabels:false},
-    yaxis4:{title:'per-band Q/ρ [erg/g/s]', gridcolor:grid, zeroline:true, zerolinecolor:'#40506a', domain:[0.28,0.49]},
-    // bottom: residual
-    xaxis3:{title:'log₁₀ τ_Ros', range:[4,-5], gridcolor:grid, zeroline:false, domain:[0,1], anchor:'y3'},
-    yaxis3:{title:'(Q − Q_full)/ρ', gridcolor:grid, zeroline:true, zerolinecolor:'#40506a', domain:[0.0,0.23]},
+    // residual (ticks hidden — the bottom per-band panel carries the shared depth-axis label)
+    xaxis3:{range:[4,-5], gridcolor:grid, zeroline:false, domain:[0,1], anchor:'y3', showticklabels:false},
+    yaxis3:{title:'(Q − Q_full)/ρ', gridcolor:grid, zeroline:true, zerolinecolor:'#40506a', domain:[0.28,0.49]},
+    // bottom: per-band Q/ρ contribution (stacked area; heating stacks up, cooling down)
+    xaxis4:{title:'log₁₀ τ_Ros', range:[4,-5], gridcolor:grid, zeroline:false, domain:[0,1], anchor:'y4',
+            matches:'x3'},
+    yaxis4:{title:'per-band Q/ρ [erg/g/s]', gridcolor:grid, zeroline:true, zerolinecolor:'#40506a', domain:[0.0,0.23]},
   };
   Plotly.react('chart', data, layout, {responsive:true, displayModeBar:true, displaylogo:false, modeBarButtonsToRemove:['lasso2d','select2d']});
   LAST = d;
