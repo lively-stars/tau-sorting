@@ -13,8 +13,8 @@ model under models/; None -> DEFAULT_MODEL).
 The optimizer is **tree-only**: every grouping (an explicit guillotine tree, per-tau-group
 lambda edges, or shared tau + split flags) is normalized to a guillotine tree and refined via
 a single seed/grow/polish path. `method` selects the *grow* strategy — `"beam"` (non-greedy
-beam search over tree topologies) vs the default greedy grow (one midpoint split per round,
-committed immediately); `cd`/`nm` behave as greedy. Each evaluation is a full RTE solve (~3 s
+beam search over tree topologies) vs the default `"cd"` greedy grow (one midpoint split per
+round, committed immediately). Each evaluation is a full RTE solve (~3 s
 via `qrad_core.score_binning`), so this is a run-and-wait / batch tool, bounded by an eval +
 wall-clock budget.
 
@@ -295,12 +295,6 @@ def tree_from_lpt(tau_edges, lambda_edges_per_tau) -> dict:
     return {"window_tau": [tau[0], tau[-1]], "window_lam": [lmin, lmax], "root": node}
 
 
-def tree_from_flags(tau_edges, lambda_edges, flags) -> dict:
-    lmin, lmax = float(lambda_edges[0]), float(lambda_edges[-1])
-    lpt = [list(lambda_edges) if flags[k] else [lmin, lmax] for k in range(len(tau_edges) - 1)]
-    return tree_from_lpt(tau_edges, lpt)
-
-
 def _tree_position_search(tree, cost_tree, *, cfg, budget, min_gap_tau, min_gap_lam):
     """Gauss-Seidel coordinate descent on every internal cut's position. Each candidate must
     stay in its node's axis span (per-axis min gap) and keep the whole tree feasible; the best
@@ -564,7 +558,7 @@ def optimize_qrad(
     `per_group_lambda`, or shared tau + `flags`) is normalized to a guillotine tree and refined
     via a single seed/grow/polish path. `grow` enables splitting leaves (accepted only when rms
     improves by > grow_tol, default an absolute 0); `method="beam"` swaps the greedy grow for a
-    non-greedy beam search over tree topologies (cd/nm behave as greedy). The opt_tau/
+    non-greedy beam search over tree topologies (cd is greedy). The opt_tau/
     opt_lambda/opt_flags toggles are retained for API compatibility but are inert under the
     tree path.
 
@@ -759,9 +753,8 @@ def main(
     method: str = typer.Option(
         "cd",
         "--method",
-        help="Grow strategy: beam (non-greedy beam search over guillotine-tree topologies) "
-        "vs the default greedy grow (one midpoint split per round); cd/nm behave as greedy "
-        "(the optimizer is tree-only).",
+        help="Grow strategy: cd (greedy grow, one midpoint split per round) | beam "
+        "(non-greedy beam search over guillotine-tree topologies). The optimizer is tree-only.",
     ),
     min_gap_tau: float = typer.Option(MIN_GAP_TAU, "--min-gap-tau"),
     min_gap_lam: float = typer.Option(MIN_GAP_LAM, "--min-gap-lam"),
@@ -846,84 +839,33 @@ def main(
     imp = (result["rms0"] - result["rms"]) / result["rms0"] * 100.0
     print("\n[qrad-opt] DONE")
     print(f"  rms: {result['rms0']:.4e} -> {result['rms']:.4e}  ({imp:+.1f}%)")
-    if result.get("tree"):
-        print(f"  general-2D tree: {result['n_leaves']} leaf bands, n_empty={result['n_empty']}")
-        print("    " + _tree_bands_str(result["binning_tree"]))
-    else:
-        print(f"  tau   = {_fmt(result['tau_edges'])}   ({result['n_groups']} tau groups)")
-        if result.get("per_group_lambda"):
-            print(f"  per-group lambda ({result['n_bands_total']} (tau,lambda) groups), n_empty={result['n_empty']}:")
-            for k, lp in enumerate(result["lambda_edges_per_tau"]):
-                cut = "no split" if len(lp) <= 2 else f"cuts at {_fmt(lp[1:-1])}"
-                print(f"    tau{k}: {cut}")
-        else:
-            print(f"  lambda= {_fmt(result['lambda_edges'])}")
-            print(f"  flags = {_flags_str(result['flags'])}   n_empty={result['n_empty']}")
+    print(f"  general-2D tree: {result['n_leaves']} leaf bands, n_empty={result['n_empty']}")
+    print("    " + _tree_bands_str(result["binning_tree"]))
     print(f"  {result['n_evals']} evals in {result['elapsed']}s")
 
     if save_plot:
-        if result.get("tree"):
-            after = {"tree": result["binning_tree"]}
-            seed_tree = tree_from_lpt(
-                tau_bin_edges,
-                [[lambda_bin_edges[0], lambda_bin_edges[-1]] for _ in range(len(tau_bin_edges) - 1)],
-            )
-            _plot_before_after(
-                tau_bin_edges,
-                lambda_bin_edges,
-                flags,
-                tau_bin_edges,
-                after,
-                save_plot,
-                model_name,
-                min_opacity_delta=min_opacity_delta,
-                before_tree=seed_tree,
-            )
-        else:
-            after = (
-                {"lpt": result["lambda_edges_per_tau"]}
-                if result.get("per_group_lambda")
-                else {"lam": result["lambda_edges"], "flags": result["flags"]}
-            )
-            _plot_before_after(
-                tau_bin_edges,
-                lambda_bin_edges,
-                flags,
-                result["tau_edges"],
-                after,
-                save_plot,
-                model_name,
-                min_opacity_delta=min_opacity_delta,
-            )
+        seed_tree = tree_from_lpt(
+            tau_bin_edges,
+            [[lambda_bin_edges[0], lambda_bin_edges[-1]] for _ in range(len(tau_bin_edges) - 1)],
+        )
+        _plot_before_after(
+            seed_tree,
+            result["binning_tree"],
+            save_plot,
+            model_name,
+            min_opacity_delta=min_opacity_delta,
+        )
         print(f"  before/after plot -> {save_plot}")
 
     if save_dat:
-        if result.get("tree"):
-            written, _name = qrad_core.save_kappa_dat(
-                None,
-                None,
-                None,
-                model_name,
-                binning_tree=result["binning_tree"],
-                min_opacity_delta=min_opacity_delta,
-            )
-        elif result.get("per_group_lambda"):
-            written, _name = qrad_core.save_kappa_dat(
-                result["tau_edges"],
-                None,
-                None,
-                model_name,
-                lambda_edges_per_tau=result["lambda_edges_per_tau"],
-                min_opacity_delta=min_opacity_delta,
-            )
-        else:
-            written, _name = qrad_core.save_kappa_dat(
-                result["tau_edges"],
-                result["lambda_edges"],
-                result["flags"],
-                model_name,
-                min_opacity_delta=min_opacity_delta,
-            )
+        written, _name = qrad_core.save_kappa_dat(
+            None,
+            None,
+            None,
+            model_name,
+            binning_tree=result["binning_tree"],
+            min_opacity_delta=min_opacity_delta,
+        )
         print(f"  kappa table -> {written}")
 
 
@@ -937,25 +879,15 @@ def _tree_bands_str(tree) -> str:
     return "\n    ".join(f"tau[{tlo:.3f},{thi:.3f}] lam[{llo:.3f},{lhi:.3f}]" for tlo, thi, llo, lhi in rects)
 
 
-def _plot_before_after(tau0, lam0, flags0, tau1, after, path, model=None, min_opacity_delta=None, before_tree=None):
+def _plot_before_after(before_tree, after_tree, path, model=None, min_opacity_delta=None):
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     _kw = {} if min_opacity_delta is None else {"min_opacity_delta": min_opacity_delta}
-    if before_tree is not None:
-        a = qrad_core.score_binning(None, None, None, model, binning_tree=before_tree, **_kw)
-    else:
-        a = qrad_core.score_binning(tau0, lam0, qrad_core.resolve_flags(flags0, len(tau0) - 1), model, **_kw)
-    if "tree" in after:
-        b = qrad_core.score_binning(None, None, None, model, binning_tree=after["tree"], **_kw)
-    elif "lpt" in after:
-        b = qrad_core.score_binning(tau1, None, None, model, lambda_edges_per_tau=after["lpt"], **_kw)
-    else:
-        b = qrad_core.score_binning(
-            tau1, after["lam"], qrad_core.resolve_flags(after["flags"], len(tau1) - 1), model, **_kw
-        )
+    a = qrad_core.score_binning(None, None, None, model, binning_tree=before_tree, **_kw)
+    b = qrad_core.score_binning(None, None, None, model, binning_tree=after_tree, **_kw)
     ltau, rho = a["ltau"], a["rho"]
     order = np.argsort(ltau)
     win = (ltau[order] >= qrad_core.WINDOW[0] - 1.0) & (ltau[order] <= qrad_core.WINDOW[1] + 1.0)

@@ -995,7 +995,9 @@ def compute_combined_opacity(
     r"""
     Compute combined opacity considering a tau threshold.
 
-    Eq. 12 from A. Voegler et al. 2004:
+    Eq. 12 from Vögler, Bruls & Schüssler (2004), A&A 421, 741–754,
+    DOI: 10.1051/0004-6361:20047043
+    (https://www.aanda.org/articles/aa/full/2004/26/aa0043/aa0043.right.html):
     $\bar{\kappa}_i=2^{-\frac{\tau_i}{\tau_0}} \bar{K}_{P, i}+\left(1-2^{-\frac{\tau_i}{\tau_0}}\right) \bar{K}_{R, i}$.
 
     Args:
@@ -2286,9 +2288,9 @@ def calculate_tau_bin_opacities(
     We do so by calculating the average of planck mean or rosseland mean opacities for all sub-bins that fall into the same tau-wavelength bin,
     weighted by their wavelength contribution to the total opacity in that bin.
 
-    Following eq. 16
+    Following eq. 16 and eq. 17 of Vögler, Bruls & Schüssler (2004), A&A 421, 741–754
+    (DOI: 10.1051/0004-6361:20047043):
     $B_l=\sum_i \Delta v_i B_{\Delta v_i} \sum_{j(i, l)} w_{j(i, l)}$
-    and eq. 17
     $\bar{\kappa}_{P, l}=\frac{1}{B_l} \sum_i \Delta v_i B_{\Delta v_i} \sum_{j(i, l)} w_{j(i, l)} \kappa_{i j(i, l)}$,
 
     Args:

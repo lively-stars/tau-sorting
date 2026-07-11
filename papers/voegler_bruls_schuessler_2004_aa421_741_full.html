@@ -1,0 +1,3598 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<!--Converted with LaTeX2HTML 98.1p1 release (March 2nd, 1998)
+originally by Nikos Drakos , CBLU, University of Leeds
+* revised and updated by:  Marcus Hennecke, Ross Moore, Herb Swan
+* with significant contributions from:
+  Jens Lippmann, Marek Rouchal, Martin Wilck and others -->
+
+
+
+
+ 
+
+ 
+
+<BR>
+
+
+
+<P>
+A&amp;A 421, 741-754 (2004)
+
+<BR> DOI: 10.1051/0004-6361:20047043        
+
+<P>
+
+<P>
+
+<P>
+
+<P>
+
+<P>
+
+<H2 ALIGN="LEFT">Approximations for non-grey radiative transfer in numerical simulations
+       of the solar photosphere</H2>
+<P ALIGN="LEFT"><STRONG>A. V&#246;gler<SUP>1</SUP>            - 
+           J. H. M. J. Bruls<SUP>2</SUP>            - 
+           M. Sch&#252;ssler<SUP>1</SUP> </STRONG></P>
+<P ALIGN="LEFT"><BR>1 - Max-Planck-Institut f&#252;r Sonnensystemforschung<A NAME="tex2html2"
+ HREF="/articles/aa/full/2004/26/aa0043/footnode.html#foot228"><SUP><IMG  ALIGN="BOTTOM" BORDER="1" ALT="[*]" SRC="/icons/foot_motif.gif"></SUP></A>, Max-Planck-Strasse 2,
+              37191 Katlenburg-Lindau, Germany
+              <BR>2 - 
+              Kiepenheuer-Institut f&#252;r Sonnenphysik, Sch&#xf6;neckstrasse 6, 
+              79104 Freiburg, Germany
+            </P>
+<P ALIGN="LEFT">Received 9 January 2004  / Accepted 24 March 2004 </P>
+<P ALIGN="LEFT"><STRONG>Abstract</STRONG>
+<BR>Realistic simulations of  solar (magneto-)convection require an accurate 
+     treatment of the non-grey character of  the
+     radiative energy transport. 
+     Owing to the large number of spectral lines in the solar atmosphere, 
+     statistical representations of the line opacities have to be used
+     in order to keep the problem numerically tractable. We consider
+     two statistical approaches, the opacity distribution function (ODF) concept 
+     and the multigroup  (or opacity binning) method and provide a quantitative 
+     assessment   of the errors that
+     arise from  the application of these methods in the context
+     of&nbsp;2D/3D&nbsp;simulations.  
+     In a first step, the&nbsp;ODF- and multigroup methods are applied to a 1D&nbsp;model-atmosphere and the resulting radiative heating rates are 
+     compared. A number of&nbsp;4-6&nbsp;frequency bins is found
+     to warrant a satisfactory modeling of the radiative energy exchange.
+     Further tests in 2D&nbsp;model-atmospheres 
+     show the applicability of the 
+     multigroup method in realistic situations and underline the importance 
+     of a non-grey treatment. Furthermore, we  address the question of an 
+     appropriate opacity average in multigroup calculations and discuss 
+     the significance of velocity gradients for the radiative heating rates.
+
+<P>
+
+<P>
+<B>Key words: </B>Sun: photosphere - radiative transfer - methods: numerical
+               
+  </P>
+
+<P>
+
+<H3><A NAME="SECTION00020000000000000000">
+1 Introduction</A>
+</H3>
+
+<P>
+The  photosphere is the layer within
+       the solar atmosphere where the energy transport changes from mainly
+       convective to mainly radiative. 
+       Hence the radiation field plays a 
+       crucial  role in the overall energy balance of the photosphere and requires a
+       detailed modelling in numerical simulations aiming at a realistic
+       description of the solar conditions.
+
+<P>
+Since the radiation pressure can be neglected in the solar atmosphere
+        and since all material velocities are much smaller 
+       than the speed of light, in the framework of&nbsp;(magneto-) convection
+       simulations the radiation field enters the 
+       set of&nbsp;(M)HD&nbsp;equations  via the radiative heating rate per unit volume
+       <BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+Q_{\rm rad} = - \nabla \cdot {\vec F}
+= 4\pi\varrho \int \kappa_\nu (J_\nu - S_\nu){\rm d}\nu.  
+       
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><IMG
+ WIDTH="233" HEIGHT="69"
+ SRC="/articles/aa/full/2004/26/aa0043/img19.gif"
+ ALT="\begin{displaymath}Q_{\rm rad} = - \nabla \cdot {\vec F}
+= 4\pi\varrho \int \kappa_\nu (J_\nu - S_\nu){\rm d}\nu.
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(1)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+Here&nbsp;
+<!-- MATH: ${\vec F} = \int {\vec F}_\nu {\rm d}\nu$ -->
+<IMG
+ WIDTH="70" HEIGHT="32" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img20.gif"
+ ALT="${\vec F} = \int {\vec F}_\nu {\rm d}\nu$">
+is the frequency-integrated 
+       radiative flux,&nbsp;<IMG
+ WIDTH="11" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img21.gif"
+ ALT="$\varrho$">
+the mass density, and&nbsp;
+<!-- MATH: $\kappa_\nu$ -->
+<IMG
+ WIDTH="14" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img22.gif"
+ ALT="$\kappa_\nu$">
+the opacity.&nbsp;
+<!-- MATH: $J_\nu = \int I_\nu ({\vec \omega}){\rm d}\omega/4 \pi$ -->
+<IMG
+ WIDTH="111" HEIGHT="32" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img23.gif"
+ ALT="$J_\nu = \int I_\nu ({\vec \omega}){\rm d}\omega/4 \pi$">
+is the (angle-averaged) monochromatic mean intensity, 
+
+<!-- MATH: $I_\nu ({\vec \omega})$ -->
+<IMG
+ WIDTH="32" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img24.gif"
+ ALT="$I_\nu ({\vec \omega})$">
+is the direction-dependent intensity, and&nbsp;<IMG
+ WIDTH="18" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img25.gif"
+ ALT="$S_\nu$">
+is the source  function.
+       In order to calculate  the heating rate,  
+       the radiative transfer equation, 
+       <BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+\frac{{\rm d}I_\nu}{{\rm d}s} = - \kappa_\nu \varrho~ (I_\nu - S_\nu),
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><IMG
+ WIDTH="130" HEIGHT="67"
+ SRC="/articles/aa/full/2004/26/aa0043/img26.gif"
+ ALT="\begin{displaymath}\frac{{\rm d}I_\nu}{{\rm d}s} = - \kappa_\nu \varrho~ (I_\nu - S_\nu),
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(2)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+has to be solved for&nbsp;
+<!-- MATH: $I_\nu({\vec \omega})$ -->
+<IMG
+ WIDTH="32" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img24.gif"
+ ALT="$I_\nu ({\vec \omega})$">
+at each 
+       gridpoint for all frequencies and  directions.  
+       From this&nbsp;
+<!-- MATH: ${\vec F}_\nu$ -->
+<IMG
+ WIDTH="19" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img27.gif"
+ ALT="${\vec F}_\nu$">
+(or&nbsp;<IMG
+ WIDTH="16" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img17.gif"
+ ALT="$J_\nu $">), and finally&nbsp;
+<!-- MATH: $Q_{\rm rad}$ -->
+<IMG
+ WIDTH="27" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img11.gif"
+ ALT="$Q_{\rm rad}$">
+can
+       be derived.
+       Since the total opacity in the solar atmosphere comprises of the order
+       of&nbsp;10<SUP>6</SUP> atomic and molecular spectral lines, a number of
+       roughly&nbsp;
+<!-- MATH: $10^6{-}10^7$ -->
+10<SUP>6</SUP>-10<SUP>7</SUP>&nbsp;frequency points is  necessary in order to model
+       the detailed frequency dependence. While this direct approach 
+       is  feasible in calculating 1D&nbsp;static models, the computational
+       cost  is  intolerable in time-dependent&nbsp;2D or&nbsp;3D&nbsp;simulations.
+       The most radical simplification of the problem is achieved
+       by the grey approximation, replacing  the frequency-dependent
+       opacity by an averaged value, e.g. the Rosseland mean. 
+       The  grey approach in combination with the diffusion approximation 
+        may be  appropriate
+       in the  optically dense subphotospheric regions, where the radiation
+       field is in local equilibrium with the gas, it is however unsatisfactory 
+       in the optically 
+       thinner regions where the radiation transfer becomes nonlocal. 
+       Here it is also necessary to explicitly account for line opacities,
+       since line-blanketing effects have a considerable
+       impact on both the photospheric energy balance and the
+       emergent intensities. It is well known  that
+       the inclusion of line opacities in calculations of stellar model
+       atmospheres strongly modifies  the resulting teperature 
+       profiles, leading to  considerably cooler outer layers, 
+       while the temperature is raised in deeper regions  
+       (the line cooling  and backwarming effects, e.g., Mihalas <A NAME="aaref16"></A><A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Mihalas1978">1978</A>, p.&nbsp;167).
+       Therefore, a statistical treatment of line opacities 
+       which conserves the non-grey character of
+       the radiation transport while drastically reducing the computational
+       expense is highly desirable. 
+      Among the strategies devised to tackle this problem are the method
+      of opacity sampling (Peytremann <A NAME="aaref19"></A><A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Peytremann1974">1974</A>; Sneden et&nbsp;al. <A NAME="aaref25"></A><A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Sneden1976">1976</A>), the concept
+      of Opacity Distribution Functions (ODFs, Strom &amp; Kurucz <A NAME="aaref27"></A><A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Strom1966">1966</A>; Mihalas <A NAME="aaref14"></A><A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Mihalas1967">1967</A>),
+      and the multigroup (or opacity binning) method 
+      (Nordlund <A NAME="aaref17"></A><A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Nordlund1982">1982</A>; Ludwig <A NAME="aaref9"></A><A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Ludwig1992">1992</A>; Ludwig et&nbsp;al. <A NAME="aaref10"></A><A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Ludwig1994">1994</A>; Skartlien <A NAME="aaref23"></A><A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Skartlien2000">2000</A>).     
+      In the context of time-dependent three-dimensional simulations, for which
+      the radiative transfer must be solved for every timestep,
+      the only feasible approach - given the currently available computing resources -
+      is  the multigroup method, since it implies the most drastic 
+      reduction in computational cost and allows for a satisfactory
+      approximation of the  frequency-dependence with only a few
+      representative frequency bins. 
+
+<P>
+While the multigroup approach has been tested and
+       sucessfully applied to calculations of 1D&nbsp;static model atmospheres
+       (Ludwig <A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Ludwig1992">1992</A>),
+       the application  in the context of time-dependent
+       2D/3D&nbsp;simulations is accompanied by new sources of errors not
+       encountered in the static 1D&nbsp;case like, for instance,  
+       strong lateral variations of the
+       atmospheric properties.
+       In order to gain confidence in the applicability 
+       of this approach in simulations, we performed a series
+       of tests of the multigroup method for several&nbsp;1D and&nbsp;2D&nbsp;cases with the  solution based on Opacity Distribution Functions  
+      serving as the reference solution.
+
+<P>
+In Sect.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#sec:MB">2</A> the ODF concept
+         and the multigroup method are briefly  described.
+      The test results are presented in Sect.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#sec:results">3</A>.
+      We always assume local thermodynamic equilibrium&nbsp;(LTE), implying&nbsp;
+<!-- MATH: $S_\nu = B_\nu$ -->
+<IMG
+ WIDTH="48" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img28.gif"
+ ALT="$S_\nu = B_\nu$">,
+       thereby neglecting scattering effects. Line scattering becomes
+       important in chromospheric 
+       heights where radiative cooling takes place in a few strong spectral
+       lines, but these regions are currently 
+       beyond the scope of our project. 
+       The assumption of&nbsp;LTE also implies that the number densities of
+       ions and the population numbers of excitation states
+       are  instantaneous functions of the local thermodynamical state 
+       of the system only.
+       For this reason, the opacities can be obtained from pre-compiled
+       tables without having to solve 
+       the system of rate equations for each gridpoint and timestep
+       during a simulation run, which is an important requirement 
+       for the practicability of the aforementioned methods.
+
+<P>
+
+<H3><A NAME="SECTION00030000000000000000">&#160;</A>
+     <A NAME="sec:MB">&#160;</A><BR>
+2 Opacity distribution functions and&nbsp;the&nbsp;multigroup method
+</H3>
+
+<P>
+
+<H4><A NAME="SECTION00031000000000000000">&#160;</A>
+    <A NAME="sec:odf">&#160;</A><BR>
+2.1 Opacity distribution functions
+</H4>
+    The concept of opacity distribution functions (see e.g., 
+    Strom &amp; Kurucz <A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Strom1966">1966</A>; Mihalas <A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Mihalas1967">1967</A>)
+    is based on the 
+    observation that 
+    physically relevant quantities of the radiation field like
+    mean intensity&nbsp;
+<!-- MATH: $J = \int J_{\nu} {\rm d}\nu$ -->
+<IMG
+ WIDTH="65" HEIGHT="32" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img29.gif"
+ ALT="$J = \int J_{\nu} {\rm d}\nu$">
+and total heating rate&nbsp;
+<!-- MATH: $Q = 4\pi\varrho \int \kappa_{\nu}(J_{\nu}-B_{\nu}){\rm d}\nu$ -->
+<IMG
+ WIDTH="140" HEIGHT="32" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img30.gif"
+ ALT="$Q = 4\pi\varrho \int \kappa_{\nu}(J_{\nu}-B_{\nu}){\rm d}\nu$">
+are 
+    integrals over frequency  and hence should not depend crucially
+    on the detailed  frequency structure of the opacity. The basic
+    idea of the ODF&nbsp;approach is to divide the frequency spectrum
+    into intervals&nbsp;
+<!-- MATH: $\Delta\nu_i$ -->
+<IMG
+ WIDTH="21" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img2.gif"
+ ALT="$\Delta \nu _i$">
+(typically&nbsp;
+<!-- MATH: $10^2{-}10^3$ -->
+10<SUP>2</SUP>-10<SUP>3</SUP>) and replace
+    the detailed spectrum of line-opacities within each interval
+    by a smooth distribution function. In practice, the distribution
+    functions are approximated by  step functions with a small number
+    of steps, and frequency-integrated quantities are calculated by
+    summing over all ODF-intervals and steps, reducing the computational
+    effort by a factor of the order&nbsp;10<SUP>3</SUP>. The reordering of
+    opacities within a given ODF-interval is based on the assumption
+    that frequency- and height-dependence of the detailed opacity
+    spectrum are decoupled. 
+    However, since changes in the states of 
+    excitation and  ionisation of the gas, overlapping lines 
+    of two elements with different opacity variations with depth,
+    or relative line shifts due to velocity gradients  cause changes
+    of the line spectrum with height within a given ODF-interval, this
+    assumption does not hold strictly.
+    While calculations of static model atmospheres 
+    (e.g., Gustafsson et&nbsp;al. <A NAME="aaref3"></A><A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Gustafsson1975">1975</A>)  show no significant error due to
+    the ODF&nbsp;approximation,  velocity gradients  may introduce
+    an additional error in time dependent MHD-simulations.
+      We address this
+    question briefly in&nbsp;Sect.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#sec:grad">3.6</A>.
+
+<P>
+
+<H4><A NAME="SECTION00032000000000000000">&#160;</A>    
+ <A NAME="sec:multigroup">&#160;</A><BR>
+2.2 The multigroup method
+</H4>
+
+<P>
+In this section we describe the 
+    multigroup approach  proposed by Nordlund (<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Nordlund1982">1982</A>) in the form  developed
+    by Ludwig (<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Ludwig1992">1992</A>).
+    The basic idea is to divide the frequency spectrum into a small 
+    number (typically&nbsp;3-5) of (usually non-contiguous) subsets (called "bins''), 
+   <IMG
+ WIDTH="17" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img31.gif"
+ ALT="$\Omega_i$">,
+according to    
+    the strength of the corresponding opacities. This way, continuum
+    opacities and lines of different strength  are pooled in 
+    seperate  bins and represented by   bin-averaged opacities.
+    Introducing the bin-integrated quantities&nbsp;
+<!-- MATH: $I_i=\int_{\Omega_i}I_{\nu}{\rm d}\nu$ -->
+<IMG
+ WIDTH="70" HEIGHT="32" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img32.gif"
+ ALT="$I_i=\int_{\Omega_i}I_{\nu}{\rm d}\nu$">
+and&nbsp;
+<!-- MATH: $B_i=\int_{\Omega_i}B_{\nu}{\rm d}\nu$ -->
+<IMG
+ WIDTH="79" HEIGHT="32" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img33.gif"
+ ALT="$B_i=\int_{\Omega_i}B_{\nu}{\rm d}\nu$">,
+    and assuming that the 
+    classification into bins remains fixed for all points along a 
+    ray, the radiative transfer equation  can be written for each bin 
+    in the form 
+    <BR>
+<DIV ALIGN="CENTER"><A NAME="eq:avop">&#160;</A>
+<!-- MATH: \begin{eqnarray}
+\frac{{\rm d}I_i}{{\rm d}s} &=& -\int_{\Omega_i}
+\kappa_{\nu}\varrho(I_\nu - B_\nu){\rm d}\nu\nonumber \\
+                       &\simeq& - \overline{\kappa}_i \varrho (I_i-B_i).
+\end{eqnarray} -->
+
+<TABLE ALIGN="CENTER" CELLPADDING="0" WIDTH="100%">
+<TR VALIGN="MIDDLE"><TD NOWRAP ALIGN="RIGHT">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<IMG
+ WIDTH="25" HEIGHT="49" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img34.gif"
+ ALT="$\displaystyle \frac{{\rm d}I_i}{{\rm d}s}$"></TD>
+<TD ALIGN="CENTER" NOWRAP>=</TD>
+<TD ALIGN="LEFT" NOWRAP><IMG
+ WIDTH="128" HEIGHT="49" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img35.gif"
+ ALT="$\displaystyle -\int_{\Omega_i}
+\kappa_{\nu}\varrho(I_\nu - B_\nu){\rm d}\nu$"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+&nbsp;</TD></TR>
+<TR VALIGN="MIDDLE"><TD NOWRAP ALIGN="RIGHT">&nbsp;</TD>
+<TD ALIGN="CENTER" NOWRAP><IMG
+ WIDTH="14" HEIGHT="15" ALIGN="BOTTOM" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img36.gif"
+ ALT="$\textstyle \simeq$"></TD>
+<TD ALIGN="LEFT" NOWRAP><IMG
+ WIDTH="85" HEIGHT="30" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img37.gif"
+ ALT="$\displaystyle - \overline{\kappa}_i \varrho (I_i-B_i).$"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(3)</TD></TR>
+</TABLE></DIV><BR CLEAR="ALL"><P></P>
+The introduction of a bin-averaged opacity&nbsp;
+<!-- MATH: $\overline{\kappa}_i$ -->
+<IMG
+ WIDTH="12" HEIGHT="27" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img38.gif"
+ ALT="$\overline{\kappa}_i$">
+in&nbsp;Eq.&nbsp;(<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#eq:avop">3</A>) is the essential step in the multigroup 
+    approach, because here a large part of the frequency integration
+    has been done before the integration along the ray is carried out.
+    For a given ray Eq.&nbsp;(<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#eq:avop">3</A>) is  solved once for each 
+    bin, thereby drastically reducing the computational effort.     
+    This procedure is strictly correct only if&nbsp;
+<!-- MATH: $\kappa_\nu$ -->
+<IMG
+ WIDTH="14" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img22.gif"
+ ALT="$\kappa_\nu$">
+is constant
+    over the whole bin, so one makes the implicit assumption that
+    the depth-dependence of&nbsp;
+<!-- MATH: $\kappa_\nu$ -->
+<IMG
+ WIDTH="14" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img22.gif"
+ ALT="$\kappa_\nu$">
+(and thus the &nbsp;<IMG
+ WIDTH="16" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img39.gif"
+ ALT="$\tau_\nu$">&nbsp;scales)
+    are identical or at least very similar for the frequencies within one
+    bin.   
+    Since in general this assumption holds only  approximately, 
+    it is necessary to define a bin-averaged  opacity.
+    In optically thick regions the angle-averaged intensity&nbsp;<IMG
+ WIDTH="16" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img17.gif"
+ ALT="$J_\nu $">
+approaches&nbsp;<IMG
+ WIDTH="17" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img18.gif"
+ ALT="$B_\nu $">
+and the bin-integrated heating rate&nbsp;
+<!-- MATH: $Q_{{\rm rad}, i}=\int_{\Omega_i}\kappa_\nu \varrho (J_\nu-B_\nu){\rm d}\nu$ -->
+<IMG
+ WIDTH="149" HEIGHT="32" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img40.gif"
+ ALT="$Q_{{\rm rad}, i}=\int_{\Omega_i}\kappa_\nu \varrho (J_\nu-B_\nu){\rm d}\nu$">
+    tends to zero, so the definition  of a mean  opacity is not critical
+    in this regime. The obvious choice is the Rosseland mean, as
+    radiative transfer
+    is effectively local and can be described as a diffusive process 
+    for&nbsp;
+<!-- MATH: $\tau_\nu \gg 1$ -->
+<IMG
+ WIDTH="43" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img41.gif"
+ ALT="$\tau_\nu \gg 1$">:
+    <BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+{\vec F}_\nu = - \frac{4\pi}{3\kappa_\nu}
+\frac{{\rm d}B_\nu}{{\rm d}T}~ \nabla T.
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><IMG
+ WIDTH="121" HEIGHT="69"
+ SRC="/articles/aa/full/2004/26/aa0043/img42.gif"
+ ALT="\begin{displaymath}{\vec F}_\nu = - \frac{4\pi}{3\kappa_\nu}
+\frac{{\rm d}B_\nu}{{\rm d}T}~ \nabla T.
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(4)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+For the bin-integrated radiative flux one has
+    <BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+{\vec F}_i = - \frac{4\pi}{3\overline{\kappa}_{R,i}}
+\int_{\Omega_i}\frac{{\rm d}B_\nu}{{\rm d}T} {\rm d}\nu~ \nabla T
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><IMG
+ WIDTH="166" HEIGHT="71"
+ SRC="/articles/aa/full/2004/26/aa0043/img43.gif"
+ ALT="\begin{displaymath}{\vec F}_i = - \frac{4\pi}{3\overline{\kappa}_{R,i}}
+\int_{\Omega_i}\frac{{\rm d}B_\nu}{{\rm d}T} {\rm d}\nu~ \nabla T
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(5)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+with the Rosseland mean defined by
+    <BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+\frac{1}{\overline{\kappa}_{R,i}} =
+\frac{\int_{\Omega_i}\frac{1}{\kappa_\nu}\frac{{\rm d}B_\nu}{{\rm d}T} {\rm d}\nu}
+          {\int_{\Omega_i}\frac{{\rm d}B_\nu}{{\rm d}T} {\rm d}\nu}\cdot
+    
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><IMG
+ WIDTH="114" HEIGHT="86"
+ SRC="/articles/aa/full/2004/26/aa0043/img44.gif"
+ ALT="\begin{displaymath}\frac{1}{\overline{\kappa}_{R,i}} =
+\frac{\int_{\Omega_i}\f...
+...\int_{\Omega_i}\frac{{\rm d}B_\nu}{{\rm d}T} {\rm d}\nu}\cdot
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(6)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+This definition gives the correct 
+    bin-integrated  radiative fluxes. 
+
+<P>
+In the regime&nbsp;
+<!-- MATH: $\tau_\nu \la 1$ -->
+<IMG
+ WIDTH="39" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img45.gif"
+ ALT="$\tau_\nu \la 1$">,
+the diffusion 
+    approximation breaks down
+    and the Rosseland mean is no longer applicable. Being a harmonic mean,
+    it tends to underestimate the line opacities.
+    For optically thin regions an averaging presciption  for the 
+    opacity can be obtained
+    by requiring that the correct energy balance within 
+    each bin is maintained:
+    <BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+\int_{\Omega_i} \kappa_\nu (J_\nu-B_\nu) {\rm d}\nu
+= \overline{\kappa}\int_{\Omega_i}(\overline{J}_\nu-B_\nu){\rm d}\nu.
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><A NAME="eq:qbal1">&#160;</A><IMG
+ WIDTH="228" HEIGHT="71"
+ SRC="/articles/aa/full/2004/26/aa0043/img46.gif"
+ ALT="\begin{displaymath}\int_{\Omega_i} \kappa_\nu (J_\nu-B_\nu) {\rm d}\nu
+= \overline{\kappa}\int_{\Omega_i}(\overline{J}_\nu-B_\nu){\rm d}\nu.
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(7)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+For a given choice of&nbsp;
+<!-- MATH: $\overline{\kappa}$ -->
+<IMG
+ WIDTH="10" HEIGHT="27" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img47.gif"
+ ALT="$\overline{\kappa}$">,
+&nbsp;
+<!-- MATH: $\overline{J}_\nu$ -->
+<IMG
+ WIDTH="15" HEIGHT="33" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img48.gif"
+ ALT="$\overline{J}_\nu$">
+    is the angle-averaged intensity that results
+   from replacing&nbsp;
+<!-- MATH: $\kappa_\nu$ -->
+<IMG
+ WIDTH="14" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img22.gif"
+ ALT="$\kappa_\nu$">
+with&nbsp;
+<!-- MATH: $\overline{\kappa}$ -->
+<IMG
+ WIDTH="10" HEIGHT="27" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img47.gif"
+ ALT="$\overline{\kappa}$">
+in the
+   radiative transfer equation and solving for&nbsp;<IMG
+ WIDTH="14" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img49.gif"
+ ALT="$I_\nu$">.
+(The source
+   function&nbsp;<IMG
+ WIDTH="17" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img18.gif"
+ ALT="$B_\nu $">
+is still  frequency-dependent, hence the index&nbsp;<IMG
+ WIDTH="9" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img50.gif"
+ ALT="$\nu$">
+in&nbsp;
+<!-- MATH: $\overline{J}_\nu$ -->
+<IMG
+ WIDTH="15" HEIGHT="33" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img48.gif"
+ ALT="$\overline{J}_\nu$">).
+
+<P>
+If one further assumes that
+   <BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+\int_{\Omega_i}\overline{J}_\nu {\rm d}\nu  \simeq \int_{\Omega_i}J_\nu {\rm d}\nu,
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><IMG
+ WIDTH="125" HEIGHT="71"
+ SRC="/articles/aa/full/2004/26/aa0043/img51.gif"
+ ALT="\begin{displaymath}\int_{\Omega_i}\overline{J}_\nu {\rm d}\nu \simeq \int_{\Omega_i}J_\nu {\rm d}\nu,
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(8)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+then Eq. (<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#eq:qbal1">7</A>) is equivalent to
+   <BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+\int_{\Omega_i}( \kappa_\nu-\overline{\kappa})(J_\nu-B_\nu) {\rm d}\nu =0.
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><A NAME="eq:qbal2">&#160;</A><IMG
+ WIDTH="165" HEIGHT="71"
+ SRC="/articles/aa/full/2004/26/aa0043/img52.gif"
+ ALT="\begin{displaymath}\int_{\Omega_i}( \kappa_\nu-\overline{\kappa})(J_\nu-B_\nu) {\rm d}\nu =0.
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(9)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>  <IMG
+ WIDTH="16" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img17.gif"
+ ALT="$J_\nu $">
+is not known a priori, but for&nbsp;
+<!-- MATH: $\tau_\nu \ll 1$ -->
+<IMG
+ WIDTH="43" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img53.gif"
+ ALT="$\tau_\nu \ll 1$">
+it can be
+   approximated by developing&nbsp;
+<!-- MATH: $B_\nu(\tau_\nu)$ -->
+<IMG
+ WIDTH="38" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img54.gif"
+ ALT="$B_\nu(\tau_\nu)$">
+in a Taylor series and
+   applying the 
+<!-- MATH: $\Lambda_\nu$ -->
+<IMG
+ WIDTH="19" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img55.gif"
+ ALT="$\Lambda_\nu$">-operator that connects&nbsp;<IMG
+ WIDTH="17" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img18.gif"
+ ALT="$B_\nu $">
+and&nbsp;<IMG
+ WIDTH="16" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img17.gif"
+ ALT="$J_\nu $">
+(see e.g., Mihalas <A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Mihalas1978">1978</A>, p.&nbsp;59  for details). The result is
+   <BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+J_\nu - B_\nu \simeq -\frac{1}{2} B_\nu.
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><A NAME="eq:jminb">&#160;</A><IMG
+ WIDTH="101" HEIGHT="66"
+ SRC="/articles/aa/full/2004/26/aa0043/img56.gif"
+ ALT="\begin{displaymath}J_\nu - B_\nu \simeq -\frac{1}{2} B_\nu.
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(10)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+By inserting Eq.&nbsp;(<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#eq:jminb">10</A>) into Eq.&nbsp;(<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#eq:qbal2">9</A>) and solving for&nbsp;
+<!-- MATH: $\overline{\kappa}$ -->
+<IMG
+ WIDTH="10" HEIGHT="27" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img47.gif"
+ ALT="$\overline{\kappa}$">,
+the Planck mean,
+    <BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+\overline{\kappa}_{P,i} = \frac{\int_{\Omega_i}\kappa_\nu B_\nu {\rm d}\nu}
+{\int_{\Omega_i} B_\nu {\rm d}\nu},
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><IMG
+ WIDTH="107" HEIGHT="84"
+ SRC="/articles/aa/full/2004/26/aa0043/img57.gif"
+ ALT="\begin{displaymath}\overline{\kappa}_{P,i} = \frac{\int_{\Omega_i}\kappa_\nu B_\nu {\rm d}\nu}
+{\int_{\Omega_i} B_\nu {\rm d}\nu},
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(11)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+is obtained.
+   This "derivation'' is far from  rigorous
+   and should be viewed as an indication that
+   the Planck mean can be expected to yield a reasonable approximation of&nbsp;
+<!-- MATH: $Q_{\rm rad}$ -->
+<IMG
+ WIDTH="27" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img11.gif"
+ ALT="$Q_{\rm rad}$">
+for&nbsp;
+<!-- MATH: $\tau_\nu \ll 1$ -->
+<IMG
+ WIDTH="43" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img53.gif"
+ ALT="$\tau_\nu \ll 1$">.
+
+<P>
+Ludwig (<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Ludwig1992">1992</A>) uses a hybrid scheme that models a steep transition 
+   from&nbsp;
+<!-- MATH: $\overline{\kappa}_P$ -->
+<IMG
+ WIDTH="16" HEIGHT="27" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img58.gif"
+ ALT="$\overline{\kappa}_P$">
+to&nbsp;
+<!-- MATH: $\overline{\kappa}_R$ -->
+<IMG
+ WIDTH="17" HEIGHT="27" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img59.gif"
+ ALT="$\overline{\kappa}_R$">
+at a
+   threshold optical depth of&nbsp;
+<!-- MATH: $\tau_{0}=0.35$ -->
+<IMG
+ WIDTH="56" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img60.gif"
+ ALT="$\tau_{0}=0.35$">:
+   <BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+\overline{\kappa}_i = 2^{-\frac{\tau_i}{\tau_{0}} }
+\overline{\kappa}_{P,i} ~ 
+                       + \left( 
+                          1 - 2^{-\frac{\tau_i}{\tau_{0}}}   
+                         \right)
+                         \overline{\kappa}_{R,i}.   
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><A NAME="eq:kaphyb">&#160;</A><IMG
+ WIDTH="183" HEIGHT="65"
+ SRC="/articles/aa/full/2004/26/aa0043/img61.gif"
+ ALT="\begin{displaymath}\overline{\kappa}_i = 2^{-\frac{\tau_i}{\tau_{0}} }
+\overli...
+...-\frac{\tau_i}{\tau_{0}}}
+\right)
+\overline{\kappa}_{R,i}.
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(12)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+The index&nbsp;<I>i</I> indicates that the means&nbsp;
+<!-- MATH: $\overline{\kappa}_{P,i}$ -->
+<IMG
+ WIDTH="20" HEIGHT="27" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img62.gif"
+ ALT="$\overline{\kappa}_{P,i}$">
+and&nbsp;
+<!-- MATH: $\overline{\kappa}_{R,i}$ -->
+<IMG
+ WIDTH="22" HEIGHT="27" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img63.gif"
+ ALT="$\overline{\kappa}_{R,i}$">
+are to be evaluated for each frequency bin,
+  &nbsp;<IMG
+ WIDTH="17" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img31.gif"
+ ALT="$\Omega_i$">.
+For each bin,&nbsp;
+<!-- MATH: $\overline{\kappa}_i$ -->
+<IMG
+ WIDTH="12" HEIGHT="27" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img38.gif"
+ ALT="$\overline{\kappa}_i$">
+can be  
+   tabulated on a&nbsp;(<I>p</I>,<I>T</I>)&nbsp;grid for subsequent use in simulations. 
+   Since the optical depth&nbsp;<IMG
+ WIDTH="13" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img64.gif"
+ ALT="$\tau_i$">
+associated with local values of&nbsp;<I>p</I> and&nbsp;<I>T</I> is not known prior to a simulation run, it has to be 
+   estimated. Assuming that the gas is hydrostatically stratified and that
+   the depth-dependence of&nbsp;
+<!-- MATH: $\overline{\kappa}_{R,i}\varrho$ -->
+<IMG
+ WIDTH="29" HEIGHT="27" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img65.gif"
+ ALT="$\overline{\kappa}_{R,i}\varrho$">
+is dominated
+   by an exponential increase of&nbsp;<IMG
+ WIDTH="11" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img21.gif"
+ ALT="$\varrho$">
+with geometrical depth,
+   Ludwig (<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Ludwig1992">1992</A>) derives the approximate expression
+   <BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+\tau_i \simeq \frac{\overline{\kappa}_{R,i}~ p}{g_{\odot}},
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><A NAME="eq:tapprox">&#160;</A><IMG
+ WIDTH="69" HEIGHT="71"
+ SRC="/articles/aa/full/2004/26/aa0043/img66.gif"
+ ALT="\begin{displaymath}\tau_i \simeq \frac{\overline{\kappa}_{R,i}~ p}{g_{\odot}},
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(13)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+where&nbsp;<IMG
+ WIDTH="18" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img67.gif"
+ ALT="$g_{\odot}$">
+is the gravitational acceleration in the photosphere. 
+
+<P>
+A key step in  the multigroup method is the
+   choice of an appropriate  criterion for sorting frequencies into
+   bins. The rationale for any sorting rule must be to group together
+   opacities that are of the same order of magnitude and show similar
+   behaviour as a function of depth.
+   A simple choice is the so called&nbsp;<IMG
+ WIDTH="9" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img14.gif"
+ ALT="$\kappa $"><I>-sorting</I>,
+   starting from the choice of a fixed height&nbsp;<I>z</I><SUB>0</SUB> (or, alternatively, 
+   a representative pair of values&nbsp;<I>p</I><SUB>0</SUB> and&nbsp;<I>T</I><SUB>0</SUB>) in  a reference
+   atmosphere, the frequency bins are then
+   constructed  according to the spectral shape of&nbsp;
+<!-- MATH: $\kappa_\nu(z_0)$ -->
+<IMG
+ WIDTH="34" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img68.gif"
+ ALT="$\kappa_\nu(z_0)$">.
+   A number of threshold values&nbsp;<IMG
+ WIDTH="13" HEIGHT="30" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img69.gif"
+ ALT="$\kappa^l$">
+(the index&nbsp;<I>l</I> labeling the bin, not to be mistaken
+   as an exponent) which  divide the range of opacity values into intervals, 
+   are selected. A frequency&nbsp;<IMG
+ WIDTH="9" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img50.gif"
+ ALT="$\nu$">
+becomes part of a given bin if&nbsp;
+<!-- MATH: $\kappa_\nu(z_0)$ -->
+<IMG
+ WIDTH="34" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img68.gif"
+ ALT="$\kappa_\nu(z_0)$">
+lies within the corresponding interval:
+   <BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+\nu \in \Omega_l \qquad
+{\rm if} \qquad
+     \kappa^l \leq \kappa_\nu(z_0) <\kappa^{l+1}.
+   
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><IMG
+ WIDTH="218" HEIGHT="51"
+ SRC="/articles/aa/full/2004/26/aa0043/img70.gif"
+ ALT="\begin{displaymath}\nu \in \Omega_l \qquad
+{\rm if} \qquad
+\kappa^l \leq \kappa_\nu(z_0) <\kappa^{l+1}.
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(14)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+A reasonable choice for&nbsp;<I>z</I><SUB>0</SUB> is the height where the continuum 
+   at&nbsp;500&nbsp;nm forms,&nbsp;
+<!-- MATH: $\tau_{500}(z_0) \approx 1$ -->
+<IMG
+ WIDTH="70" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img71.gif"
+ ALT="$\tau_{500}(z_0) \approx 1$">.
+Here a large
+   part of the emerging flux originates and the energy exchange 
+   between gas and radiation field plays an important role, requiring
+   an accurate modelling of the opacities. The threshold values&nbsp;<IMG
+ WIDTH="13" HEIGHT="30" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img69.gif"
+ ALT="$\kappa^l$">
+   have to cover several orders of magnitude in order to
+   account for the line opacities that become important at greater heights. 
+
+<P>
+One disadvantage of the&nbsp;<IMG
+ WIDTH="9" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img14.gif"
+ ALT="$\kappa $">-sorting procedure is that it does 
+   not provide a reasonable selection criterion for frequencies
+   that are optically thick at&nbsp;<I>z</I><SUB>0</SUB>, since  the opacity values 
+   at&nbsp;<I>z</I><SUB>0</SUB> have no impact on the radiative energy exchange taking
+   place at such frequencies,           
+   as the main contribution  for a given frequency&nbsp;<IMG
+ WIDTH="9" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img50.gif"
+ ALT="$\nu$">
+to the heat exchange&nbsp;<IMG
+ WIDTH="18" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img72.gif"
+ ALT="$Q_\nu$">
+   comes from a height
+   around&nbsp;
+<!-- MATH: $\tau_\nu \approx 1$ -->
+<IMG
+ WIDTH="39" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img73.gif"
+ ALT="$\tau_\nu \approx 1$">.
+It seems therefore advantageous to sort the
+   frequencies according to  the opacity in this region instead of
+   using a fixed reference height. This  <I>&nbsp;</I><IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $"><I>-sorting</I>, suggested
+   by Ludwig (<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Ludwig1992">1992</A>) applies the following strategy. First a 1D&nbsp;reference atmosphere
+   is chosen. Then&nbsp;
+<!-- MATH: $\kappa_\nu \varrho$ -->
+<IMG
+ WIDTH="21" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img74.gif"
+ ALT="$\kappa_\nu \varrho$">
+is integrated along&nbsp;<I>z</I> for all
+   frequencies and the geometrical height corresponding to&nbsp;
+<!-- MATH: $\tau_\nu =  1$ -->
+<IMG
+ WIDTH="39" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img75.gif"
+ ALT="$\tau_\nu = 1$">
+is 
+   determined. Measuring height in terms of a reference optical depth 
+   scale&nbsp;
+<!-- MATH: $\tau_{\rm ref}$ -->
+<IMG
+ WIDTH="21" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img76.gif"
+ ALT="$\tau_{\rm ref}$">
+(e.g. the Rosseland optical depth), threshold heights&nbsp;
+<!-- MATH: $\tau_{\rm ref}^l$ -->
+<IMG
+ WIDTH="22" HEIGHT="30" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img77.gif"
+ ALT="$\tau_{\rm ref}^l$">
+are chosen. Then&nbsp;<IMG
+ WIDTH="9" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img50.gif"
+ ALT="$\nu$">&nbsp;belongs to bin&nbsp;<IMG
+ WIDTH="16" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img4.gif"
+ ALT="$\Omega _l$">,
+if
+  &nbsp;
+<!-- MATH: $\tau_\nu =  1$ -->
+<IMG
+ WIDTH="39" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img75.gif"
+ ALT="$\tau_\nu = 1$">
+is reached within the corresponding interval of 
+   Rosseland optical depth:
+   <BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+\nu \in \Omega_l \qquad
+{\rm if} \qquad
+    \tau_{\rm ref}^l \geq \tau_{\rm ref}(\tau_\nu =  1) > \tau_{\rm ref}^{l+1}.
+   
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><IMG
+ WIDTH="263" HEIGHT="53"
+ SRC="/articles/aa/full/2004/26/aa0043/img78.gif"
+ ALT="\begin{displaymath}\nu \in \Omega_l \qquad
+{\rm if} \qquad
+\tau_{\rm ref}^l \geq \tau_{\rm ref}(\tau_\nu = 1) > \tau_{\rm ref}^{l+1}.
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(15)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+If one assumes that the &nbsp;<IMG
+ WIDTH="16" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img39.gif"
+ ALT="$\tau_\nu$">
+scales are mainly governed an 
+   exponential depth-dependence  of&nbsp;<IMG
+ WIDTH="11" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img21.gif"
+ ALT="$\varrho$">,
+then an approximate
+   relation similar to Eq.&nbsp;(<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#eq:tapprox">13</A>) holds, implying that&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorting, (like <IMG
+ WIDTH="9" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img14.gif"
+ ALT="$\kappa $">-sorting), groups together opacities of 
+   the same magnitude. 
+   Furthermore, in contrast to&nbsp;<IMG
+ WIDTH="9" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img14.gif"
+ ALT="$\kappa $">-sorting, in the &nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorting method 
+   all    opacity values between&nbsp;
+<!-- MATH: $\tau_\nu =  0$ -->
+<IMG
+ WIDTH="39" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img79.gif"
+ ALT="$\tau_\nu = 0$">
+and&nbsp;
+<!-- MATH: $\tau_\nu =  1$ -->
+<IMG
+ WIDTH="39" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img75.gif"
+ ALT="$\tau_\nu = 1$">
+contribute to the selection
+   process and  the frequencies
+   of one bin have the same optical depth for at least one height&nbsp;
+<!-- MATH: $\tau_{\rm ref}(\tau_\nu =  1)$ -->
+<IMG
+ WIDTH="66" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img80.gif"
+ ALT="$\tau_{\rm ref}(\tau_\nu = 1)$">.
+Consequently,  one may expect that in the 
+   region&nbsp;
+<!-- MATH: $0 < \tau_\nu \leq 1$ -->
+<IMG
+ WIDTH="63" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img81.gif"
+ ALT="$ 0 < \tau_\nu \leq 1$">
+where a non-grey description of 
+   radiation transfer is important  the&nbsp;<IMG
+ WIDTH="16" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img39.gif"
+ ALT="$\tau_\nu$">-scales 
+   within one bin are  similar, which is the     
+   major requirement for the validity of the multigroup approach.
+   For greater depths, the way frequencies are gathered may be 
+   inappropriate, but this shortcoming is less severe as radiation 
+   transfer becomes increasingly grey in these regions anyway. 
+
+<P>
+<BR>
+<DIV ALIGN="LEFT">
+<TABLE WIDTH="100%">
+<TR><TD><!-- init Label --><A NAME="fig:sort">&#160;</A><!-- end Label--><A NAME="1044">&#160;</A><A NAME="figure442"
+ HREF="/articles/aa/full/2004/26/aa0043/img82.gif"><IMG
+ WIDTH="98" HEIGHT="62" SRC="/articles/aa/full/2004/26/aa0043/Timg82.gif"
+ ALT="\begin{figure}
+\par\includegraphics[width=8.6cm,clip]{0043f01.eps}
+\end{figure}"></A></TD>
+<TD><FONT size="-1"><STRONG>Figure 1:</STRONG>
+Schematic illustration of the&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorting
+                  procedure using ODFs. Within each ODF interval&nbsp;
+<!-- MATH: $\Delta\nu_i$ -->
+<IMG
+ WIDTH="21" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img2.gif"
+ ALT="$\Delta \nu _i$">,
+                  the ODF steps&nbsp;
+<!-- MATH: $\Delta\nu_{ij}$ -->
+<IMG
+ WIDTH="27" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img3.gif"
+ ALT="$\Delta \nu _{ij}$">
+are sorted to frequency bins&nbsp;<IMG
+ WIDTH="16" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img4.gif"
+ ALT="$\Omega _l$">,
+depending on                    
+                  the height where&nbsp;
+<!-- MATH: $\tau_{ij}=1$ -->
+<IMG
+ WIDTH="41" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img5.gif"
+ ALT="$\tau _{ij}=1$">
+is reached (indicated by 
+                  bold arrows).</FONT></TD>
+</TR><TR><TD COLSPAN="2"><A HREF="http://dexter.edpsciences.org/applet.php?html_id=1&DOI=10.1051/0004-6361:20047043" target="DEXTER">Open with DEXTER</A></TD></TR>
+
+</TABLE>
+</DIV><BR>
+<P>
+The&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorting procedure can be realized in a convenient way 
+   by using ODFs. For a given step&nbsp;<I>j</I> within ODF&nbsp;interval&nbsp;
+<!-- MATH: $\Delta\nu_i$ -->
+<IMG
+ WIDTH="21" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img2.gif"
+ ALT="$\Delta \nu _i$">&nbsp;
+<!-- MATH: $\kappa_{ij}\varrho$ -->
+<IMG
+ WIDTH="24" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img83.gif"
+ ALT="$\kappa_{ij}\varrho$">
+is integrated along&nbsp;<I>z</I>, which gives&nbsp;<IMG
+ WIDTH="17" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img84.gif"
+ ALT="$\tau_{ij}$">
+as a function of height in the reference atmosphere
+    (see Fig.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:sort">1</A>).
+    The ODF&nbsp;steps are then sorted into bins&nbsp;<IMG
+ WIDTH="16" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img4.gif"
+ ALT="$\Omega _l$">.
+Bin-integrated
+   quantities are obtained as weighted sums over the ODF&nbsp;steps in a
+   given bin,&nbsp;viz.
+   <BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+B_l = \sum_i \Delta\nu_i B_{\Delta\nu_i}
+\sum_{j(i,l)} w_{j(i,l)}
+   
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><IMG
+ WIDTH="155" HEIGHT="72"
+ SRC="/articles/aa/full/2004/26/aa0043/img85.gif"
+ ALT="\begin{displaymath}B_l = \sum_i \Delta\nu_i B_{\Delta\nu_i}
+\sum_{j(i,l)} w_{j(i,l)}
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(16)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+and
+   <BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+\overline{\kappa}_{P,l} =
+\frac{1}{B_l}\sum_i \Delta\nu_i B_{\Delta\nu_i}
+           \sum_{j(i,l)} w_{j(i,l)}\kappa_{i~ j(i,l)},
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><IMG
+ WIDTH="220" HEIGHT="77"
+ SRC="/articles/aa/full/2004/26/aa0043/img86.gif"
+ ALT="\begin{displaymath}\overline{\kappa}_{P,l} =
+\frac{1}{B_l}\sum_i \Delta\nu_i B_{\Delta\nu_i}
+\sum_{j(i,l)} w_{j(i,l)}\kappa_{i~ j(i,l)},
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(17)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+where, for a given bin index&nbsp;<I>l</I>, the index&nbsp;<I>j</I>(<I>i</I>,<I>l</I>) runs over those
+   steps in&nbsp;
+<!-- MATH: $\Delta\nu_i$ -->
+<IMG
+ WIDTH="21" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img2.gif"
+ ALT="$\Delta \nu _i$">,
+which  are elements of&nbsp;<IMG
+ WIDTH="16" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img4.gif"
+ ALT="$\Omega _l$">.
+  &nbsp;
+<!-- MATH: $B_{\Delta\nu_i}$ -->
+<IMG
+ WIDTH="27" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img87.gif"
+ ALT="$B_{\Delta\nu_i}$">
+denotes the average of&nbsp;<I>B</I> over
+    the ODF interval&nbsp;
+<!-- MATH: $\Delta\nu_i$ -->
+<IMG
+ WIDTH="21" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img2.gif"
+ ALT="$\Delta \nu _i$">.
+The effect of the sorting procedure on the opacity
+spectrum is illustrated in Figs.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:kapodf">2</A> and&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:kap5b">3</A>.
+Figure&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:kapodf">2</A> shows the ODF-based opacity from the
+ATLAS9 stellar atmosphere code (Kurucz <A NAME="aaref7"></A><A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Kurucz1993">1993</A>) for&nbsp;<I>T</I>=4470&nbsp;K and 
+
+<!-- MATH: $\log p=4.12$ -->
+<IMG
+ WIDTH="72" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img88.gif"
+ ALT="$\log p=4.12$">
+(corresponding to a continuum optical depth at&nbsp;500&nbsp;nm 
+
+<!-- MATH: $\log\tau_{500}=-2$ -->
+<IMG
+ WIDTH="78" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img89.gif"
+ ALT="$\log\tau_{500}=-2$">
+in the solar atmosphere).
+After applying the 
+tau-sorting procedure with five opacity bins 
+the spectrum is a step function which can assume five discrete values&nbsp;(Fig.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:kap5b">3</A>).
+<BR>
+<DIV ALIGN="LEFT">
+<TABLE WIDTH="100%">
+<TR><TD><!-- init Label --><A NAME="fig:kapodf">&#160;</A><!-- end Label--><A NAME="1045">&#160;</A><A NAME="figure474"
+ HREF="/articles/aa/full/2004/26/aa0043/img90.gif"><IMG
+ WIDTH="98" HEIGHT="70" SRC="/articles/aa/full/2004/26/aa0043/Timg90.gif"
+ ALT="\begin{figure}
+\par\includegraphics[width=8.6cm,clip]{0043f02.eps}
+\end{figure}"></A></TD>
+<TD><FONT size="-1"><STRONG>Figure 2:</STRONG>
+Monochromatic opacity as a function of wavelength for&nbsp;<I>T</I>=4470&nbsp;K 
+          and&nbsp;
+<!-- MATH: $\log p=4.12$ -->
+<IMG
+ WIDTH="72" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img88.gif"
+ ALT="$\log p=4.12$">,
+corresponding to&nbsp;
+<!-- MATH: $\log\tau_{500}=-2$ -->
+<IMG
+ WIDTH="78" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img89.gif"
+ ALT="$\log\tau_{500}=-2$">
+in the solar atmosphere.
+          ATLAS9 (Kurucz <A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Kurucz1993">1993</A>) Opacity Distribution Functions are used 
+          to model the line opacities.</FONT></TD>
+</TR><TR><TD COLSPAN="2"><A HREF="http://dexter.edpsciences.org/applet.php?html_id=2&DOI=10.1051/0004-6361:20047043" target="DEXTER">Open with DEXTER</A></TD></TR>
+
+</TABLE>
+</DIV><BR> 
+
+<P>
+<BR>
+<DIV ALIGN="LEFT">
+<TABLE WIDTH="100%">
+<TR><TD><!-- init Label --><A NAME="fig:kap5b">&#160;</A><!-- end Label--><A NAME="1046">&#160;</A><A NAME="figure481"
+ HREF="/articles/aa/full/2004/26/aa0043/img91.gif"><IMG
+ WIDTH="98" HEIGHT="70" SRC="/articles/aa/full/2004/26/aa0043/Timg91.gif"
+ ALT="\begin{figure}
+\par\includegraphics[width=8.6cm,clip]{0043f03.eps}
+\end{figure}"></A></TD>
+<TD><FONT size="-1"><STRONG>Figure 3:</STRONG>
+Opacity as a function of wavelength for a&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorted multigroup
+          model with five opacity bins, for the same thermodynamical
+          conditions as in Fig.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:kapodf">2</A>. </FONT></TD>
+</TR><TR><TD COLSPAN="2"><A HREF="http://dexter.edpsciences.org/applet.php?html_id=3&DOI=10.1051/0004-6361:20047043" target="DEXTER">Open with DEXTER</A></TD></TR>
+
+</TABLE>
+</DIV><BR> 
+
+<P>
+In contrast to the ODFs, which approach the 
+    exact opacity spectrum in the limit of infinitely small
+    ODF&nbsp;intervals,   the multigroup
+    solution can not be expected to converge to  the
+    exact solution (i.e. the solution based on the 
+    detailed reference spectrum which was used in the 
+    sorting process) in the limit of  a very large number of
+    opacity bins. This is due to the fact  that, even for
+    infinitely small intervals between bin-levels&nbsp;
+<!-- MATH: $\tau_{\rm ref}^l$ -->
+<IMG
+ WIDTH="22" HEIGHT="30" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img77.gif"
+ ALT="$\tau_{\rm ref}^l$">
+(or&nbsp;<IMG
+ WIDTH="13" HEIGHT="30" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img69.gif"
+ ALT="$\kappa^l$">
+in the case of 
+   &nbsp;<IMG
+ WIDTH="9" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img14.gif"
+ ALT="$\kappa $">-sorting), each bin will comprise frequencies
+    from different parts of the spectrum with different
+    height profiles of the corresponding opacities.
+    It should be noted that using  ODFs  as basis for 
+    sorting frequencies  introduces an additional
+    error since the rearrangement of spectral lines inherent
+    in the ODF concept affects the way frequencies are classified.
+   However, since the ODF solution approximates the exact solution well,
+   the error incurred this way is  small compared to the 
+   consequence of the binning procedure (see Sect.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#sec:lines">3.5</A>). 
+
+<P>
+The choice of a reference 
+   atmosphere is another possible source of error connected  with 
+   the&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorting scheme. 
+   It is plausible that the opacity binning  method with&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorting shows
+   good results in calculations of static 1D&nbsp;model atmospheres  if
+   the "exact''  solution (i.e., the 1D&nbsp;atmosphere resulting from the  
+   ODF&nbsp;approach) is chosen as the reference atmosphere. 
+   In multidimensional 
+    time-dependent simulations, however, the physical parameters
+   may deviate considerably from a 1D&nbsp;reference stratification.
+   As a consequence, the assignment of frequencies to bins might 
+   lead to an inappropriate representation of the opacities.
+   In order to test  the applicability of the&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorting
+   procedure in non-planeparallel cases, we performed test  
+   calculations for some  typical two dimensional situations
+   (see Sect.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#sec:2dres">3.2</A>).
+
+<P>
+
+<H3><A NAME="SECTION00040000000000000000">&#160;</A>
+<A NAME="sec:results">&#160;</A><BR>
+3 Tests of the multigroup method
+</H3>
+
+<P>
+This section presents the results of tests that were carried out
+  in order to assess the performance of  the multigroup method.
+  While the systematic study by Ludwig (<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Ludwig1992">1992</A>) used
+  temperature structures of one-dimensional 
+  radiative-equilibrium atmospheres as a criterion for  the quality of
+  multigroup models,
+  we focus on  the radiative heating rate, which is the quantity that directly
+  enters the system of&nbsp;(M)HD&nbsp;equations.
+  In Sect.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#sec:1dtests">3.1</A> we present one-dimensional test calculations, 
+  which aim at an optimal approximation with a small number of bins.
+  These tests are extended to 
+  typical two-dimensional situations in Sect.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#sec:2dres">3.2</A>, where  a simplified  
+  flux-sheet model and a snapshot from a time-dependent
+  2D&nbsp;simulation are considered.
+  In Sect.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#sec:limit">3.3</A> we study the convergence properties of different opacity binning
+  schemes in the limit of a large number of bins and present an 
+  approach for defining average opacities which can enhance the quality
+  of the multigroup  approximation.        
+  In Sect.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#sec:tscale">3.4</A> we give an estimate for 
+ the characteristic timescales 
+  connected with the errors  occuring in multigroup calculations. 
+  Section&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#sec:lines">3.5</A> briefly addresses the errors resulting from the
+   use of&nbsp;ODFs,
+  and in Sect.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#sec:grad">3.6</A> we discuss the influence
+ of velocity gradients on radiative heating rates.
+
+<P>
+We treat the radiative transfer with the method of short characteristics (SC) 
+  according to Kunasz &amp; Auer (<A NAME="aaref5"></A><A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Kunasz1988">1988</A>). Starting from the formal solution of the RTE
+  (here stated for the 1D&nbsp;case)
+  <BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+I_{\nu}(\tau, \mu) = I_{\nu}(\tau_0,\mu)~ {\rm e}^{-(\tau_0-\tau)/\mu}
++ \frac{1}{\mu}\int_\tau^{\tau_0}\!\!\!\! B_\nu(t)~ {\rm e}^{-(t-\tau)/\mu}~ {\rm d}t
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><IMG
+ WIDTH="315" HEIGHT="70"
+ SRC="/articles/aa/full/2004/26/aa0043/img92.gif"
+ ALT="\begin{displaymath}I_{\nu}(\tau, \mu) = I_{\nu}(\tau_0,\mu)~ {\rm e}^{-(\tau_0-\...
+...^{\tau_0}\!\!\!\! B_\nu(t)~ {\rm e}^{-(t-\tau)/\mu}~ {\rm d}t
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(18)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+for a given cosine&nbsp;<IMG
+ WIDTH="35" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img93.gif"
+ ALT="$\mu > 0$">
+of ray-inclination and for&nbsp;
+<!-- MATH: $\tau < \tau_0$ -->
+<IMG
+ WIDTH="38" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img94.gif"
+ ALT="$\tau < \tau_0$">,
+  the radiation transport is solved piecewise along the distance between two gridpoints. 
+  For this purpose the formal solution is rewritten for gridpoint-interval&nbsp;(<I>i</I>,<I>i</I>+1) 
+  (the index&nbsp;<IMG
+ WIDTH="9" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img50.gif"
+ ALT="$\nu$">
+being dropped for clarity):
+  <BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+I_{i+1}(\mu) = I_i(\mu)~ {\rm e}^{-\Delta\tau_i/\mu}
++ \frac{1}{\mu}\int_{\tau_{i+1}}^{\tau_i}\!\!\!\! B(t)~ {\rm e}^{-(t-\tau_{i+1})/\mu}~ {\rm d}t.
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><IMG
+ WIDTH="285" HEIGHT="72"
+ SRC="/articles/aa/full/2004/26/aa0043/img95.gif"
+ ALT="\begin{displaymath}I_{i+1}(\mu) = I_i(\mu)~ {\rm e}^{-\Delta\tau_i/\mu}
++ \frac...
+...tau_i}\!\!\!\! B(t)~ {\rm e}^{-(t-\tau_{i+1})/\mu}~ {\rm d}t.
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(19)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+In 1D calculations the upwind intensity&nbsp;<I>I</I><SUB><I>i</I></SUB> has been obtained in the previous 
+  step of the computation; 
+in two or three dimensions, the ray is traced back from point&nbsp;<I>i</I>+1 until it reaches   a cell boundary. At the point of intersection the upwind intensity&nbsp;<I>I</I><SUB><I>i</I></SUB> is interpolated   from the values at the neighbouring gridpoints (which must be known, of course). All 2D&nbsp;calculations in Sect.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#sec:2dres">3.2</A> use linear interpolation of
+the upwind intensities.
+  The physical  parameters, which are given at the gridpoints, have to be interpolated
+  along the interval in order to evaluate&nbsp;
+<!-- MATH: $\Delta\tau_i = \tau_i - \tau_{i+1}$ -->
+<IMG
+ WIDTH="85" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img96.gif"
+ ALT="$\Delta\tau_i = \tau_i - \tau_{i+1}$">
+  and&nbsp;
+<!-- MATH: $\Delta I_i = \int_{\tau_{i+1}}^{\tau_i} B(t)~ {\rm e}^{-(t-\tau_{i+1})/\mu} {\rm d}t$ -->
+<IMG
+ WIDTH="152" HEIGHT="33" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img97.gif"
+ ALT="$\Delta I_i = \int_{\tau_{i+1}}^{\tau_i} B(t)~ {\rm e}^{-(t-\tau_{i+1})/\mu} {\rm d}t$">.
+ 
+<!-- MATH: $\varrho(z)$ -->
+<IMG
+ WIDTH="24" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img98.gif"
+ ALT="$\varrho(z)$">&nbsp;and&nbsp;<IMG
+ WIDTH="25" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img99.gif"
+ ALT="$\kappa(z)$">
+are assumed linear in&nbsp;<I>z</I>, <IMG
+ WIDTH="28" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img100.gif"
+ ALT="$B(\tau)$">&nbsp;linear  in&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">,
+which leads to   analytical expressions for&nbsp;
+<!-- MATH: $\Delta\tau_i$ -->
+<IMG
+ WIDTH="23" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img101.gif"
+ ALT="$\Delta\tau_i$">
+and&nbsp;
+<!-- MATH: $\Delta I_i$ -->
+<IMG
+ WIDTH="20" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img102.gif"
+ ALT="$\Delta I_i$">.
+  For all tests in plane-parallel atmospheres, 
+  a Gaussian quadrature with ten direction-cosines per hemisphere 
+   (Lowan et&nbsp;al. <A NAME="aaref8"></A><A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Lowan1942">1942</A>) is used in order to discretize the angular 
+  dependence of the radiation field.  The 
+  2D&nbsp;calculations of
+  Sect.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#sec:2dres">3.2</A> use the A8&nbsp;angular quadrature of Carlson (<A NAME="aaref2"></A><A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Carlson1963">1963</A>) with
+  ten ray directions per octant (see also  Bruls et&nbsp;al. <A NAME="aaref0"></A><A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Bruls1999">1999</A> for details about
+   the quadrature scheme and the influence of angular resolution
+  on&nbsp;
+<!-- MATH: $Q_{\rm rad}$ -->
+<IMG
+ WIDTH="27" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img11.gif"
+ ALT="$Q_{\rm rad}$">). 
+ We use the radiative heating rates calculated with&nbsp;ODFs as reference solutions  for evaluating 
+  the multigroup results.
+  ODF&nbsp;opacitites also serve  as the reference "line'' spectrum on which
+  the multigroup sorting procedure is performed.      
+  We use the ODF&nbsp;table for  solar composition 
+  and a microturbulence parameter of&nbsp;
+<!-- MATH: $2~{\rm ~km\;s^{-1}}$ -->
+<IMG
+ WIDTH="57" HEIGHT="30" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img103.gif"
+ ALT="$2~{\rm ~km\;s^{-1}}$">,
+which is part 
+  of the ATLAS9 stellar atmosphere
+  package  of Kurucz (<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Kurucz1993">1993</A>).
+  The ODFs cover the wavelength range  from&nbsp;8.98&nbsp;nm to&nbsp;10&nbsp;000&nbsp;nm, which 
+  is divided into 328&nbsp;intervals.  The interval size is roughly 
+  proportional to wavelength. In the most relevant spectral range
+  300-1000&nbsp;nm the spectral resolution is&nbsp;10&nbsp;nm.
+  Within each of the 328&nbsp;ODF&nbsp;intervals, the   distribution function 
+  is approximated by&nbsp;12&nbsp;steps,
+  i.e., the line spectrum is approximated by&nbsp;
+<!-- MATH: $328 \times 12$ -->
+<IMG
+ WIDTH="53" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img104.gif"
+ ALT="$328 \times 12$">
+"frequency points''
+  (the frequency information is lost within each ODF&nbsp;interval 
+   as a result of the reordering of opacity values). 
+  The ODFs are tabulated as functions of gas pressure and
+  temperature.
+  The continuum opacities were extracted from the relevant routines
+  of the ATLAS9&nbsp;code (Kurucz <A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Kurucz1993">1993</A>) and stored as a table on the same pressure/temperature
+  grid as used for the&nbsp;ODFs.
+
+<P>
+
+<H4><A NAME="SECTION00041000000000000000">&#160;</A>
+  <A NAME="sec:1dtests">&#160;</A><BR>
+3.1 1D tests
+</H4>
+
+<P>
+We have applied the ODF and multigroup methods  
+  to a one-dimensional  solar model atmosphere (Maltby et&nbsp;al. <A NAME="aaref12"></A><A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Maltby1986">1986</A>) in order  
+  to verify  the  result  of   Ludwig (<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Ludwig1992">1992</A>), who found  a 5-bin description
+  to yield a satisfactory approximation of the ODF&nbsp;reference solution.
+
+<P>
+<BR>
+<DIV ALIGN="LEFT">
+<TABLE WIDTH="100%">
+<TR><TD><!-- init Label --><A NAME="fig1">&#160;</A><!-- end Label--><A NAME="1052">&#160;</A><A NAME="figure548"
+ HREF="/articles/aa/full/2004/26/aa0043/img105.gif"><IMG
+ WIDTH="96" HEIGHT="77" SRC="/articles/aa/full/2004/26/aa0043/Timg105.gif"
+ ALT="\begin{figure}
+\par\includegraphics[width=8.4cm,clip]{0043f04.eps}
+\end{figure}"></A></TD>
+<TD><FONT size="-1"><STRONG>Figure 4:</STRONG>
+The total radiative heating rate per mass unit,&nbsp;
+<!-- MATH: $Q_{\rm rad}/\varrho$ -->
+<IMG
+ WIDTH="39" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img8.gif"
+ ALT="$Q_{\rm rad}/\varrho $">
+as a function of geometrical height for the 1D&nbsp;atmosphere
+             of Maltby et&nbsp;al. (<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Maltby1986">1986</A>). The 
+             ODF solution and the grey case with the Rosseland 
+             mean opacity are shown. In the height range between&nbsp;<I>z</I>=0 and&nbsp;<I>z</I>=200&nbsp;km, the line opacities  lead to
+             a backwarming effect of the ODF case relative to the grey one.
+<I>z</I>=0 corresponds to continuum optical depth unity at&nbsp;500&nbsp;nm,&nbsp;
+<!-- MATH: $\tau_{500}=1$ -->
+<IMG
+ WIDTH="49" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img9.gif"
+ ALT="$\tau _{500}=1$">.</FONT></TD>
+</TR><TR><TD COLSPAN="2"><A HREF="http://dexter.edpsciences.org/applet.php?html_id=4&DOI=10.1051/0004-6361:20047043" target="DEXTER">Open with DEXTER</A></TD></TR>
+
+</TABLE>
+</DIV><BR>
+<P>
+The effects  of a  non-grey radiative transfer are illustrated in 
+  Fig.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig1">4</A>, which  shows the frequency-integrated radiative heating rate
+  per mass unit,&nbsp;
+<!-- MATH: $Q_{\rm rad}/\varrho$ -->
+<IMG
+ WIDTH="39" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img8.gif"
+ ALT="$Q_{\rm rad}/\varrho $">
+  calculated 
+  with&nbsp;ODFs and, for comparison, the heating rate calculated with the 
+  Rosseland mean opacity.  Both curves 
+  show the characteristic cooling located around the height&nbsp;<I>z</I>=0, where
+  the atmosphere becomes transparent in the visible  continuum and where most of the 
+  emerging solar flux originates. The largest differences between the curves are found in the
+  optically thin regions at&nbsp;<I>z</I>&gt;0. In the height range&nbsp;0&lt;<I>z</I>&lt;200&nbsp;km &nbsp;
+<!-- MATH: $Q_{\rm ODF}$ -->
+<IMG
+ WIDTH="33" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img106.gif"
+ ALT="$Q_{\rm ODF}$">
+  is less negative than&nbsp;
+<!-- MATH: $Q_{\rm grey}$ -->
+<IMG
+ WIDTH="32" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img107.gif"
+ ALT="$Q_{\rm grey}$">,
+  which can be interpreted as the backwarming effect due to the line opacities.
+ Above&nbsp;<I>z</I>=200&nbsp;km the line-cooling effect causes&nbsp;
+<!-- MATH: $Q_{\rm ODF}$ -->
+<IMG
+ WIDTH="33" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img106.gif"
+ ALT="$Q_{\rm ODF}$">
+to become smaller
+ than&nbsp;
+<!-- MATH: $Q_{\rm Ross}$ -->
+<IMG
+ WIDTH="33" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img108.gif"
+ ALT="$Q_{\rm Ross}$">.
+In the optically thick part of the atmosphere (<I>z</I>&lt;0) the relative
+ error of the grey solution becomes negligible as the radiative transfer 
+ approaches the diffusion limit.
+
+<P>
+<BR>
+<DIV ALIGN="LEFT">
+<TABLE WIDTH="100%">
+<TR><TD><!-- init Label --><A NAME="q_qodf_1">&#160;</A><!-- end Label--><A NAME="1053">&#160;</A><A NAME="figure562"
+ HREF="/articles/aa/full/2004/26/aa0043/img109.gif"><IMG
+ WIDTH="96" HEIGHT="79" SRC="/articles/aa/full/2004/26/aa0043/Timg109.gif"
+ ALT="\begin{figure}
+\par\includegraphics[width=8.4cm,clip]{0043f05.eps}
+\end{figure}"></A></TD>
+<TD><FONT size="-1"><STRONG>Figure 5:</STRONG>
+
+<!-- MATH: $(Q-Q_{\rm ODF})/\varrho$ -->
+<IMG
+ WIDTH="81" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img10.gif"
+ ALT="$(Q-Q_{\rm ODF})/\varrho $">
+as a function of height&nbsp;<I>z</I>.
+               5&nbsp;different cases 
+               with increasing  numbers of frequency bins are shown.               </FONT></TD>
+</TR><TR><TD COLSPAN="2"><A HREF="http://dexter.edpsciences.org/applet.php?html_id=5&DOI=10.1051/0004-6361:20047043" target="DEXTER">Open with DEXTER</A></TD></TR>
+
+</TABLE>
+</DIV><BR>
+<P>
+Figure&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#q_qodf_1">5</A> shows&nbsp;
+<!-- MATH: $(Q-Q_{\rm ODF})/\varrho$ -->
+<IMG
+ WIDTH="81" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img10.gif"
+ ALT="$(Q-Q_{\rm ODF})/\varrho $">
+for the Rosseland solution and for&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorted multigroup models
+with the number of opacity bins increasing from&nbsp;3 to&nbsp;6.
+The threshold values separating the bins in the multigroup models
+are spaced apart by&nbsp;
+<!-- MATH: $\Delta\log\tau_{500}=1.5$ -->
+<IMG
+ WIDTH="90" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img110.gif"
+ ALT="$\Delta\log\tau_{500}=1.5$">,
+the lowest
+threshold value being&nbsp;
+<!-- MATH: $\log\tau_{500}=0$ -->
+<IMG
+ WIDTH="69" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img111.gif"
+ ALT="$\log\tau_{500}=0$">
+for all models, i.e.
+
+<!-- MATH: $\log\tau^l = -l\cdot \Delta$ -->
+<IMG
+ WIDTH="81" HEIGHT="30" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img112.gif"
+ ALT="$\log\tau^l = -l\cdot \Delta$">
+with&nbsp;
+<!-- MATH: $l=0, \cdots , N-2$ -->
+<IMG
+ WIDTH="93" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img113.gif"
+ ALT="$l=0, \cdots , N-2$">
+and&nbsp;
+<!-- MATH: $\Delta=1.5$ -->
+<IMG
+ WIDTH="46" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img114.gif"
+ ALT="$\Delta=1.5$">,
+where&nbsp;<I>N</I> is the number of bins. This choice corresponds to
+a roughly equidistant spacing of levels on the geometrical
+height scale as well, with&nbsp;
+<!-- MATH: $\Delta z \approx 150, \cdots, 200~{\rm ~km}$ -->
+<IMG
+ WIDTH="131" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img115.gif"
+ ALT="$\Delta z \approx 150, \cdots, 200~{\rm ~km}$">.
+         The 3- and 4-bin models
+      show a strong cooling above, respectively, &nbsp;
+<!-- MATH: $z\approx 550~{\rm ~km}$ -->
+<IMG
+ WIDTH="71" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img116.gif"
+ ALT="$z\approx 550~{\rm ~km}$">
+and&nbsp;
+<!-- MATH: $z\approx 700~{\rm ~km}$ -->
+<IMG
+ WIDTH="72" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img117.gif"
+ ALT="$z\approx 700~{\rm ~km}$">.
+In these cases, the 
+      strong line opacities which become transparent in the upper part
+      of the atmosphere are only crudely represented by the
+      highest opacity bin, which results in a bad approximation
+      of&nbsp;
+<!-- MATH: $Q_{\rm rad}$ -->
+<IMG
+ WIDTH="27" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img11.gif"
+ ALT="$Q_{\rm rad}$">
+at large heights.
+In the height range&nbsp;
+<!-- MATH: $0<z<700~{\rm ~km}$ -->
+<IMG
+ WIDTH="94" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img118.gif"
+ ALT="$0<z<700~{\rm ~km}$">
+the models with&nbsp;5 and&nbsp;6&nbsp;bins are clearly more 
+      accurate than the grey solution. 
+      The quality of   the&nbsp;5- and&nbsp;6-bin approximations
+      is comparable, significant differences
+      occur  only above&nbsp;
+<!-- MATH: $z\approx 600~{\rm ~km}$ -->
+<IMG
+ WIDTH="72" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img119.gif"
+ ALT="$z\approx 600~{\rm ~km}$">
+as a result of the additional
+      threshold of the 6-bin model at&nbsp;
+<!-- MATH: $\log\tau_{500}=-6$ -->
+<IMG
+ WIDTH="77" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img120.gif"
+ ALT="$\log\tau_{500}=-6$">
+(corresponding to&nbsp;
+<!-- MATH: $z\approx 760~{\rm ~km}$ -->
+<IMG
+ WIDTH="72" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img121.gif"
+ ALT="$z\approx 760~{\rm ~km}$">).
+      Likewise, the 3- and 4-bin solutions differ from the
+      6-bin model only in the height range above, respectively,
+      
+<!-- MATH: $z\approx 150~{\rm ~km}$ -->
+<IMG
+ WIDTH="71" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img122.gif"
+ ALT="$z\approx 150~{\rm ~km}$">
+      and&nbsp;
+<!-- MATH: $z\approx 400~{\rm ~km}$ -->
+<IMG
+ WIDTH="72" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img123.gif"
+ ALT="$z\approx 400~{\rm ~km}$">,
+corresponding that parts of the
+      atmosphere which are covered by the respective highest
+      bins of the 3- and 4-bin models.
+<BR>
+<DIV ALIGN="LEFT">
+<TABLE WIDTH="100%">
+<TR><TD><!-- init Label --><A NAME="q_qodf_2">&#160;</A><!-- end Label--><A NAME="1054">&#160;</A><A NAME="figure583"
+ HREF="/articles/aa/full/2004/26/aa0043/img124.gif"><IMG
+ WIDTH="96" HEIGHT="79" SRC="/articles/aa/full/2004/26/aa0043/Timg124.gif"
+ ALT="\begin{figure}
+\par\includegraphics[width=8.4cm,clip]{0043f06.eps}
+\end{figure}"></A></TD>
+<TD><FONT size="-1"><STRONG>Figure 6:</STRONG>
+
+<!-- MATH: $(Q-Q_{\rm ODF})/\varrho$ -->
+<IMG
+ WIDTH="81" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img10.gif"
+ ALT="$(Q-Q_{\rm ODF})/\varrho $">
+as a function of height&nbsp;<I>z</I>. 4&nbsp;different cases 
+               with increasing  numbers of frequency bins are shown.               </FONT></TD>
+</TR><TR><TD COLSPAN="2"><A HREF="http://dexter.edpsciences.org/applet.php?html_id=6&DOI=10.1051/0004-6361:20047043" target="DEXTER">Open with DEXTER</A></TD></TR>
+
+</TABLE>
+</DIV><BR>
+<P>
+Figure&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#q_qodf_2">6</A> shows the attempt to model&nbsp;
+<!-- MATH: $Q_{\rm rad}$ -->
+<IMG
+ WIDTH="27" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img11.gif"
+ ALT="$Q_{\rm rad}$">
+with a small number of bins distributed equidistantly    
+      over the height range&nbsp;<I>z</I>&gt;0.
+      The threshold values (in&nbsp;
+<!-- MATH: $\log\tau_{500}$ -->
+<IMG
+ WIDTH="46" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img125.gif"
+ ALT="$\log\tau_{500}$">)
+were 
+      chosen as follows:
+
+<P>
+
+<P></P>
+2 bins:   &nbsp;-3 <BR>
+     3 bins:  &nbsp;-1.5,&nbsp;-4.5 <BR>
+     4 bins: &nbsp;-1, &nbsp;-3,&nbsp;-5. 
+
+<P></P>
+
+<P>
+It turns out that the 2-bin model is less accurate than the Rosseland solution.
+Obviously, switching from the Rosseland to the Planck mean 
+results in a bad representation of opacities in cases where
+the number of bins is small and the classification of frequencies
+is accordingly crude. While the 3-bin solution shows a relatively
+large error above&nbsp;
+<!-- MATH: $z\approx 600\;{\rm ~km}$ -->
+<IMG
+ WIDTH="71" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img126.gif"
+ ALT="$z\approx 600\;{\rm ~km}$">,
+the performance of the
+4-bin solution is comparable to the cases with&nbsp;5 and 6&nbsp;bins 
+in Fig.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#q_qodf_1">5</A>. 
+Calculations with  larger numbers of equidistantly spaced
+      bins did not show any significant  further improvement
+      (see Sect.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#sec:limit">3.3</A>). So, for the atmosphere model
+considered here, the optimal number of frequency bins is found
+to be&nbsp;4-6. However, as the results of Fig.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#q_qodf_1">5</A> suggest, the
+optimal number depends on the
+vertical extent of the atmosphere considered. 
+
+<P>
+The relatively large errors around&nbsp;<I>z</I>=0 do not decrease
+      with increasing number of bins. As mentioned in 
+      Sect.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#sec:multigroup">2.2</A>, one does not expect perfect
+    convergence towards the exact solution,
+   and it is plausible that the large gradients of opacity and
+   source function around&nbsp;<I>z</I>=0 lead  large absolute errors 
+   in&nbsp;
+<!-- MATH: $Q_{\rm rad}$ -->
+<IMG
+ WIDTH="27" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img11.gif"
+ ALT="$Q_{\rm rad}$">.
+   However, since this is the region where strong radiative 
+   cooling leads to large absolute values of&nbsp;
+<!-- MATH: $Q_{\rm rad}$ -->
+<IMG
+ WIDTH="27" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img11.gif"
+ ALT="$Q_{\rm rad}$">
+itself,
+   the relative errors in&nbsp;
+<!-- MATH: $Q_{\rm rad}$ -->
+<IMG
+ WIDTH="27" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img11.gif"
+ ALT="$Q_{\rm rad}$">
+near&nbsp;<I>z</I>=0 are small and do not 
+   seriously impair  the quality of the multigroup solutions (see Sect.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#sec:tscale">3.4</A>
+    for an estimate of the importance of errors in&nbsp;
+<!-- MATH: $Q_{\rm rad}$ -->
+<IMG
+ WIDTH="27" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img11.gif"
+ ALT="$Q_{\rm rad}$">).
+    In the optically thick regime&nbsp;
+<!-- MATH: $\tau_{500} > 1$ -->
+<IMG
+ WIDTH="49" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img127.gif"
+ ALT="$\tau_{500} > 1$">
+(<I>z</I>&lt;0) the solutions
+  for different total numbers of bins agree well with each other, the relative
+  error&nbsp;
+<!-- MATH: $|(Q-Q_{\rm ODF})/Q_{\rm ODF}|$ -->
+<IMG
+ WIDTH="111" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img128.gif"
+ ALT="$\vert(Q-Q_{\rm ODF})/Q_{\rm ODF}\vert$">
+not exceeding the order of&nbsp;10<SUP>-2</SUP>.
+  This is in agreement with the fact that  the frequency dependence  has almost
+  no influence on the radiative transfer at large optical
+  depths and any multigroup model can 
+  be expected to yield good results at these depths as long as the Rosseland 
+  mean is used for calculating bin-averaged opacities.
+
+<P>
+
+<H4><A NAME="SECTION00042000000000000000">&#160;</A>
+<A NAME="sec:2dres">&#160;</A><BR>
+3.2 Results of 2D calculations
+</H4> 
+
+<P>
+The previous section has shown that, in a plane-parallel
+atmosphere,   a substantial improvement of the radiative 
+heating rates in comparison to the grey case  can be achieved  already with a moderate number of frequency bins. 
+In this section, we consider
+two-dimensional situations in order to assess the error incurred by
+using a 1D reference atmosphere in the&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorting procedure. For 
+multigroup calculations, the same bin parameters as in the 
+previous  section have been used.
+
+<P>
+<BR>
+<DIV ALIGN="LEFT">
+<TABLE WIDTH="100%">
+<TR><TD><!-- init Label --><A NAME="fig:fsheet">&#160;</A><!-- end Label--><A NAME="1055">&#160;</A><A NAME="figure608"
+ HREF="/articles/aa/full/2004/26/aa0043/img129.gif"><IMG
+ WIDTH="94" HEIGHT="106" SRC="/articles/aa/full/2004/26/aa0043/Timg129.gif"
+ ALT="\begin{figure}
+\par\includegraphics[width=8.2cm,clip]{0043f07.eps}
+\end{figure}"></A></TD>
+<TD><FONT size="-1"><STRONG>Figure 7:</STRONG>
+Temperature and density on the symmetry axis (center) of the magnetic sheet (dotted)
+         and in the surrounding atmosphere (solid).</FONT></TD>
+</TR><TR><TD COLSPAN="2"><A HREF="http://dexter.edpsciences.org/applet.php?html_id=7&DOI=10.1051/0004-6361:20047043" target="DEXTER">Open with DEXTER</A></TD></TR>
+
+</TABLE>
+</DIV><BR>
+<P>
+<BR>
+<DIV ALIGN="LEFT">
+<TABLE WIDTH="100%">
+<TR><TD><!-- init Label --><A NAME="fig:fsheet_col">&#160;</A><!-- end Label--><A NAME="1056">&#160;</A><A NAME="figure613"
+ HREF="/articles/aa/full/2004/26/aa0043/img130.gif"><IMG
+ WIDTH="100" HEIGHT="77" SRC="/articles/aa/full/2004/26/aa0043/Timg130.gif"
+ ALT="\begin{figure}
+\par\includegraphics[width=4.4cm,clip]{0043f08.eps}\hspace*{1mm}
+\includegraphics[width=4.2cm,clip]{0043f09.eps}
+\end{figure}"></A></TD>
+<TD><FONT size="-1"><STRONG>Figure 8:</STRONG>
+
+<!-- MATH: $Q_{\rm rad}/\varrho$ -->
+<IMG
+ WIDTH="39" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img8.gif"
+ ALT="$Q_{\rm rad}/\varrho $">
+for the ODF-based reference solution
+             in a magnetic flux sheet model. The left and right panels
+             show the lower part  (<I>z</I> &lt; 0)   and upper part (<I>z</I>&gt;0) of the sheet,
+             respectively. Solid contour lines indicate cooling (<I>Q</I>&lt;0),
+             dashed lines indicate heating (<I>Q</I>&gt;0). </FONT></TD>
+</TR><TR><TD COLSPAN="2"><A HREF="http://dexter.edpsciences.org/applet.php?html_id=8&DOI=10.1051/0004-6361:20047043" target="DEXTER">Open with DEXTER</A></TD></TR>
+
+</TABLE>
+</DIV><BR>
+<P>
+As a first step we investigated a simple model of a 2D&nbsp;magnetic flux sheet. 
+Based on the 1D&nbsp;atmosphere 
+used in the previous section, the stratification in the interior of the sheet is shifted
+downwards by&nbsp;200&nbsp;km relative to the surrounding atmosphere (the "Wilson
+depression''; see Fig.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:fsheet">7</A>, right panels). The width of the sheet
+as a function of height results from magnetic flux conservation  together
+with the condition of total (magnetic&nbsp;+&nbsp;gas) pressure equilibrium between the interior and the
+exterior of  the sheet. 
+The equilibrium condition reads
+<BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+\frac{B_{\rm in}^2(z)}{8\pi} = \Delta p(z),
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><IMG
+ WIDTH="93" HEIGHT="71"
+ SRC="/articles/aa/full/2004/26/aa0043/img131.gif"
+ ALT="\begin{displaymath}\frac{B_{\rm in}^2(z)}{8\pi} = \Delta p(z),
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(20)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+where&nbsp;
+<!-- MATH: $B_{\rm in}$ -->
+<IMG
+ WIDTH="20" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img132.gif"
+ ALT="$B_{\rm in}$">
+is the field strength in the sheet and&nbsp;
+<!-- MATH: $\Delta p = p_{\rm ex}-p_{\rm in}$ -->
+<IMG
+ WIDTH="87" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img133.gif"
+ ALT="$\Delta p = p_{\rm ex}-p_{\rm in}$">
+is the difference between external
+and internal gas pressure.
+Substituting&nbsp;
+<!-- MATH: $B_{\rm in}(z)$ -->
+<IMG
+ WIDTH="35" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img134.gif"
+ ALT="$B_{\rm in}(z)$">
+from the above equation in 
+the expression for flux conservation
+<BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+B_{\rm in}(z)w(z) = B_{\rm in}(0)w(0)
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><IMG
+ WIDTH="142" HEIGHT="48"
+ SRC="/articles/aa/full/2004/26/aa0043/img135.gif"
+ ALT="\begin{displaymath}B_{\rm in}(z)w(z) = B_{\rm in}(0)w(0)
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(21)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>(<I>w</I>(<I>z</I>) is the width of the sheet), one obtains
+<BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+w(z) = \sqrt{\frac{\Delta p(0)}{\Delta p(z)}}~ w(0).
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><IMG
+ WIDTH="135" HEIGHT="82"
+ SRC="/articles/aa/full/2004/26/aa0043/img136.gif"
+ ALT="\begin{displaymath}w(z) = \sqrt{\frac{\Delta p(0)}{\Delta p(z)}}~ w(0).
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(22)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+At the height
+<I>z</I>=0, corresponding to&nbsp;
+<!-- MATH: $\tau_{500}=1$ -->
+<IMG
+ WIDTH="49" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img9.gif"
+ ALT="$\tau _{500}=1$">
+in the exterior, the flux sheet has a
+width of&nbsp;150&nbsp;km. The sheet is fanning out  with increasing height as the magnetic pressure
+necessary to balance the jump in gas pressure decreases (see Fig.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:fsheet">7</A>,
+ left panel).
+At the  interfaces between the interior and the exterior of the sheet, the atmospheric 
+parameters are smoothed  out
+horizontally over a distance of several tens of kilometers:
+<BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+T(x) = T_{\rm in} + (T_{\rm ex}- T_{\rm in})\cdot \frac{1}{2}
+\left[ {\rm ERF}
+                                          \left(\frac{x-x_{\rm b}}{\Delta x}
+                                          \right) - 1
+				\right],
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><IMG
+ WIDTH="295" HEIGHT="67"
+ SRC="/articles/aa/full/2004/26/aa0043/img137.gif"
+ ALT="\begin{displaymath}T(x) = T_{\rm in} + (T_{\rm ex}- T_{\rm in})\cdot \frac{1}{2}...
+...RF}
+\left(\frac{x-x_{\rm b}}{\Delta x}
+\right) - 1
+\right],
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(23)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+and likewise for pressure and density;&nbsp;<IMG
+ WIDTH="15" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img138.gif"
+ ALT="$x_{\rm b}$">
+is the horizontal position
+of the sheet boundary, for the smearing parameter&nbsp;<IMG
+ WIDTH="20" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img139.gif"
+ ALT="$\Delta x$">
+we used a value of&nbsp;10&nbsp;km.  
+Owing to the mirror symmetry of the sheet, the calculations can be 
+restricted to one half
+of the flux sheet, with symmetrical boundary conditions imposed on the sheet's
+symmetry axis (located at&nbsp;<I>x</I>=0). A cartesian grid with&nbsp;
+<!-- MATH: $201\times 161$ -->
+<IMG
+ WIDTH="60" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img140.gif"
+ ALT="$201\times 161$">
+grid points and
+horizontal and vertical resolutions  of, respectively, &nbsp;2.5&nbsp;km  and&nbsp;5&nbsp;km was used.
+
+<P>
+<BR>
+<DIV ALIGN="LEFT">
+<TABLE WIDTH="100%">
+<TR><TD><!-- init Label --><A NAME="fig:fsheet2">&#160;</A><!-- end Label--><A NAME="1060">&#160;</A><A NAME="figure651"
+ HREF="/articles/aa/full/2004/26/aa0043/img141.gif"><IMG
+ WIDTH="84" HEIGHT="226" SRC="/articles/aa/full/2004/26/aa0043/Timg141.gif"
+ ALT="\begin{figure}
+\par\hspace*{-3mm} \includegraphics[width=7.1cm,clip]{0043f10.eps...
+...s}\par\vspace*{2mm}
+\includegraphics[width=7.2cm,clip]{0043f12.eps}
+\end{figure}"></A></TD>
+<TD><FONT size="-1"><STRONG>Figure 9:</STRONG>
+Horizontal profiles of&nbsp;
+<!-- MATH: $Q_{\rm rad}$ -->
+<IMG
+ WIDTH="27" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img11.gif"
+ ALT="$Q_{\rm rad}$">
+at three different 
+             heights in the 2D&nbsp;atmosphere with an embedded
+             flux sheet.&nbsp;<I>x</I>=0 corresponds to the symmetry axis of the sheet. </FONT></TD>
+</TR><TR><TD COLSPAN="2"><A HREF="http://dexter.edpsciences.org/applet.php?html_id=9&DOI=10.1051/0004-6361:20047043" target="DEXTER">Open with DEXTER</A></TD></TR>
+
+</TABLE>
+</DIV><BR>
+<P>
+In Fig.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:fsheet_col">8</A>, the heating rates for the ODF reference solution
+are shown. For&nbsp;<I>z</I> &gt; -200&nbsp;km, the sheet interior is heated  as a result
+of the lateral radiative energy exchange with the hotter exterior. Correspondingly,
+the outside regions close to the sheet boundary are   subject to strong cooling. 
+The weak cooling, which occurs below&nbsp;<I>z</I> = -200&nbsp;km inside the sheet around
+the symmetry axis, is 
+caused by radiative energy losses as the interior becomes optically 
+thin at these heights.
+Figure&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:fsheet2">9</A> shows&nbsp;
+<!-- MATH: $Q_{\rm rad}$ -->
+<IMG
+ WIDTH="27" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img11.gif"
+ ALT="$Q_{\rm rad}$">
+along horizontal cuts through the 
+(half) sheet at three 
+different heights. At&nbsp;<I>z</I>=-150&nbsp;km, the agreement between the ODF reference and both the
+grey and  multigroup solutions is very good. Corresponding to the horizontal temperature
+gradient, a heating peak inside the sheet and a stronger cooling region outside form near
+ the sheet boundary.  At this height,   the outside atmosphere and most of the
+boundary region are optically thick and the radiative transfer is essentially grey,
+ so that&nbsp;
+<!-- MATH: $Q_{\rm rad}$ -->
+<IMG
+ WIDTH="27" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img11.gif"
+ ALT="$Q_{\rm rad}$">
+is well represented  even without a detailed
+treatment of the frequency dependence. The maximum relative errors near the heating
+and cooling peaks range between&nbsp;5 and&nbsp;10&nbsp;percent.    
+
+<P>
+At&nbsp;<I>z</I>=100&nbsp;km,  both  multigroup 
+solutions  qualitatively reproduce the ODF case. The grey (Rosseland) case  
+is much less accurate than the 3- and 5-bin solutions. The heating peak 
+at the boundary is shifted outwards by approximately&nbsp;10&nbsp;km, the
+peak value being reduced by&nbsp;15&nbsp;percent with respect to the ODF&nbsp;case,
+while the small cooling dip 
+outside is not captured at all.
+The relative errors of the multigroup solutions are largest 
+at the cooling dip around&nbsp;<I>x</I>=120&nbsp;km with&nbsp;30 and&nbsp;20&nbsp;percent for 
+the  3- and 5-bin solutions, respectively. At the heating peak&nbsp;(<I>x</I>=105&nbsp;km)
+the errors do not exceed&nbsp;10&nbsp;percent. 
+ At a still greater height of&nbsp;250&nbsp;km, both the&nbsp;3-  and  5-bin 
+approximations  yield acceptable  results, though
+neither captures the full extent of the cooling peak outside the sheet boundary. 
+Around the heating peak (<I>x</I>=200&nbsp;km) and in the outside region (<I>x</I> &gt; 250&nbsp;km),
+the 5-bin solution achieves  a clear improvement over the 3-bin
+case.  
+The error of the grey solution is large by comparison, and the ODF&nbsp;solution is  not even approximately reproduced. The heating peak <I>inside</I> the
+sheet has vanished; instead, heating takes place immediately <I>outside</I>
+ the sheet, where
+the correct solution shows considerable cooling.
+This behaviour can be explained by the fact that, on the basis of  the Rosseland mean, the 
+interior of the sheet is transparent at a height of&nbsp;250&nbsp;km;
+accordingly,  the interaction between gas and radiation is very weak within the
+sheet, resulting in small values of&nbsp;
+<!-- MATH: $Q_{\rm rad}$ -->
+<IMG
+ WIDTH="27" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img11.gif"
+ ALT="$Q_{\rm rad}$">.
+In the optically thicker
+regions immediately outside the sheet, radiation originating from
+deeper, hotter regions at the <I>opposite</I> sheet boundary and crossing the
+sheet almost unattenuated, leads to a net heating effect. The error of the
+grey solution far outside the sheet&nbsp;(<I>x</I>=500&nbsp;km) is in agreement with the results
+of the 1D&nbsp;calculations at the same height  in the atmosphere; this is 
+plausible since far away from the sheet the radiative transfer is  essentially
+one-dimensional. 
+This example clearly
+demonstrates how important a nongrey approach to radiative transfer can be
+in optically thin regions in order to obtain accurate values of&nbsp;
+<!-- MATH: $Q_{\rm rad}$ -->
+<IMG
+ WIDTH="27" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img11.gif"
+ ALT="$Q_{\rm rad}$">.
+
+<P>
+As a further step towards more realistic situations
+we  tested the opacity binning models in  calculations that used a snapshot 
+from a 2D&nbsp;simulation of granulation by Ploner et&nbsp;al. (<A NAME="aaref21"></A><A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Ploner1999">1999</A>)  (Fig.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:ploner">10</A>), 
+which has no relation to the one-dimensional reference atmosphere used for&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorting. 
+The vertical and horizontal extent of the
+computational domain is&nbsp;
+<!-- MATH: $1400 \times 1400~{\rm ~km}^2$ -->
+<IMG
+ WIDTH="104" HEIGHT="31" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img142.gif"
+ ALT="$1400 \times 1400~{\rm ~km}^2$">
+with a grid resolution of&nbsp;35&nbsp;km.
+ Figure&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:fsheet3">11</A> shows&nbsp;
+<!-- MATH: $Q_{\rm rad}$ -->
+<IMG
+ WIDTH="27" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img11.gif"
+ ALT="$Q_{\rm rad}$">
+in horizontal cuts 
+at heights of approximately&nbsp;100 and&nbsp;500&nbsp;km above&nbsp;
+<!-- MATH: $\tau_{500}=1$ -->
+<IMG
+ WIDTH="49" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img9.gif"
+ ALT="$\tau _{500}=1$">,
+respectively. 
+The same&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorted opacity-tables as in the previous calculation
+have been used.
+ In accordance with  the results for the flux sheet, all solutions (including the 
+grey case) agree quite well with  each other at the lower level, although the errors of the 
+grey case become more pronounced towards the horizontal boundaries of the
+domain. The differences between the 3- and 5- bin solutions are only marginal.
+At&nbsp;500&nbsp;km above&nbsp;
+<!-- MATH: $\tau_{500}=1$ -->
+<IMG
+ WIDTH="49" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img9.gif"
+ ALT="$\tau _{500}=1$">,
+the Rosseland solution, similar to the
+optically thin case in Fig.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:fsheet2">9</A>, completely fails to reproduce 
+the ODF&nbsp;reference solution. On the other hand, the 5-bin solution 
+excellently agrees with the reference curve and is clearly superior to the 
+3-bin model. 
+<BR>
+<DIV ALIGN="LEFT">
+<TABLE WIDTH="100%">
+<TR><TD><!-- init Label --><A NAME="fig:ploner">&#160;</A><!-- end Label--><A NAME="1061">&#160;</A><A NAME="figure679"
+ HREF="/articles/aa/full/2004/26/aa0043/img143.gif"><IMG
+ WIDTH="82" HEIGHT="169" SRC="/articles/aa/full/2004/26/aa0043/Timg143.gif"
+ ALT="\begin{figure}
+\par\includegraphics[width=7.1cm,clip]{0043f13.eps}\par\vspace*{2mm}
+\includegraphics[width=7.1cm,clip]{0043f14N.eps}
+\end{figure}"></A></TD>
+<TD><FONT size="-1"><STRONG>Figure 10:</STRONG>
+<I> Upper panel</I>: temperature plot of a&nbsp;
+<!-- MATH: $1.4 \times 1.4$ -->
+<IMG
+ WIDTH="53" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img12.gif"
+ ALT="$1.4 \times 1.4$">&nbsp;
+<!-- MATH: ${\rm Mm^2}$ -->
+<IMG
+ WIDTH="33" HEIGHT="15" ALIGN="BOTTOM" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img13.gif"
+ ALT="${\rm Mm^2}$">
+cut-out from a 
+two-dimensional simulation snapshot (Ploner et&nbsp;al. <A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Ploner1999">1999</A>). <I> Lower panel</I>: the corresponding ODF-based radiative heating rate. </FONT></TD>
+</TR><TR><TD COLSPAN="2"><A HREF="http://dexter.edpsciences.org/applet.php?html_id=10&DOI=10.1051/0004-6361:20047043" target="DEXTER">Open with DEXTER</A></TD></TR>
+
+</TABLE>
+</DIV><BR>
+<P>
+<BR>
+<DIV ALIGN="LEFT">
+<TABLE WIDTH="100%">
+<TR><TD><!-- init Label --><A NAME="fig:fsheet3">&#160;</A><!-- end Label--><A NAME="1062">&#160;</A><A NAME="figure690"
+ HREF="/articles/aa/full/2004/26/aa0043/img144.gif"><IMG
+ WIDTH="89" HEIGHT="165" SRC="/articles/aa/full/2004/26/aa0043/Timg144.gif"
+ ALT="\begin{figure}
+\par\includegraphics[width=7.8cm,clip]{0043f15.eps}\par\vspace*{2mm}
+\includegraphics[width=7.7cm,clip]{0043f16.eps}
+\end{figure}"></A></TD>
+<TD><FONT size="-1"><STRONG>Figure 11:</STRONG>
+Horizontal profiles of&nbsp;
+<!-- MATH: $Q_{\rm rad}$ -->
+<IMG
+ WIDTH="27" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img11.gif"
+ ALT="$Q_{\rm rad}$">
+for  a  snapshot from a 2D&nbsp;simulation,
+      at heights of&nbsp;100&nbsp;km (<I> upper panel</I>) 
+   and&nbsp;500&nbsp;km (<I> lower panel</I>)  above&nbsp;
+<!-- MATH: $\tau_{500}=1$ -->
+<IMG
+ WIDTH="49" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img9.gif"
+ ALT="$\tau _{500}=1$">.
+</FONT></TD>
+</TR><TR><TD COLSPAN="2"><A HREF="http://dexter.edpsciences.org/applet.php?html_id=11&DOI=10.1051/0004-6361:20047043" target="DEXTER">Open with DEXTER</A></TD></TR>
+
+</TABLE>
+</DIV><BR>
+<P>
+In summary, the&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorted 5-bin model apparently
+yields  good approximations of&nbsp;
+<!-- MATH: $Q_{\rm rad}$ -->
+<IMG
+ WIDTH="27" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img11.gif"
+ ALT="$Q_{\rm rad}$">to the quasi-exact ODF&nbsp;case  over a large height range 
+in "realistic'' 2D&nbsp;atmospheres.  The advantage over a 
+grey radiative transfer based on the Rosseland mean 
+is most pronounced  at large photospheric heights
+where spectral lines are the dominant opacity sources. 
+
+<P>
+
+<H4><A NAME="SECTION00043000000000000000">&#160;</A>
+<A NAME="sec:limit">&#160;</A><BR>
+3.3 The multigroup method in the limit of a large number of bins
+</H4>
+
+<P>
+While the 5-bin&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorting scheme  shows acceptable results
+for computing radiative heating rates in  both&nbsp;1D and&nbsp;2D,  one might ask
+whether any further improvement can be achieved 
+by  increasing the number of frequency bins.  
+Full&nbsp;(M)HD&nbsp;simulations with more than a handful of bins are not feasible
+with the computing power available today, but with 
+increasing computational resources, this question may become 
+relevant in the future.
+In this section we study the performance of&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorting 
+and also &nbsp;<IMG
+ WIDTH="9" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img14.gif"
+ ALT="$\kappa $">-sorting 
+in multigroup models with  increasing numbers of bins.
+
+<P>
+We first applied the&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorting procedure to a high-resolution
+1D atmosphere with&nbsp;
+<!-- MATH: $\Delta z = 0.5$ -->
+<IMG
+ WIDTH="52" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img145.gif"
+ ALT="$\Delta z = 0.5$">&nbsp;km, which was interpolated 
+from the  reference stratification  used in the previous 
+sections.
+Figure&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:limit1">12</A> shows the deviation of the radiative heating
+rate per mass unit from the reference solution, 
+
+<!-- MATH: $(Q-Q_{\rm ODF})/\varrho$ -->
+<IMG
+ WIDTH="81" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img10.gif"
+ ALT="$(Q-Q_{\rm ODF})/\varrho $">,
+as a function of height.
+The 5-bin solution uses the parameters specified above, while for larger
+numbers of bins  the optical depth-levels separating the bins are spread
+evenly on the&nbsp;
+<!-- MATH: $\log \tau_{500}$ -->
+<IMG
+ WIDTH="46" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img125.gif"
+ ALT="$\log\tau_{500}$">-scale across the upper part of the
+atmosphere,&nbsp;
+<!-- MATH: $\tau_{500} < 1$ -->
+<IMG
+ WIDTH="48" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img146.gif"
+ ALT="$\tau_{500} < 1$">.
+The 5-bin solution gives the best result for
+
+<!-- MATH: $z\approx 200\;{\rm ~km}{-}600\;{\rm ~km}$ -->
+<IMG
+ WIDTH="127" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img147.gif"
+ ALT="$z\approx 200\;{\rm ~km}{-}600\;{\rm ~km}$">,
+while the error increases for greater heights.
+For increasing numbers of bins, the solutions seem to converge towards
+a limiting solution, which, however, clearly deviates from&nbsp;
+<!-- MATH: $Q_{\rm ODF}$ -->
+<IMG
+ WIDTH="33" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img106.gif"
+ ALT="$Q_{\rm ODF}$">.
+This does not come as
+ a surprise as the multigroup approach, on theoretical grounds,
+can not be expected  to reproduce the exact solution, even in the limit of 
+infinitely large bin numbers (see the remark at the end of Sect.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#sec:multigroup">2.2</A>).
+In Fig.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:limit2">13</A>, the error rate is plotted for&nbsp;<IMG
+ WIDTH="9" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img14.gif"
+ ALT="$\kappa $">-sorted bins. 
+As the  reference optical depth  (on the&nbsp;
+<!-- MATH: $\tau_{500}$ -->
+<IMG
+ WIDTH="25" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img148.gif"
+ ALT="$\tau_{500}$">-scale), for the 
+opacity spectrum&nbsp;
+<!-- MATH: $\kappa_\nu(\tau_{\rm ref})$ -->
+<IMG
+ WIDTH="43" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img149.gif"
+ ALT="$\kappa_\nu(\tau_{\rm ref})$">
+on which sorting is based, 
+we chose&nbsp;
+<!-- MATH: $\tau_{\rm ref}=0.1$ -->
+<IMG
+ WIDTH="56" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img15.gif"
+ ALT="$\tau _{\rm ref}=0.1$">
+(Ludwig <A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#Ludwig1992">1992</A>).
+In heights above&nbsp;200&nbsp;km, the 5-bin solution is  clearly  worse than the corresponding 
+result for the 5-bin
+<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorted model. For larger numbers of bins, a pronounced advantage
+ of the&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorted solutions is 
+found only above&nbsp;700&nbsp;km. 
+A different picture is obtained when using 
+
+<!-- MATH: $\tau_{\rm ref}=0.01$ -->
+<IMG
+ WIDTH="63" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img16.gif"
+ ALT="$\tau _{\rm ref}=0.01$">
+(Fig.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:limit3">14</A>). Here, for heights below&nbsp;600&nbsp;km
+the approximation is better
+than in the &nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorted case.   
+Again, as for&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorting,  the 5-bin solution gives the best overall
+result.
+<BR>
+<DIV ALIGN="LEFT">
+<TABLE WIDTH="100%">
+<TR><TD><!-- init Label --><A NAME="fig:limit1">&#160;</A><!-- end Label--><A NAME="1063">&#160;</A><A NAME="figure720"
+ HREF="/articles/aa/full/2004/26/aa0043/img150.gif"><IMG
+ WIDTH="99" HEIGHT="75" SRC="/articles/aa/full/2004/26/aa0043/Timg150.gif"
+ ALT="\begin{figure}
+\par\includegraphics[width=8.7cm,clip]{0043f17.eps}
+\end{figure}"></A></TD>
+<TD><FONT size="-1"><STRONG>Figure 12:</STRONG>
+Deviations of the radiative heating rate per mass unit, 
+         
+<!-- MATH: $Q_{\rm rad}/\varrho$ -->
+<IMG
+ WIDTH="39" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img8.gif"
+ ALT="$Q_{\rm rad}/\varrho $">,
+          from the ODF&nbsp;reference solution as a function of height.
+          Shown are results for&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorted models with different numbers of bins.</FONT></TD>
+</TR><TR><TD COLSPAN="2"><A HREF="http://dexter.edpsciences.org/applet.php?html_id=12&DOI=10.1051/0004-6361:20047043" target="DEXTER">Open with DEXTER</A></TD></TR>
+
+</TABLE>
+</DIV><BR>
+<P>
+<BR>
+<DIV ALIGN="LEFT">
+<TABLE WIDTH="100%">
+<TR><TD><!-- init Label --><A NAME="fig:limit2">&#160;</A><!-- end Label--><A NAME="1064">&#160;</A><A NAME="figure726"
+ HREF="/articles/aa/full/2004/26/aa0043/img151.gif"><IMG
+ WIDTH="99" HEIGHT="75" SRC="/articles/aa/full/2004/26/aa0043/Timg151.gif"
+ ALT="\begin{figure}
+\par\includegraphics[width=8.7cm,clip]{0043f18.eps}
+\end{figure}"></A></TD>
+<TD><FONT size="-1"><STRONG>Figure 13:</STRONG>
+Same as in Fig.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:limit1">12</A>, but for&nbsp;<IMG
+ WIDTH="9" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img14.gif"
+ ALT="$\kappa $">-sorting and a sorting
+            parameter of&nbsp;
+<!-- MATH: $\tau_{\rm ref}=0.1$ -->
+<IMG
+ WIDTH="56" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img15.gif"
+ ALT="$\tau _{\rm ref}=0.1$">.
+</FONT></TD>
+</TR><TR><TD COLSPAN="2"><A HREF="http://dexter.edpsciences.org/applet.php?html_id=13&DOI=10.1051/0004-6361:20047043" target="DEXTER">Open with DEXTER</A></TD></TR>
+
+</TABLE>
+</DIV><BR>
+<P>
+<BR>
+<DIV ALIGN="LEFT">
+<TABLE WIDTH="100%">
+<TR><TD><!-- init Label --><A NAME="fig:limit3">&#160;</A><!-- end Label--><A NAME="1065">&#160;</A><A NAME="figure733"
+ HREF="/articles/aa/full/2004/26/aa0043/img152.gif"><IMG
+ WIDTH="99" HEIGHT="75" SRC="/articles/aa/full/2004/26/aa0043/Timg152.gif"
+ ALT="\begin{figure}
+\par\includegraphics[width=8.7cm,clip]{0043f19.eps}
+\end{figure}"></A></TD>
+<TD><FONT size="-1"><STRONG>Figure 14:</STRONG>
+Same as in Fig.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:limit2">13</A>, for&nbsp;
+<!-- MATH: $\tau_{\rm ref}=0.01$ -->
+<IMG
+ WIDTH="63" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img16.gif"
+ ALT="$\tau _{\rm ref}=0.01$">.</FONT></TD>
+</TR><TR><TD COLSPAN="2"><A HREF="http://dexter.edpsciences.org/applet.php?html_id=14&DOI=10.1051/0004-6361:20047043" target="DEXTER">Open with DEXTER</A></TD></TR>
+
+</TABLE>
+</DIV><BR>
+<P>
+All results shown so far, the&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorted model as well as the
+two&nbsp;<IMG
+ WIDTH="9" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img14.gif"
+ ALT="$\kappa $">-sorted ones, show a clear trend towards too strong
+heating in the uppermost regions&nbsp;(<IMG
+ WIDTH="47" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img153.gif"
+ ALT="$z \ga 700$">&nbsp;km). 
+This behaviour is caused by using the Planck mean in the 
+optically thin regime. In the regions&nbsp;
+<!-- MATH: $z \ga  700$ -->
+<IMG
+ WIDTH="47" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img153.gif"
+ ALT="$z \ga 700$">&nbsp;km
+we have&nbsp;
+<!-- MATH: $J_\nu > B_\nu$ -->
+<IMG
+ WIDTH="46" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img154.gif"
+ ALT="$J_\nu > B_\nu$">
+for a large part of the spectrum,
+since for the optically thin frequencies&nbsp;<IMG
+ WIDTH="16" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img17.gif"
+ ALT="$J_\nu $">
+is 
+determined by radiation coming from deeper and hotter
+regions around&nbsp;
+<!-- MATH: $\tau_\nu =1$ -->
+<IMG
+ WIDTH="39" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img75.gif"
+ ALT="$\tau_\nu = 1$">
+(see Fig.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:limit4">15</A> 
+for an example). Consequently, 
+
+<!-- MATH: $Q_{\rm rad} \propto \int\kappa_\nu \varrho~ (J_\nu - B_\nu)~{\rm d}\nu > 0$ -->
+<IMG
+ WIDTH="168" HEIGHT="32" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img155.gif"
+ ALT="$Q_{\rm rad} \propto \int\kappa_\nu \varrho~ (J_\nu - B_\nu)~{\rm d}\nu > 0$">,
+i.e. some  heating results from the absorption of the "hot'' radiation.   
+As the Planck mean tends to 
+overestimate the line opacities, the factor&nbsp;
+<!-- MATH: $\kappa_{\rm bin}\varrho$ -->
+<IMG
+ WIDTH="29" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img156.gif"
+ ALT="$\kappa_{\rm bin}\varrho$">in the expression for&nbsp;
+<!-- MATH: $Q_{\rm rad}$ -->
+<IMG
+ WIDTH="27" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img11.gif"
+ ALT="$Q_{\rm rad}$">
+in opacity binning models
+becomes  too large and 
+the heating in the optically thin regions is overestimated. 
+We have seen that this  effect is more pronounced for the&nbsp;<IMG
+ WIDTH="9" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img14.gif"
+ ALT="$\kappa $">-sorted 
+models. This may be explained by the fact that&nbsp;<IMG
+ WIDTH="9" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img14.gif"
+ ALT="$\kappa $">-sorting does not properly  account for  the line opacities above&nbsp;
+<!-- MATH: $\tau_{\rm ref}$ -->
+<IMG
+ WIDTH="21" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img76.gif"
+ ALT="$\tau_{\rm ref}$">.
+As a consequence, in regions above&nbsp;
+<!-- MATH: $\tau_{\rm ref}$ -->
+<IMG
+ WIDTH="21" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img76.gif"
+ ALT="$\tau_{\rm ref}$">,
+opacities of considerably  varying magnitude may be collected in a given
+bin,  resulting in a bad representation of opacities.
+ This is not the case when&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorting is used,
+since here the integral&nbsp;
+<!-- MATH: $\int_0^{z(\tau=1)} \kappa_\nu\varrho ~{\rm d}z$ -->
+<IMG
+ WIDTH="76" HEIGHT="37" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img157.gif"
+ ALT="$\int_0^{z(\tau=1)} \kappa_\nu\varrho ~{\rm d}z$">
+contributes to the sorting process.
+Thus, a systematic advantage of&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorting over&nbsp;<IMG
+ WIDTH="9" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img14.gif"
+ ALT="$\kappa $">-sorting is found
+only for heights above&nbsp;700&nbsp;km. 
+The quality of  the 5-bin
+solution, both for&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorting and  for&nbsp;<IMG
+ WIDTH="9" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img14.gif"
+ ALT="$\kappa $">-sorting,  depends on the 
+particular choice of the bin levels, so the results shown in 
+Figs.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:limit1">12</A> and&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:limit3">14</A> do not necessarily imply that a small number
+of bins always yields the best approximation.
+
+<P>
+As the systematic overestimation of the heating in the uppermost parts of 
+the atmosphere is caused by the Planck mean, it might be worthwhile
+to look for a possible replacement which performs better in the
+optically thin regime.
+As already mentioned in Sect.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#sec:MB">2</A>, the derivation of 
+the Planck mean is based on the assumption&nbsp;
+<!-- MATH: $J_\nu \approx B_\nu/2$ -->
+<IMG
+ WIDTH="59" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img158.gif"
+ ALT="$J_\nu \approx B_\nu/2$">(implying&nbsp;
+<!-- MATH: $J_\nu - B_\nu \approx -B_\nu/2$ -->
+<IMG
+ WIDTH="98" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img159.gif"
+ ALT="$J_\nu - B_\nu \approx -B_\nu/2$">), which is strictly 
+correct only for the optically thin parts of an isothermal 
+atmosphere (the factor&nbsp;1/2 accounting for the fact that the 
+uppermost parts of the atmosphere are only illuminated from the
+hemisphere underneath).
+However, upon inspection of Fig.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:limit4">15</A>, which shows&nbsp;<IMG
+ WIDTH="16" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img17.gif"
+ ALT="$J_\nu $">
+and&nbsp;<IMG
+ WIDTH="17" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img18.gif"
+ ALT="$B_\nu $">
+for the
+ODF-calculation at the top of the reference atmosphere, it becomes 
+immediately clear that this relation does not even approximately 
+hold at great
+heights in the atmosphere.
+
+<P>
+<BR>
+<DIV ALIGN="LEFT">
+<TABLE WIDTH="100%">
+<TR><TD><!-- init Label --><A NAME="fig:limit4">&#160;</A><!-- end Label--><A NAME="1066">&#160;</A><A NAME="figure754"
+ HREF="/articles/aa/full/2004/26/aa0043/img160.gif"><IMG
+ WIDTH="126" HEIGHT="75" SRC="/articles/aa/full/2004/26/aa0043/Timg160.gif"
+ ALT="\begin{figure}
+\par\includegraphics[angle=90,width=11cm,clip]{0043f20.eps}
+\end{figure}"></A></TD>
+<TD><FONT size="-1"><STRONG>Figure 15:</STRONG>
+<IMG
+ WIDTH="16" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img17.gif"
+ ALT="$J_\nu $">
+from an ODF-calculation and&nbsp;<IMG
+ WIDTH="17" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img18.gif"
+ ALT="$B_\nu $">
+(lower curve) at the top (<I>z</I>=931&nbsp;km) of the reference atmosphere. At this height the atmosphere has a temperature of&nbsp;3500&nbsp;K.</FONT></TD>
+</TR><TR><TD COLSPAN="2"><A HREF="http://dexter.edpsciences.org/applet.php?html_id=15&DOI=10.1051/0004-6361:20047043" target="DEXTER">Open with DEXTER</A></TD></TR>
+
+</TABLE>
+</DIV><BR>
+<P>
+In order to derive an alternative
+prescription for a  bin average at small
+optical depths, we
+set out  from Eq.&nbsp;(<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#eq:qbal1">7</A>) which gives the 
+general definition of a bin-averaged opacity.
+Instead of replacing the weighting function&nbsp;
+<!-- MATH: $J_\nu-B_\nu$ -->
+<IMG
+ WIDTH="45" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img161.gif"
+ ALT="$J_\nu-B_\nu$">with&nbsp;<IMG
+ WIDTH="17" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img18.gif"
+ ALT="$B_\nu $">,
+one might try to obtain&nbsp;
+<!-- MATH: $J_\nu-B_\nu$ -->
+<IMG
+ WIDTH="45" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img161.gif"
+ ALT="$J_\nu-B_\nu$">
+by using 
+the <I>exact</I> radiation field&nbsp;
+<!-- MATH: $J_{\nu, {\rm ODF}}$ -->
+<IMG
+ WIDTH="36" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img162.gif"
+ ALT="$J_{\nu, {\rm ODF}}$">
+at the top of the atmosphere at&nbsp;<IMG
+ WIDTH="34" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img163.gif"
+ ALT="$\tau=0$">,
+which results from an ODF&nbsp;reference calculation 
+(plotted in Fig.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:limit4">15</A>).
+Two problems immediately arise:
+<DL>
+<DD>
+<DT><STRONG>(i)</STRONG>
+<DD>the opacity tables that result from the multigroup approach must be
+applicable to atmospheres different
+from the reference stratification. The intensity spectrum&nbsp;
+<!-- MATH: $J_{\nu, {\rm ODF}}(\tau=0)$ -->
+<IMG
+ WIDTH="76" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img164.gif"
+ ALT="$J_{\nu, {\rm ODF}}(\tau=0)$">
+may be  correct for the optically thin regions of the reference atmosphere, 
+but there is no guarantee that it is a good approximation in the 
+higher regions of other atmospheres.
+On the other hand, the&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorting approach requires a reference 
+atmosphere anyway, and there is no reason why the properties of this 
+particular atmosphere should have an influence  on the frequency-sorting only;
+
+<P>
+<DT><STRONG>(ii)</STRONG>
+<DD>the weighting function&nbsp;
+<!-- MATH: $J_\nu-B_\nu$ -->
+<IMG
+ WIDTH="45" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img161.gif"
+ ALT="$J_\nu-B_\nu$">
+is not positive definite.
+     Therefore, straightforward application of the averaging procedure
+     may lead to negative mean opacities.
+</DL>Dividing the frequency bin into those frequencies where&nbsp;
+<!-- MATH: $J_\nu-B_\nu \ge 0$ -->
+<IMG
+ WIDTH="69" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img165.gif"
+ ALT="$J_\nu-B_\nu \ge 0$">and those where&nbsp;
+<!-- MATH: $J_\nu-B_\nu < 0$ -->
+<IMG
+ WIDTH="68" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img166.gif"
+ ALT="$J_\nu-B_\nu < 0$">,
+one obtains
+<BR>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{eqnarray}
+Q_{\rm bin}/ 4\pi\varrho &=& \int_{+}\kappa_\nu(J_\nu-B_\nu){\rm d}\nu
++\int_{-}\kappa_\nu(J_\nu-B_\nu){\rm d}\nu\\
+                   &=& \kappa^+\int_{+}(J_\nu-B_\nu){\rm d}\nu
+		   +\kappa^-\int_{-}(J_\nu-B_\nu){\rm d}\nu
+\end{eqnarray} -->
+
+<TABLE ALIGN="CENTER" CELLPADDING="0" WIDTH="100%">
+<TR VALIGN="MIDDLE"><TD NOWRAP ALIGN="RIGHT">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<IMG
+ WIDTH="59" HEIGHT="28" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img167.gif"
+ ALT="$\displaystyle Q_{\rm bin}/ 4\pi\varrho$"></TD>
+<TD ALIGN="CENTER" NOWRAP>=</TD>
+<TD ALIGN="LEFT" NOWRAP><IMG
+ WIDTH="226" HEIGHT="49" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img168.gif"
+ ALT="$\displaystyle \int_{+}\kappa_\nu(J_\nu-B_\nu){\rm d}\nu
++\int_{-}\kappa_\nu(J_\nu-B_\nu){\rm d}\nu$"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(24)</TD></TR>
+<TR VALIGN="MIDDLE"><TD NOWRAP ALIGN="RIGHT">&nbsp;</TD>
+<TD ALIGN="CENTER" NOWRAP>=</TD>
+<TD ALIGN="LEFT" NOWRAP><IMG
+ WIDTH="229" HEIGHT="49" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img169.gif"
+ ALT="$\displaystyle \kappa^+\int_{+}(J_\nu-B_\nu){\rm d}\nu
++\kappa^-\int_{-}(J_\nu-B_\nu){\rm d}\nu$"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(25)</TD></TR>
+</TABLE></DIV><BR CLEAR="ALL"><P></P>
+with the positive-definite averages
+<BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+\kappa^+ = \frac{\int_{+}\kappa_\nu(J_\nu-B_\nu){\rm d}\nu}
+{\int_{+}(J_\nu-B_\nu){\rm d}\nu}
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><IMG
+ WIDTH="134" HEIGHT="81"
+ SRC="/articles/aa/full/2004/26/aa0043/img170.gif"
+ ALT="\begin{displaymath}\kappa^+ = \frac{\int_{+}\kappa_\nu(J_\nu-B_\nu){\rm d}\nu}
+{\int_{+}(J_\nu-B_\nu){\rm d}\nu}
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(26)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+and
+<BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+\kappa^- = \frac{\int_{-}\kappa_\nu(J_\nu-B_\nu){\rm d}\nu}
+{\int_{-}(J_\nu-B_\nu){\rm d}\nu} \cdot
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><IMG
+ WIDTH="137" HEIGHT="81"
+ SRC="/articles/aa/full/2004/26/aa0043/img171.gif"
+ ALT="\begin{displaymath}\kappa^- = \frac{\int_{-}\kappa_\nu(J_\nu-B_\nu){\rm d}\nu}
+{\int_{-}(J_\nu-B_\nu){\rm d}\nu} \cdot
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(27)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+If&nbsp;<IMG
+ WIDTH="16" HEIGHT="27" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img172.gif"
+ ALT="$\kappa^+$">
+and&nbsp;<IMG
+ WIDTH="17" HEIGHT="27" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img173.gif"
+ ALT="$\kappa^-$">
+are of the same order, we may define
+<BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+\overline{\kappa} = \frac{1}{2}(\kappa^+ + \kappa^-)
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><A NAME="eq:limit3">&#160;</A><IMG
+ WIDTH="91" HEIGHT="66"
+ SRC="/articles/aa/full/2004/26/aa0043/img174.gif"
+ ALT="\begin{displaymath}\overline{\kappa} = \frac{1}{2}(\kappa^+ + \kappa^-)
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(28)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+in cases,  where straightforward use of&nbsp;
+<!-- MATH: $J_{\nu, {\rm ODF}}-B_\nu$ -->
+<IMG
+ WIDTH="67" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img175.gif"
+ ALT="$J_{\nu, {\rm ODF}}-B_\nu$">
+as
+the weighting function leads to negative results, since then
+<BR>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{eqnarray}
+Q_{\rm bin}/ 4\pi\varrho &\approx \frac{1}{2}(\kappa^+ + \kappa^-)\int_{\rm bin}(J_\nu-B_\nu){\rm d}\nu
+\end{eqnarray} -->
+
+<TABLE ALIGN="CENTER" CELLPADDING="0" WIDTH="100%">
+<TR VALIGN="MIDDLE"><TD NOWRAP ALIGN="center"><IMG
+ WIDTH="59" HEIGHT="28" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img167.gif"
+ ALT="$\displaystyle Q_{\rm bin}/ 4\pi\varrho$"> <IMG
+ WIDTH="176" HEIGHT="35" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img176.gif"
+ ALT="$\textstyle \approx \frac{1}{2}(\kappa^+ + \kappa^-)\int_{\rm bin}(J_\nu-B_\nu){\rm d}\nu$"></TD>
+<TD>&nbsp;</TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(29)</TD></TR>
+</TABLE></DIV><BR CLEAR="ALL"><P></P>
+and the heating rate is, at least approximately, recovered.
+
+<P>
+Figure&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:limit5">16</A> shows the results of test calculations with the averaging procedure
+using&nbsp;
+<!-- MATH: $J_{\nu, {\rm ODF}}(\tau=0) - B_\nu$ -->
+<IMG
+ WIDTH="106" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img177.gif"
+ ALT="$J_{\nu, {\rm ODF}}(\tau=0) - B_\nu$">
+as weighting function. A transition 
+depth&nbsp;
+<!-- MATH: $\tau_{0} = 0.1$ -->
+<IMG
+ WIDTH="49" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img178.gif"
+ ALT="$\tau_{0} = 0.1$">,
+below which the Rosseland mean is used, has been
+chosen.&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorting has been applied, where now those frequencies are grouped
+together, which reach&nbsp;
+<!-- MATH: $\tau_\nu = 0.5$ -->
+<IMG
+ WIDTH="50" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img179.gif"
+ ALT="$\tau_\nu = 0.5$">
+at the same height-level.
+Whenever a negative opacity-value occured it was replaced by 
+expression&nbsp;(<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#eq:limit3">28</A>). 
+
+<P>
+<BR>
+<DIV ALIGN="LEFT">
+<TABLE WIDTH="100%">
+<TR><TD><!-- init Label --><A NAME="fig:limit5">&#160;</A><!-- end Label--><A NAME="1075">&#160;</A><A NAME="figure807"
+ HREF="/articles/aa/full/2004/26/aa0043/img180.gif"><IMG
+ WIDTH="91" HEIGHT="69" SRC="/articles/aa/full/2004/26/aa0043/Timg180.gif"
+ ALT="\begin{figure}
+\par\includegraphics[width=8cm,clip]{0043f21.eps}
+\end{figure}"></A></TD>
+<TD><FONT size="-1"><STRONG>Figure 16:</STRONG>
+Same as Fig.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:limit1">12</A>, for a&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorted model where 
+         the Planck mean  has been replaced in optically thin regions
+         by the&nbsp;<I>J</I>-<I>B</I> mean described 
+         in the text.</FONT></TD>
+</TR><TR><TD COLSPAN="2"><A HREF="http://dexter.edpsciences.org/applet.php?html_id=16&DOI=10.1051/0004-6361:20047043" target="DEXTER">Open with DEXTER</A></TD></TR>
+
+</TABLE>
+</DIV><BR>
+<P>
+The results shown in  Fig.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:limit5">16</A> indicate  that the new averaging appears to work
+well for calculations with&nbsp;10  or more bins. Here the agreement
+with the ODF-solution is excellent throughout the whole height range,
+including the regions&nbsp;<I>z</I> &gt; 700&nbsp;km. 
+The quality of the 5 bin solution, however, is not that impressive,
+and while the accuracy of the 5-bin approximation depends rather
+sensitively on the particular values of the bin levels, 
+we could not achieve a significant improvement with different choices
+of levels. 
+
+<P>
+The advantage of the new method in optically
+thin regions is still observable in atmospheres, which differ strongly  from the
+reference atmosphere.
+Figure&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:limit6">17</A> shows a horizontal cut at a height of approx. 700&nbsp;km above
+
+<!-- MATH: $\tau_{500}=1$ -->
+<IMG
+ WIDTH="49" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img9.gif"
+ ALT="$\tau _{500}=1$">
+through the 2D&nbsp;simulation snapshot  used in
+Sect.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#sec:2dres">3.2</A>. 
+The solution obtained by using the&nbsp;<I>J</I>-<I>B</I> mean is clearly closer
+to the reference solution for&nbsp;<I>x</I> &gt; 400&nbsp;km than the&nbsp;<IMG
+ WIDTH="9" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img14.gif"
+ ALT="$\kappa $">-sorted 
+5&nbsp;bin solution using the Planck-mean. 
+
+<P>
+<BR>
+<DIV ALIGN="LEFT">
+<TABLE WIDTH="100%">
+<TR><TD><!-- init Label --><A NAME="fig:limit6">&#160;</A><!-- end Label--><A NAME="1076">&#160;</A><A NAME="figure817"
+ HREF="/articles/aa/full/2004/26/aa0043/img181.gif"><IMG
+ WIDTH="88" HEIGHT="81" SRC="/articles/aa/full/2004/26/aa0043/Timg181.gif"
+ ALT="\begin{figure}
+\par\includegraphics[width=7.7cm,clip]{0043f22.eps}
+\end{figure}"></A></TD>
+<TD><FONT size="-1"><STRONG>Figure 17:</STRONG>
+
+<!-- MATH: $Q_{\rm rad}$ -->
+<IMG
+ WIDTH="27" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img11.gif"
+ ALT="$Q_{\rm rad}$">
+for a horizontal cut through a 2D&nbsp;snapshot at a height 
+        of approx. 700&nbsp;km
+          above&nbsp;
+<!-- MATH: $\tau_{500}=1$ -->
+<IMG
+ WIDTH="49" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img9.gif"
+ ALT="$\tau _{500}=1$">.
+For&nbsp;<I>x</I> &gt; 400&nbsp;km the&nbsp;<I>J</I>-<I>B</I> mean  improves the 
+          quality of the approximation. </FONT></TD>
+</TR><TR><TD COLSPAN="2"><A HREF="http://dexter.edpsciences.org/applet.php?html_id=17&DOI=10.1051/0004-6361:20047043" target="DEXTER">Open with DEXTER</A></TD></TR>
+
+</TABLE>
+</DIV><BR>
+<P>
+In principle, the new opacity averaging procedure seems to be superior to the
+use of the Planck-mean when a sufficiently large number of bins is used.
+This is particularly true for simulations which are extended to include
+chromospheric layers, since at these heights the advantage
+is most pronounced.
+Since 2D/3D&nbsp;simulations  are presently restricted to 
+multigroup calculations with&nbsp;4 or&nbsp;5&nbsp;bins at best, the merits of 
+the new averaging procedure appear to be rather academic.
+The improvement due to the modified average
+may, however,  become relevant in the future, when the increase of computing power
+makes simulations with a larger number
+of bins feasible.
+
+<P>
+
+<H4><A NAME="SECTION00044000000000000000">&#160;</A>
+<A NAME="sec:tscale">&#160;</A><BR>
+3.4 Error timescales
+</H4>
+
+<P>
+Having compared the accuracy of different opacity binning  models, it
+seems worthwhile  to obtain an estimate of the importance of the errors which
+result from the
+various approaches. Given the results of  the
+ previous sections, two
+questions are of particular interest: 
+<DL>
+<DD>
+<DT><STRONG>(i)</STRONG>
+<DD>Does the error of the grey solution make a nongrey treatment mandatory? 
+<DT><STRONG>(ii)</STRONG>
+<DD>How severe is the systematic error at large heights (<I>z</I>&gt;600&nbsp;km)
+     introduced by the Planck mean?
+</DL>As an indicator for the severity of the error  we use  the time scales on which
+the deviation from the reference&nbsp;
+<!-- MATH: $Q_{\rm ODF}$ -->
+<IMG
+ WIDTH="33" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img106.gif"
+ ALT="$Q_{\rm ODF}$">
+affects the temperature structure
+of the atmosphere. 
+In order to assess how important the error is, it is plausible
+to compare these scales 
+ with typical dynamical time scales in the photosphere, which give
+an estimate for the  time span over  which 
+a  volume element of the flowing plasma is 
+exposed to the inaccuracies of&nbsp;
+<!-- MATH: $Q_{\rm rad}$ -->
+<IMG
+ WIDTH="27" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img11.gif"
+ ALT="$Q_{\rm rad}$">
+in a simulation with grey or multigroup radiative transfer.  
+
+<P>
+In order to isolate the effect of the error in&nbsp;<I>Q</I>, we assumed that 
+the 1D reference atmosphere is kept in radiative equilibrium by a
+time-independent source term&nbsp;<IMG
+ WIDTH="18" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img182.gif"
+ ALT="$Q_{\rm s}$">
+that represents the necessary 
+non-radiative heating or cooling, i.e.
+<BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+Q_{\rm ODF}(z) + Q_{\rm s}(z) \equiv 0.
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><IMG
+ WIDTH="126" HEIGHT="48"
+ SRC="/articles/aa/full/2004/26/aa0043/img183.gif"
+ ALT="\begin{displaymath}Q_{\rm ODF}(z) + Q_{\rm s}(z) \equiv 0.
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(30)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+Any heating or cooling is then solely caused by the error&nbsp;
+<!-- MATH: $\Delta Q = Q_{\rm app}-Q_{\rm ODF}$ -->
+<IMG
+ WIDTH="110" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img184.gif"
+ ALT="$\Delta Q = Q_{\rm app}-Q_{\rm ODF}$">
+introduced by
+the approximative treatment of the frequency dependence.
+Starting with the unperturbed temperature stratification&nbsp;<I>T</I><SUB>0</SUB>(<I>z</I>) 
+for&nbsp;<I>t</I>=0, the time development of the temperature is assumed to be given by
+<BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+\frac{\partial T}{\partial t}(z,t) = \frac{\Delta Q(z,t)}{c_V \varrho}
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><A NAME="eq:relax">&#160;</A><IMG
+ WIDTH="116" HEIGHT="70"
+ SRC="/articles/aa/full/2004/26/aa0043/img185.gif"
+ ALT="\begin{displaymath}\frac{\partial T}{\partial t}(z,t) = \frac{\Delta Q(z,t)}{c_V \varrho}
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(31)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+with&nbsp;
+<!-- MATH: $\Delta Q(z,t) = Q_{\rm app}(z,t)-Q_{\rm ODF}(z,t=0)$ -->
+<IMG
+ WIDTH="208" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img186.gif"
+ ALT="$\Delta Q(z,t) = Q_{\rm app}(z,t)-Q_{\rm ODF}(z,t=0)$">,
+allowing the temperature
+to relax to a new equilibrium&nbsp;
+<!-- MATH: $T_{\rm eq}(z)$ -->
+<IMG
+ WIDTH="37" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img187.gif"
+ ALT="$T_{\rm eq}(z)$">
+for which 
+<BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+\Delta Q(z)|_{\rm eq} =  Q_{\rm app}(z)|_{\rm eq}- Q_{\rm ODF}(z,t=0) \equiv 0
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><IMG
+ WIDTH="258" HEIGHT="50"
+ SRC="/articles/aa/full/2004/26/aa0043/img188.gif"
+ ALT="\begin{displaymath}\Delta Q(z)\vert _{\rm eq} = Q_{\rm app}(z)\vert _{\rm eq}- Q_{\rm ODF}(z,t=0) \equiv 0
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(32)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+or
+<BR><P></P>
+<DIV ALIGN="CENTER">
+
+<!-- MATH: \begin{equation}
+Q_{\rm app}(z)|_{\rm eq} + Q_{\rm s}(z) \equiv 0.
+\end{equation} -->
+
+<TABLE WIDTH="100%" ALIGN="CENTER">
+<TR VALIGN="MIDDLE"><TD ALIGN="CENTER" NOWRAP><IMG
+ WIDTH="134" HEIGHT="50"
+ SRC="/articles/aa/full/2004/26/aa0043/img189.gif"
+ ALT="\begin{displaymath}Q_{\rm app}(z)\vert _{\rm eq} + Q_{\rm s}(z) \equiv 0.
+\end{displaymath}"></TD>
+<TD WIDTH=10 ALIGN="RIGHT">
+(33)</TD></TR>
+</TABLE>
+</DIV><BR CLEAR="ALL"><P></P>
+holds.
+
+<P>
+<BR>
+<DIV ALIGN="LEFT">
+<TABLE WIDTH="100%">
+<TR><TD><!-- init Label --><A NAME="fig:relax">&#160;</A><!-- end Label--><A NAME="1077">&#160;</A><A NAME="figure859"
+ HREF="/articles/aa/full/2004/26/aa0043/img190.gif"><IMG
+ WIDTH="100" HEIGHT="200" SRC="/articles/aa/full/2004/26/aa0043/Timg190.gif"
+ ALT="\begin{figure}
+\par\includegraphics[width=8.75cm,clip]{0043f23.eps}\par\vspace*{...
+...par\vspace*{2mm}
+\includegraphics[width=8.6cm,clip]{0043f25.eps}
+\end{figure}"></A></TD>
+<TD><FONT size="-1"><STRONG>Figure 18:</STRONG>
+Change in temperature for different times after the calculations
+          started. The three panels refer to three different opacity binning 
+          models described
+          in the text. Note the different ordinate scales for each panel.</FONT></TD>
+</TR><TR><TD COLSPAN="2"><A HREF="http://dexter.edpsciences.org/applet.php?html_id=18&DOI=10.1051/0004-6361:20047043" target="DEXTER">Open with DEXTER</A></TD></TR>
+
+</TABLE>
+</DIV><BR> 
+
+<P>
+Equation&nbsp;(<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#eq:relax">31</A>) was solved by explicit forward integration in time. 
+When computing&nbsp;
+<!-- MATH: $Q_{\rm app}(z,t)$ -->
+<IMG
+ WIDTH="54" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img191.gif"
+ ALT="$Q_{\rm app}(z,t)$">
+for each timestep, the changes of&nbsp;<I>p</I>(<I>z</I>) 
+and&nbsp;
+<!-- MATH: $\varrho (z)$ -->
+<IMG
+ WIDTH="24" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img98.gif"
+ ALT="$\varrho(z)$">
+required by the condition of hydrostatic equilibrium have been 
+neglected, so our calculation can be expected to give reasonable results only
+as long as the relative change in temperature remains small.
+Figure&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:relax">18</A> shows the time development of the temperature stratification
+for the Rosseland approximation (top), the 5-bin&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorted model
+used in Sects.&nbsp;3.1 and&nbsp;3.2 (middle), and a 20-bin&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorted 
+model for which the Planck mean has been replaced by the
+<I>J</I>-<I>B</I> mean described in the previous section (bottom).
+In the grey case, a strong cooling occurs  below&nbsp;<I>z</I>=0, which extends to deeper layers with increasing time. An even more
+drastic change in temperature occurs above 500&nbsp;km, where  the temperature drop
+exceeds&nbsp;10<SUP>3</SUP>&nbsp;K after a few minutes. 
+However, here the temperature runs out of the range, for which the violation of hydrostatic
+equilibrium is tolerable.
+Using the photospheric pressure scale height of about&nbsp;150&nbsp;km as characteristic
+length scale and assuming typical flow velocities of&nbsp;
+<!-- MATH: $1{-}2~{\rm ~km\;s^{-1}}$ -->
+<IMG
+ WIDTH="71" HEIGHT="30" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img192.gif"
+ ALT="$1{-}2~{\rm ~km\;s^{-1}}$">,
+one obtains a dynamical time scale of the order of&nbsp;10<SUP>2</SUP>&nbsp;s.
+So,  the Rosseland mean produces temperature disturbances of several hundred&nbsp;K
+on time scales that are comparable to typical dynamical time scales. 
+Therefore, one expects these disturbances to have a significant effect on the
+temperature structure.
+For the 5-bin case (middle panel), 
+the situation is entirely different.
+Above&nbsp;<I>z</I>=0 the temperature stratification settles to a new equilibrium within&nbsp;30&nbsp;s.
+The deviation of about&nbsp;60&nbsp;K from the initial state however is much smaller than in the grey case
+and should not have serious consequences  for the physics in the atmosphere. For&nbsp;<I>z</I>&lt;0,
+the reaction of the atmosphere is much slower, owing to the diffusive character 
+of radiative transfer in the optically thick regime. New equilibrium values for the
+temperatures have not been reached after&nbsp;
+<!-- MATH: $4\times 10^3$ -->
+<IMG
+ WIDTH="45" HEIGHT="30" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img193.gif"
+ ALT="$4\times 10^3$">&nbsp;s simulated time 
+ and the changes in temperature that can 
+be achieved on dynamical timescales are  negligible. 
+
+<P>
+The lower panel of Fig.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:relax">18</A> shows that replacing the Planck mean
+with the&nbsp;<I>J</I>-<I>B</I> averaging procedure further 
+reduces the temperature disturbance for&nbsp;<I>z</I>&gt;0, but considering the results for
+the 5-bin model, the Planck mean still seems to be an acceptable  choice. Below&nbsp;<I>z</I>=0 
+the impact on the temperature is stronger but remains smaller than&nbsp;100&nbsp;K within
+a time of&nbsp;10<SUP>2</SUP>&nbsp;s.
+
+<P>
+These results of course can only serve as a rough guideline, since it is difficult to
+predict their relevance in multidimensional moving atmospheres. Nevertheless, they 
+indicate that the error in&nbsp;
+<!-- MATH: $Q_{\rm rad}$ -->
+<IMG
+ WIDTH="27" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img11.gif"
+ ALT="$Q_{\rm rad}$">
+of a 5-bin model should have much less severe
+consequences for the atmospheric dynamics than that of a grey approximation, making
+a multigroup  approach to the radiative transfer problem appear very favorable.
+
+<P>
+<BR>
+<DIV ALIGN="LEFT">
+<TABLE WIDTH="100%">
+<TR><TD><!-- init Label --><A NAME="fig:Qlines">&#160;</A><!-- end Label--><A NAME="1079">&#160;</A><A NAME="figure876"
+ HREF="/articles/aa/full/2004/26/aa0043/img194.gif"><IMG
+ WIDTH="91" HEIGHT="71" SRC="/articles/aa/full/2004/26/aa0043/Timg194.gif"
+ ALT="\begin{figure}
+\par\includegraphics[width=8cm,clip]{0043f26.eps}
+\end{figure}"></A></TD>
+<TD><FONT size="-1"><STRONG>Figure 19:</STRONG>
+<I> Upper panel</I>: radiative heating rate per mass unit, 
+  
+<!-- MATH: $Q_{\rm rad}/\varrho$ -->
+<IMG
+ WIDTH="39" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img8.gif"
+ ALT="$Q_{\rm rad}/\varrho $">,
+as a function of heigth. The solid line
+  shows the result of a calculation where the detailed opacity
+  spectrum was resolved, the dashed line shows the ODF-based 
+  solution. The difference between the two solutions is
+  displayed in the lower panel. </FONT></TD>
+</TR><TR><TD COLSPAN="2"><A HREF="http://dexter.edpsciences.org/applet.php?html_id=19&DOI=10.1051/0004-6361:20047043" target="DEXTER">Open with DEXTER</A></TD></TR>
+
+</TABLE>
+</DIV><BR> 
+
+<P>
+
+<H4><A NAME="SECTION00045000000000000000">&#160;</A>
+<A NAME="sec:lines">&#160;</A><BR>
+3.5 Errors resulting from the ODF approximation
+</H4>
+
+<P>
+In the previous sections,  ODF-based  opacities were 
+ used  both as the basis  for the multigroup sorting process 
+ and  for calculating the reference radiative heating rates 
+ against which the multigroup results were compared.
+ As already mentioned in Sect.&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#sec:odf">2.1</A>, the use of  ODFs incurs
+ an error since the reordering
+      of frequencies within ODF-intervals 
+      implicitly relies on the assumption  that  
+      frequency- and height-dependence of the opacity are decoupled. 
+      Figure&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:Qlines">19</A> shows a comparison between 
+      the ODF-based&nbsp;
+<!-- MATH: $Q_{\rm rad}$ -->
+<IMG
+ WIDTH="27" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img11.gif"
+ ALT="$Q_{\rm rad}$">
+and the exact solution
+      resulting from a calculation 
+      which resolved the detailed frequency-dependence of the 
+      line-opacities. The difference between the two solutions is, on the
+      whole, very small.
+      The relatively large errors of the ODF solution around and below&nbsp;<I>z</I>=0 
+      mainly result from a small relative shift of the order of&nbsp;
+<!-- MATH: $10 \;{\rm ~km}$ -->
+<IMG
+ WIDTH="43" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img195.gif"
+ ALT="$10 \;{\rm ~km}$">
+of the main cooling region around&nbsp;<I>z</I>=0.
+      For a large part of the atmosphere above&nbsp;<I>z</I>=0,
+      the ODF&nbsp;approximation 
+      results in too low values
+      of&nbsp;
+<!-- MATH: $Q_{\rm rad}$ -->
+<IMG
+ WIDTH="27" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img11.gif"
+ ALT="$Q_{\rm rad}$">,
+the error decreasing with increasing height. 
+      This error is, however,  small
+      compared with the errors in the upper atmosphere incurred by 
+      multigroup models with&nbsp;4-6&nbsp;opacity bins, 
+      confirming that the use of&nbsp;ODFs as the reference opacities
+      is justified.
+
+<P>
+
+<H4><A NAME="SECTION00046000000000000000">&#160;</A> 
+<A NAME="sec:grad">&#160;</A><BR>
+3.6 Effects of velocity gradients
+</H4>
+
+<P>
+Both the ODF approximation and the multigroup method
+      make the implicit assumption that 
+      frequency- and height-dependence of the opacity 
+      are decoupled within a given ODF-interval or opacity bin.
+      Therefore neither of these concepts can capture the 
+      effects of relative doppler shifts due to velocity
+      gradients upon the radiative heating rate.
+      In order to obtain an estimate of these effects, 
+      we imposed a constant
+      (height-independent) vertical velocity gradient
+      on the 1D&nbsp;solar model atmosphere used in the previous
+      sections.
+      Figure&nbsp;<A HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#fig:Qrad_grad">20</A> shows the result of calculations   
+      based on the detailed spectrum of line-opacities with the 
+      doppler shifts taken into account, for different values
+      of the velocity gradient. 
+      Over the whole height range above&nbsp;<I>z</I>=0 the velocity
+      gradients introduce an additional heating, which
+      becomes increasingly important in the upper parts of the
+      atmosphere as the effect on the radiative heating rate per mass
+      unit increases strongly with height. 
+      This heating can be understood as a consequence of 
+      "hot'' continuum radiation  moving in frequency space
+      and getting absorbed  by adjacent lines as it travels
+      upwards in the differentially moving atmosphere. 
+      Based on characteristic velocities of the order of&nbsp;
+<!-- MATH: $1~\rm ~km~$ -->
+<IMG
+ WIDTH="38" HEIGHT="13" ALIGN="BOTTOM" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img196.gif"
+ ALT="$1~\rm ~km~$">s<SUP>-1</SUP> and scale heights of&nbsp;
+<!-- MATH: $100 \;{\rm ~km}$ -->
+<IMG
+ WIDTH="50" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img197.gif"
+ ALT="$100 \;{\rm ~km}$">
+in the upper photosphere, we estimate typical velocity
+      gradients to be of the order of&nbsp;0.01&nbsp;s<SUP>-1</SUP>. 
+      For gradients of this magnitude, the heating due to
+      doppler shifts is negligible below&nbsp;
+<!-- MATH: $z\approx 500\;{\rm ~km}$ -->
+<IMG
+ WIDTH="71" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img198.gif"
+ ALT="$z\approx 500\;{\rm ~km}$">.
+      In shocks with possibly much steeper gradients, the effect
+      can, however, be expected to be significant.
+      At greater heights it becomes more difficult to assess
+      the importance of gradients based on our  LTE&nbsp;calculations, 
+      since line-scattering effects, which become important
+      in the chromosphere, tend to reduce the heating effect
+      resulting from true absorption.
+
+<P>
+<BR>
+<DIV ALIGN="LEFT">
+<TABLE WIDTH="100%">
+<TR><TD><!-- init Label --><A NAME="fig:Qrad_grad">&#160;</A><!-- end Label--><A NAME="1080">&#160;</A><A NAME="figure897"
+ HREF="/articles/aa/full/2004/26/aa0043/img199.gif"><IMG
+ WIDTH="91" HEIGHT="68" SRC="/articles/aa/full/2004/26/aa0043/Timg199.gif"
+ ALT="\begin{figure}
+\par\includegraphics[width=8cm,clip]{0043f27.ps}
+\end{figure}"></A></TD>
+<TD><FONT size="-1"><STRONG>Figure 20:</STRONG>
+Radiative heating rates (<I> upper panel</I>: per volume, <I> lower
+          panel</I>: per mass unit) in 
+          a 1D&nbsp;atmosphere with a constant (height-independent)
+          vertical velocity gradient. In both panels, the lower
+          curves show the deviation from the non-moving case. </FONT></TD>
+</TR><TR><TD COLSPAN="2"><A HREF="http://dexter.edpsciences.org/applet.php?html_id=20&DOI=10.1051/0004-6361:20047043" target="DEXTER">Open with DEXTER</A></TD></TR>
+
+</TABLE>
+</DIV><BR> 
+
+<P>
+
+<H3><A NAME="SECTION00050000000000000000">&#160;</A>
+<A NAME="sec:summary">&#160;</A><BR>
+4 Summary and conclusions
+</H3>
+We have performed a series of test calculations which showed that, using 
+the multigroup method, a good approximation to the frequency
+integrated radiative heating rate can be obtained at moderate computational 
+costs, which makes the multigroup approach the method of choice in multidimensional time-dependent
+MHD&nbsp;simulations. 
+
+<P>
+The advantage over the grey approximation is particularly pronounced
+in situations which deviate strongly from the  one-dimensional plane-parallel 
+case. In these cases the radiative transfer is complicated by lateral
+heating and cooling effects. We found that the grey radiative transfer 
+fails to capture these effects, which leads to qualitatively wrong
+heating rates in the upper photosphere. Our results suggest that 
+a grey treatment of the radiative transfer in numerical simulations
+ is insufficient if 
+the simulations extend to the upper photosphere. This is  particularly true
+if magnetic field concentrations are included, since the partial evacuation
+of these fields leads exactly to the kind of lateral inhomogeneities, which are
+not well modelled by the grey approach. 
+
+<P>
+Test calculations with snapshots from numerical simulations have shown
+that the good performance of the multigroup method with&nbsp;<IMG
+ WIDTH="10" HEIGHT="26" ALIGN="MIDDLE" BORDER="0"
+ SRC="/articles/aa/full/2004/26/aa0043/img1.gif"
+ ALT="$\tau $">-sorting
+does not depend crucially on the choice of the reference atmosphere, which
+underlines the applicability of this method in realistic multi-dimensional
+simulations.
+
+<P>
+We studied the convergence of different multigroup models in the
+limit of a large number of opacity bins. 
+We present a new approach for defining
+bin-averaged opacities, which is based on the radiation field in a
+reference atmosphere, and which can further improve the performance
+of the multigroup method, particularly if ten or more opacity bins are
+considered. 
+
+<P>
+Finally, one-dimensional test calculations showed that 
+velocity gradients in the photosphere 
+ introduce an additional heating effect which can, however, 
+be neglected in simulations which do not extend beyond
+a height of approximately 500&nbsp;km above continuum optical depth
+unity at&nbsp;500&nbsp;nm.    
+
+<P>
+
+<P>
+
+<P></P>
+<EM>Acknowledgements</EM><BLOCKQUOTE>
+<P>
+This work has been supported by the Deutsche Forschungsgemeinschaft  
+ under grant SCHU&nbsp;500/7 in the framework of the Priority Research 
+ Program "Analysis and Numerics of Conservation Laws''. A.V. gratefully
+ acknowledges support by the Max-Planck-Institute for Aeronomy 
+through a doctoral stipend.
+ </BLOCKQUOTE>
+<P>
+ <H2><A NAME="SECTIONREF">References</A>
+</H2>
+<UL><li><a name="Bruls1999"/>  Bruls, J. H. M.
+J., Vollm&#xf6;ller, P., &amp; Sch&#xfc;ssler, M. 1999, A&amp;A,
+348, 233<!-- id: aa||A&A| Sch&#xfc;ssler, M.|348||233|1999||Bruls1999[1]| --><!-- base:  edps | status: FAIL --><!-- base:  ads | status: OK --><!-- base:  crossref | status: NH --><!-- base:  mathscinet | status: BR -->&#xa0;<a target="link_edps" href="http://cdsads.u-strasbg.fr/cgi-bin/bib_query?1999A&amp;A...348..233B">[NASA ADS]</a><!-- /id --> <a HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#aaref0">(In the text)</a></li><li><a name="Carlson1963"/>  Carlson, B.
+G. 1963, in Methods in Computational Physics, ed. B. Alder, &amp;
+S. Fernbach, 1
+
+        <a HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#aaref2">(In the text)</a></li><li><a name="Gustafsson1975"/> 
+Gustafsson, B., Bell, R. A., Eriksson, K., &amp; Nordlund, A. 1975,
+A&amp;A, 42, 407<!-- id: aa||A&A| Nordlund, A.|42||407|1975||Gustafsson1975[1]| --><!-- base:  edps | status: FAIL --><!-- base:  ads | status: OK --><!-- base:  crossref | status: NH --><!-- base:  mathscinet | status: BR -->&#xa0;<a target="link_edps" href="http://cdsads.u-strasbg.fr/cgi-bin/bib_query?1975A&amp;A....42..407G">[NASA ADS]</a><!-- /id --> <a HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#aaref3">(In the text)</a></li><li><a name="Kunasz1988"/>  Kunasz, P. B.,
+&amp; Auer, L. 1988, J. Quant. Spectrosc. Radiat. Transfer, 39,
+67<!-- id: aa||J. Quant. Spectrosc. Radiat. Transfer| Auer, L.|39||67|1988||Kunasz1988[1]| --><!-- base:  edps | status: NH --><!-- base:  ads | status: OK --><!-- base:  crossref | status: OK --><!-- base:  mathscinet | status: BR -->&#xa0;<a target="link_edps" href="http://cdsads.u-strasbg.fr/cgi-bin/bib_query?1988JQSRT..39...67K">[NASA ADS]</a>&#xa0;<a target="link_edps" href="http://dx.doi.org/10.1016/0022-4073(88)90021-0">[CrossRef]</a><!-- /id --> <a HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#aaref5">(In the text)</a></li><li><a name="Kurucz1993"/>  Kurucz, R.
+1993, ATLAS9 Stellar Atmosphere Programs and 2 km s<sup>-1</sup>
+grid., Kurucz CD-ROM No. 13, Cambridge, Mass.: Smiths onian
+Astrophysical Observatory
+
+        <a HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#aaref7">(In the text)</a></li><li><a name="Lowan1942"/>  Lowan, A. N.,
+Davids, N., &amp; Levenson, A. 1942, Bull. Amer. Math. Soc., 48,
+739<!-- id: aa||Bull. Amer. Math. Soc.| Levenson, A.|48||739|1942||Lowan1942[1]| --><!-- base:  edps | status: NH --><!-- base:  ads | status: OK --><!-- base:  crossref | status: NH --><!-- base:  mathscinet | status: OK -->&#xa0;<a target="link_edps" href="http://cdsads.u-strasbg.fr/cgi-bin/bib_query?1942BAAS...48..739L">[NASA ADS]</a>&#xa0;<a target="link_edps" href="http://www.ams.org/mathscinet-getitem?mr=4,90a">[MathSciNet]</a><!-- /id --> <a HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#aaref8">(In the text)</a></li><li><a name="Ludwig1992"/>  Ludwig, H. G.
+1992, Ph.D. Thesis
+
+        <a HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#aaref9">(In the text)</a></li><li><a name="Ludwig1994"/>  Ludwig, H.-G.,
+Jordan, S., &amp; Steffen, M. 1994, A&amp;A, 284, 105<!-- id: aa||A&A| Steffen, M.|284||105|1994||Ludwig1994[1]| --><!-- base:  edps | status: FAIL --><!-- base:  ads | status: OK --><!-- base:  crossref | status: NH --><!-- base:  mathscinet | status: BR -->&#xa0;<a target="link_edps" href="http://cdsads.u-strasbg.fr/cgi-bin/bib_query?1994A&amp;A...284..105L">[NASA ADS]</a><!-- /id --> <a HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#aaref10">(In the text)</a></li><li><a name="Maltby1986"/>  Maltby, P.,
+Avrett, E. H., Carlsson, M., et al. 1986, ApJ, 306, 284<!-- id: aa||ApJ| Maltby, P., Avrett, E. H., Carlsson, M., et al.|306||284|1986||Maltby1986[1]| --><!-- base:  edps | status: NH --><!-- base:  ads | status: OK --><!-- base:  crossref | status: OK --><!-- base:  mathscinet | status: BR -->&#xa0;<a target="link_edps" href="http://cdsads.u-strasbg.fr/cgi-bin/bib_query?1986ApJ...306..284M">[NASA ADS]</a>&#xa0;<a target="link_edps" href="http://dx.doi.org/10.1086/164342">[CrossRef]</a><!-- /id --> <a HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#aaref12">(In the text)</a></li><li><a name="Mihalas1967"/>  Mihalas, D.
+1967, ApJ, 149, 169<!-- id: aa||ApJ| Mihalas, D.|149||169|1967||Mihalas1967[1]| --><!-- base:  edps | status: NH --><!-- base:  ads | status: OK --><!-- base:  crossref | status: OK --><!-- base:  mathscinet | status: BR -->&#xa0;<a target="link_edps" href="http://cdsads.u-strasbg.fr/cgi-bin/bib_query?1967ApJ...149..169M">[NASA ADS]</a>&#xa0;<a target="link_edps" href="http://dx.doi.org/10.1086/149239">[CrossRef]</a><!-- /id --> <a HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#aaref14">(In the text)</a></li><li><a name="Mihalas1978"/>  Mihalas, D.
+1978, Stellar atmospheres, 2nd edition (San Francisco: W. H.
+Freeman and Co)
+
+        <a HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#aaref16">(In the text)</a></li><li><a name="Nordlund1982"/>  Nordlund,
+A. 1982, A&amp;A, 107, 1<!-- id: aa||A&A| Nordlund, A.|107||1|1982||Nordlund1982[1]| --><!-- base:  edps | status: FAIL --><!-- base:  ads | status: OK --><!-- base:  crossref | status: NH --><!-- base:  mathscinet | status: BR -->&#xa0;<a target="link_edps" href="http://cdsads.u-strasbg.fr/cgi-bin/bib_query?1982A&amp;A...107....1N">[NASA ADS]</a><!-- /id --> <a HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#aaref17">(In the text)</a></li><li><a name="Peytremann1974"/> 
+Peytremann, E. 1974, A&amp;A, 33, 203<!-- id: aa||A&A| Peytremann, E.|33||203|1974||Peytremann1974[1]| --><!-- base:  edps | status: FAIL --><!-- base:  ads | status: OK --><!-- base:  crossref | status: NH --><!-- base:  mathscinet | status: BR -->&#xa0;<a target="link_edps" href="http://cdsads.u-strasbg.fr/cgi-bin/bib_query?1974A&amp;A....33..203P">[NASA ADS]</a><!-- /id --> <a HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#aaref19">(In the text)</a></li><li><a name="Ploner1999"/>  Ploner, S. R.
+O., Solanki, S. K., &amp; Gadun, A. S. 1999, A&amp;A, 352, 679<!-- id: aa||A&A| Gadun, A. S.|352||679|1999||Ploner1999[1]| --><!-- base:  edps | status: FAIL --><!-- base:  ads | status: OK --><!-- base:  crossref | status: NH --><!-- base:  mathscinet | status: BR -->&#xa0;<a target="link_edps" href="http://cdsads.u-strasbg.fr/cgi-bin/bib_query?1999A&amp;A...352..679P">[NASA ADS]</a><!-- /id --> <a HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#aaref21">(In the text)</a></li><li><a name="Skartlien2000"/> 
+Skartlien, R. 2000, ApJ, 536, 465<!-- id: aa||ApJ| Skartlien, R.|536||465|2000||Skartlien2000[1]| --><!-- base:  edps | status: NH --><!-- base:  ads | status: OK --><!-- base:  crossref | status: OK --><!-- base:  mathscinet | status: BR -->&#xa0;<a target="link_edps" href="http://cdsads.u-strasbg.fr/cgi-bin/bib_query?2000ApJ...536..465S">[NASA ADS]</a>&#xa0;<a target="link_edps" href="http://dx.doi.org/10.1086/308934">[CrossRef]</a><!-- /id --> <a HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#aaref23">(In the text)</a></li><li><a name="Sneden1976"/>  Sneden, C.,
+Johnson, H. R., &amp; Krupp, B. M. 1976, ApJ, 204, 281<!-- id: aa||ApJ| Krupp, B. M.|204||281|1976||Sneden1976[1]| --><!-- base:  edps | status: NH --><!-- base:  ads | status: OK --><!-- base:  crossref | status: OK --><!-- base:  mathscinet | status: BR -->&#xa0;<a target="link_edps" href="http://cdsads.u-strasbg.fr/cgi-bin/bib_query?1976ApJ...204..781K">[NASA ADS]</a>&#xa0;<a target="link_edps" href="http://dx.doi.org/10.1086/154169">[CrossRef]</a><!-- /id --> <a HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#aaref25">(In the text)</a></li><li><a name="Strom1966"/>  Strom, S. E.,
+&amp; Kurucz, R. 1966, AJ, 71, 181<!-- id: aa||AJ| Kurucz, R.|71||181|1966||Strom1966[1]| --><!-- base:  edps | status: NH --><!-- base:  ads | status: OK --><!-- base:  crossref | status: BR --><!-- base:  mathscinet | status: BR -->&#xa0;<a target="link_edps" href="http://cdsads.u-strasbg.fr/cgi-bin/bib_query?1966AJ.....71..181S">[NASA ADS]</a><!-- /id --> <a HREF="/articles/aa/full/2004/26/aa0043/aa0043.right.html#aaref27">(In the text)</a></li></UL>
+<P>
+<BR><HR>
+<ADDRESS>
+Copyright ESO 2004
+</ADDRESS>
+

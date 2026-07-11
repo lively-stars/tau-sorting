@@ -142,7 +142,6 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
             target_rms=opt["target_rms"],
             plateau_evals=opt["plateau_evals"],
             plateau_rel=opt["plateau_rel"],
-            per_group_lambda=opt["per_group_lambda"],
             lambda_edges_per_tau=opt["lambda_edges_per_tau"],
             tree=opt["tree"],
             binning_tree=opt["binning_tree"],
@@ -382,15 +381,14 @@ class Handler(BaseHTTPRequestHandler):
                     if metric not in ("rms", "maxabs", "int_q"):
                         raise ValueError(f"metric must be rms|maxabs|int_q, got {metric!r}")
                     method = req.get("method", "cd")
-                    if method not in ("cd", "nm", "beam"):
-                        raise ValueError(f"method must be cd|nm|beam, got {method!r}")
+                    if method not in ("cd", "beam"):
+                        raise ValueError(f"method must be cd|beam, got {method!r}")
                     target = req.get("target_rms")
                     opt = {
                         "opt_tau": bool(req.get("opt_tau", True)),
                         "opt_lambda": bool(req.get("opt_lambda", True)),
                         "opt_flags": bool(req.get("opt_flags", True)),
                         "grow": bool(req.get("grow", True)),
-                        "per_group_lambda": bool(req.get("per_group_lambda", False)),
                         # per-group-lambda warm start (re-running keeps refining the current cuts)
                         "lambda_edges_per_tau": req.get("lambda_edges_per_tau") or None,
                         # general 2D guillotine mode + warm start (a {window_tau, window_lam, root} tree)
