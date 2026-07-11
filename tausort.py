@@ -1544,71 +1544,6 @@ def plot_tau_rosselend_at_tau_lambda_one_vs_wavelength(
     console.print(f"[green]✓ τ_Rosseland at τ_λ=1 plot saved to {output_file}[/green]")
 
 
-def build_group_index_maps(
-    tau_edges_per_lambda: list[list[float]],
-) -> tuple[list[int], int, NDArray[np.int64], NDArray[np.int64]]:
-    """
-    Flatten per-lambda-cell tau-groups into a single group-index space.
-
-    Each lambda cell ``ell`` has its own list of tau edges (``nTau[ell] + 1`` of
-    them, possibly a different count per cell). Group ``g`` enumerates
-    ``(lambda cell, tau index)`` pairs in row-major order:
-    ``g = offsets[ell] + t`` with ``offsets[ell] = sum(nTau[:ell])``.
-
-    Returns:
-        offsets:       offsets[ell] = first group id of lambda cell ell.
-        n_groups:      total number of (cell, tau) groups = sum(nTau).
-        group_to_cell: [n_groups] lambda cell of each group.
-        group_to_tau:  [n_groups] tau index within its cell for each group.
-
-    With a single lambda cell, ``g == tau index`` (backward compatible with the
-    old tau-only band index).
-    """
-    offsets: list[int] = []
-    group_to_cell: list[int] = []
-    group_to_tau: list[int] = []
-    acc = 0
-    for cell, edges in enumerate(tau_edges_per_lambda):
-        offsets.append(acc)
-        n_tau = len(edges) - 1
-        for t in range(n_tau):
-            group_to_cell.append(cell)
-            group_to_tau.append(t)
-        acc += n_tau
-    return (
-        offsets,
-        acc,
-        np.asarray(group_to_cell, dtype=np.int64),
-        np.asarray(group_to_tau, dtype=np.int64),
-    )
-
-
-def build_group_specs_per_cell(
-    tau_edges_per_lambda: list[list[float]],
-    lambda_bin_edges: list[int | float],
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """
-    Per-(lambda cell, tau slot) group descriptor, in build_group_index_maps order
-    (cell-major: for cell ell, for tau slot t). Used so the per-cell grouping and
-    the shared-tau + flags grouping both feed the same downstream code.
-
-    Returns:
-        group_tau_edges: [n_groups, 2] -log10(tau) (lo, hi) per group.
-        group_lam_edges: [n_groups, 2] log10(lambda/A) (lo, hi) per group.
-    """
-    lam = [float(e) for e in lambda_bin_edges]
-    tau_rows: list[tuple[float, float]] = []
-    lam_rows: list[tuple[float, float]] = []
-    for cell, edges in enumerate(tau_edges_per_lambda):
-        for t in range(len(edges) - 1):
-            tau_rows.append((float(edges[t]), float(edges[t + 1])))
-            lam_rows.append((lam[cell], lam[cell + 1]))
-    return (
-        np.asarray(tau_rows, dtype=np.float64).reshape(-1, 2),
-        np.asarray(lam_rows, dtype=np.float64).reshape(-1, 2),
-    )
-
-
 def parse_split_lambda(spec: str) -> list[bool]:
     """Parse a --split-lambda spec into a list of booleans (one per tau group).
 
@@ -1648,187 +1583,6 @@ def parse_lambda_per_tau(specs: list[str]) -> list[list[float]]:
             raise typer.BadParameter(f"--lambda-per-tau entry '{s}' must be strictly increasing")
         out.append(edges)
     return out
-
-
-def build_group_specs_split_lambda(
-    tau_bin_edges: list[float],
-    lambda_bin_edges: list[int | float],
-    split_along_lambda: list[bool],
-) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.int64], NDArray[np.int64]]:
-    """
-    Shared-tau binning with a per-tau-group lambda-split flag (tau-outer).
-
-    A single set of tau edges defines N tau groups (the *same* tau ranges at all
-    wavelengths). For tau group k, ``split_along_lambda[k]`` decides whether it
-    subdivides into the lambda cells (one group per cell) or stays a single group
-    spanning the whole lambda range. Groups are enumerated slot-major: for k in
-    0..N-1, the split cells (if any) then the single group.
-
-    With a single lambda cell every group is "single" (the flag is a no-op).
-
-    Returns:
-        group_tau_edges:     [n_groups, 2] -log10(tau) (lo, hi).
-        group_lam_edges:     [n_groups, 2] log10(lambda/A) (lo, hi).
-        slot_cell_to_group:  [N, L] group id for (tau slot, lambda cell), -1 where
-                             that slot is not lambda-split.
-        slot_single_to_group:[N] group id for an unsplit tau slot, -1 where the
-                             slot is lambda-split.
-    """
-    tau = [float(e) for e in tau_bin_edges]
-    lam = [float(e) for e in lambda_bin_edges]
-    n_tau = len(tau) - 1
-    n_lambda = len(lam) - 1
-    flags = [bool(b) for b in split_along_lambda]
-
-    tau_rows: list[tuple[float, float]] = []
-    lam_rows: list[tuple[float, float]] = []
-    slot_cell_to_group = np.full((n_tau, n_lambda), -1, dtype=np.int64)
-    slot_single_to_group = np.full(n_tau, -1, dtype=np.int64)
-
-    g = 0
-    for k in range(n_tau):
-        if flags[k] and n_lambda > 1:
-            for cell in range(n_lambda):
-                tau_rows.append((tau[k], tau[k + 1]))
-                lam_rows.append((lam[cell], lam[cell + 1]))
-                slot_cell_to_group[k, cell] = g
-                g += 1
-        else:
-            tau_rows.append((tau[k], tau[k + 1]))
-            lam_rows.append((lam[0], lam[-1]))
-            slot_single_to_group[k] = g
-            g += 1
-
-    return (
-        np.asarray(tau_rows, dtype=np.float64).reshape(-1, 2),
-        np.asarray(lam_rows, dtype=np.float64).reshape(-1, 2),
-        slot_cell_to_group,
-        slot_single_to_group,
-    )
-
-
-def assign_split_lambda(
-    tau_rosseland: NDArray[np.float64],
-    wavelength_grid_input: NDArray[np.float64],
-    tau_bin_edges: list[float],
-    lambda_bin_edges: list[int | float],
-    slot_cell_to_group: NDArray[np.int64],
-    slot_single_to_group: NDArray[np.int64],
-) -> NDArray[np.int32]:
-    """
-    Assign sub-bins to shared-tau + per-group-lambda-flag groups.
-
-    A sub-bin is placed by its shared tau slot k; if that slot is lambda-split it
-    is further placed by its lambda cell, else it joins the slot's single group.
-    Sub-bins outside the tau range or the overall lambda range are -1.
-    """
-    wavelength_grid = wavelength_grid_input * 1e8  # Angstrom
-    x_data = np.log10(wavelength_grid)
-    y_data = -np.log10(np.clip(tau_rosseland, 1.0e-300, None))
-
-    tau_edges = np.asarray(tau_bin_edges, dtype=np.float64)
-    lam_edges = np.asarray(lambda_bin_edges, dtype=np.float64)
-    n_tau = len(tau_edges) - 1
-    n_lambda = len(lam_edges) - 1
-
-    k = np.digitize(y_data, tau_edges, right=False) - 1
-    ell = np.digitize(x_data, lam_edges, right=False) - 1
-    ok = (k >= 0) & (k < n_tau) & (ell >= 0) & (ell < n_lambda)
-
-    group_index = np.full(x_data.shape, -1, dtype=np.int32)
-    kk = k[ok]
-    ll = ell[ok]
-    # Split slots have slot_cell_to_group[k, ell] >= 0; unsplit slots use the single map.
-    via_cell = slot_cell_to_group[kk, ll]
-    out = np.where(via_cell >= 0, via_cell, slot_single_to_group[kk])
-    group_index[ok] = out.astype(np.int32)
-    return group_index
-
-
-def build_group_specs_per_tau(
-    tau_bin_edges: list[float],
-    lambda_edges_per_tau: list[list[float]],
-) -> tuple[NDArray[np.float64], NDArray[np.float64], list[int]]:
-    """
-    Shared-tau binning where each tau group carries its *own* lambda edges.
-
-    A single set of tau edges defines N tau groups (same tau ranges at all
-    wavelengths). Tau group k subdivides into ``len(lambda_edges_per_tau[k]) - 1``
-    lambda sub-cells using that group's own lambda edges — so the wavelength split
-    can differ (or be absent) per tau group, generalizing the shared-lambda +
-    split-flag model (a group with edges ``[lam_min, lam_max]`` is unsplit; a group
-    reusing the shared edges reproduces a flag=True group). Groups are enumerated
-    tau-major: ``g = offsets[k] + j`` for lambda sub-cell j of tau group k.
-
-    All groups must share the same outer lambda window (``lambda_edges_per_tau[k][0]``
-    and ``[-1]`` equal for every k); only the interior cuts vary.
-
-    Returns:
-        group_tau_edges: [n_groups, 2] -log10(tau) (lo, hi).
-        group_lam_edges: [n_groups, 2] log10(lambda/A) (lo, hi).
-        offsets:         offsets[k] = first group id of tau group k.
-    """
-    tau = [float(e) for e in tau_bin_edges]
-    n_tau = len(tau) - 1
-    if len(lambda_edges_per_tau) != n_tau:
-        raise ValueError(f"lambda_edges_per_tau has {len(lambda_edges_per_tau)} entries, expected n_tau={n_tau}")
-
-    tau_rows: list[tuple[float, float]] = []
-    lam_rows: list[tuple[float, float]] = []
-    offsets: list[int] = []
-    g = 0
-    for k in range(n_tau):
-        offsets.append(g)
-        lam = [float(e) for e in lambda_edges_per_tau[k]]
-        if len(lam) < 2:
-            raise ValueError(f"tau group {k} needs >= 2 lambda edges, got {lam}")
-        for j in range(len(lam) - 1):
-            tau_rows.append((tau[k], tau[k + 1]))
-            lam_rows.append((lam[j], lam[j + 1]))
-            g += 1
-    return (
-        np.asarray(tau_rows, dtype=np.float64).reshape(-1, 2),
-        np.asarray(lam_rows, dtype=np.float64).reshape(-1, 2),
-        offsets,
-    )
-
-
-def assign_per_tau_lambda(
-    tau_rosseland: NDArray[np.float64],
-    wavelength_grid_input: NDArray[np.float64],
-    tau_bin_edges: list[float],
-    lambda_edges_per_tau: list[list[float]],
-    offsets: list[int],
-) -> NDArray[np.int32]:
-    """
-    Assign sub-bins to (tau group, that group's lambda sub-cell) groups.
-
-    A sub-bin is placed by its shared tau slot k, then by its lambda sub-cell within
-    tau group k's *own* lambda edges. Sub-bins outside the tau range, or outside a
-    group's lambda window, are -1. Mirrors the digitize(right=False) convention of
-    assign_split_lambda / assign_tau_to_bin.
-    """
-    x_data = np.log10(wavelength_grid_input * 1e8)  # log10 lambda [Angstrom]
-    y_data = -np.log10(np.clip(tau_rosseland, 1.0e-300, None))  # -log10 tau
-    tau_edges = np.asarray(tau_bin_edges, dtype=np.float64)
-    n_tau = len(tau_edges) - 1
-    if len(lambda_edges_per_tau) != n_tau:
-        raise ValueError(f"lambda_edges_per_tau has {len(lambda_edges_per_tau)} entries, expected n_tau={n_tau}")
-
-    k_all = np.digitize(y_data, tau_edges, right=False) - 1
-    group_index = np.full(x_data.shape, -1, dtype=np.int32)
-    for k in range(n_tau):
-        in_k = k_all == k
-        if not np.any(in_k):
-            continue
-        lam = np.asarray(lambda_edges_per_tau[k], dtype=np.float64)
-        n_l = len(lam) - 1
-        j = np.digitize(x_data[in_k], lam, right=False) - 1
-        valid = (j >= 0) & (j < n_l)
-        cell_groups = np.full(j.shape, -1, dtype=np.int32)
-        cell_groups[valid] = (offsets[k] + j[valid]).astype(np.int32)
-        group_index[in_k] = cell_groups
-    return group_index
 
 
 # --- general 2D guillotine partition (arbitrary rectangular tiling of the (-log10 tau, log10 lambda) plane) ---
@@ -1901,10 +1655,9 @@ def assign_tree(
 
     A sub-bin's coordinate is (x = log10 lambda[A], y = -log10 tau). Starting from the root
     rectangle, at each cut it goes to the lo child when its coordinate is ``< at`` else the hi
-    child (matching the digitize(right=False) convention of assign_per_tau_lambda /
-    assign_tau_to_bin), down to a leaf. Sub-bins outside the root rectangle are -1. Uses the RAW
-    (un-clamped) ``tau_window`` for membership; the descriptor's top-edge clamp is applied
-    separately by build_group_specs_tree.
+    child (the digitize(right=False) convention: a point on a cut lands in the hi child), down to
+    a leaf. Sub-bins outside the root rectangle are -1. Uses the RAW (un-clamped) ``tau_window``
+    for membership; the descriptor's top-edge clamp is applied separately by build_group_specs_tree.
 
     Returns int32[nsubbins] leaf group id in [0, n_groups) or -1, in lo-before-hi DFS order.
     """
@@ -1936,59 +1689,68 @@ def assign_tree(
     return group_index
 
 
-def assign_tau_to_bin(
-    tau_rosseland: NDArray[np.float64],
-    wavelength_grid_input: NDArray[np.float64],
-    tau_edges_per_lambda: list[list[float]],
-    lambda_bin_edges: list[int | float],
-) -> NDArray[np.int32]:
+def _resolve_grouping_inputs(
+    tau_bin_edges: list[float],
+    lambda_bin_edges: list[float],
+    split_lambda_spec: str | None,
+    lambda_per_tau_spec: list[str],
+) -> dict:
+    """Resolve main()'s grouping CLI options into the per-tau-group lambda-edge list (``lpt``)
+    that feeds the single grouping IR (``qrad_optimize.tree_from_lpt``), plus the mode-specific
+    values the ``.dat`` filename / ``.npy`` encoding still carries (``tau_edges_per_lambda`` /
+    ``split_flags`` / ``lambda_edges_per_tau``) and the outer lambda window. Pure (no I/O);
+    extracted from main() so the dispatch is data-free testable.
+
+    Returns a dict with keys: lpt, lambda_bin_edges, n_lambda, tau_edges_per_lambda,
+    split_flags, lambda_edges_per_tau, mode ('per-tau-lambda' | 'split-lambda' | 'uniform').
     """
-    Assign sub-bins to (lambda cell, tau group) groups.
+    n_tau = len(tau_bin_edges) - 1
+    lam = [float(e) for e in lambda_bin_edges]
+    n_lambda = len(lam) - 1
+    tau_edges_per_lambda: list[list[float]] | None = None
+    split_flags: list[bool] | None = None
+    lambda_edges_per_tau: list[list[float]] | None = None
 
-    Each sub-bin is first placed into a lambda cell by its wavelength, then into
-    a tau group using *that cell's* tau edges (edges may differ per cell). The
-    returned value is the flattened group index ``g = offsets[cell] + tau_idx``
-    (see build_group_index_maps), or -1 if the sub-bin falls outside the
-    configured lambda range or its cell's tau range.
+    if lambda_per_tau_spec:
+        # Per-tau-group lambda: each tau group has its OWN lambda edges.
+        if split_lambda_spec is not None:
+            raise typer.BadParameter("--lambda-per-tau is mutually exclusive with --split-lambda.")
+        lambda_edges_per_tau = parse_lambda_per_tau(lambda_per_tau_spec)
+        if len(lambda_edges_per_tau) != n_tau:
+            raise typer.BadParameter(
+                f"--lambda-per-tau has {len(lambda_edges_per_tau)} entries, expected one per tau group ({n_tau})."
+            )
+        if len({e[0] for e in lambda_edges_per_tau}) != 1 or len({e[-1] for e in lambda_edges_per_tau}) != 1:
+            raise typer.BadParameter("all --lambda-per-tau groups must share the same outer [min, max] lambda window.")
+        lam = [lambda_edges_per_tau[0][0], lambda_edges_per_tau[0][-1]]  # outer window for plot/save
+        n_lambda = 1
+        lpt = [list(e) for e in lambda_edges_per_tau]
+        mode = "per-tau-lambda"
+    elif split_lambda_spec is not None:
+        # Flag mode: shared tau binning + per-tau-group lambda-split flags.
+        split_flags = parse_split_lambda(split_lambda_spec)
+        if len(split_flags) != n_tau:
+            raise typer.BadParameter(
+                f"--split-lambda has {len(split_flags)} entries, expected one per tau group ({n_tau})."
+            )
+        lmin, lmax = lam[0], lam[-1]
+        lpt = [list(lam) if f else [lmin, lmax] for f in split_flags]
+        mode = "split-lambda"
+    else:
+        # Uniform per-cell: the same tau edges apply in every lambda cell.
+        tau_edges_per_lambda = [list(tau_bin_edges) for _ in range(n_lambda)]
+        lpt = [list(lam) for _ in range(n_tau)]
+        mode = "uniform"
 
-    Args:
-        tau_rosseland: Tau values at sub-bin wavelengths [n_bins*n_subbins]
-        wavelength_grid_input: Wavelength at sub-bin centers [cm]. [n_bins*n_subbins]
-        tau_edges_per_lambda: Per-lambda-cell -log10(tau) edge lists (length n_lambda).
-        lambda_bin_edges: Wavelength (log10 Angstrom) edges, length n_lambda+1.
-
-    Returns:
-        Group index per sub-bin wavelength point, in [0, n_groups-1] or -1.
-    """
-    wavelength_grid = wavelength_grid_input * 1e8  # Angstrom
-    x_data = np.log10(wavelength_grid)
-    # Prevent log10(0) when tau is numerically tiny.
-    y_data = -np.log10(np.clip(tau_rosseland, 1.0e-300, None))
-
-    lambda_edges = np.asarray(lambda_bin_edges, dtype=np.float64)
-    n_lambda_bins = len(lambda_edges) - 1
-    if len(tau_edges_per_lambda) != n_lambda_bins:
-        raise ValueError(
-            f"tau_edges_per_lambda has {len(tau_edges_per_lambda)} cells, expected n_lambda={n_lambda_bins}"
-        )
-
-    offsets, _n_groups, _g2cell, _g2tau = build_group_index_maps(tau_edges_per_lambda)
-    lambda_idx = np.digitize(x_data, lambda_edges, right=False) - 1
-
-    group_index = np.full(x_data.shape, -1, dtype=np.int32)
-    for cell in range(n_lambda_bins):
-        in_cell = lambda_idx == cell
-        if not np.any(in_cell):
-            continue
-        tau_edges = np.asarray(tau_edges_per_lambda[cell], dtype=np.float64)
-        n_tau_bins = len(tau_edges) - 1
-        tau_idx = np.digitize(y_data[in_cell], tau_edges, right=False) - 1
-        valid = (tau_idx >= 0) & (tau_idx < n_tau_bins)
-        cell_groups = np.full(tau_idx.shape, -1, dtype=np.int32)
-        cell_groups[valid] = (offsets[cell] + tau_idx[valid]).astype(np.int32)
-        group_index[in_cell] = cell_groups
-
-    return group_index
+    return {
+        "lpt": lpt,
+        "lambda_bin_edges": lam,
+        "n_lambda": n_lambda,
+        "tau_edges_per_lambda": tau_edges_per_lambda,
+        "split_flags": split_flags,
+        "lambda_edges_per_tau": lambda_edges_per_tau,
+        "mode": mode,
+    }
 
 
 def sort_weighted_opacity_per_tau_bin(
@@ -3119,84 +2881,56 @@ def main(
     # un-clamped edges), reproducing the original in-sort clamp.
     top_edge = -np.log10(tau_rosseland[max_height_idx] + 0.2)
 
-    tau_edges_per_lambda: list[list[float]] | None = None  # per-cell / uniform modes
-    flag_tau_bin_edges: list[float] | None = None  # flag mode / per-tau mode (clamped shared edges)
-    split_flags: list[bool] | None = None
-    lambda_edges_per_tau: list[list[float]] | None = None  # per-tau-group lambda mode
+    gi = _resolve_grouping_inputs(tau_bin_edges, lambda_bin_edges, split_lambda, lambda_per_tau)
+    # Re-bind main()'s locals from the resolved grouping (lambda_bin_edges/n_lambda may change in
+    # per-tau-lambda mode; the filename/.npy inputs are mode-specific).
+    lpt = gi["lpt"]
+    lambda_bin_edges = gi["lambda_bin_edges"]
+    n_lambda = gi["n_lambda"]
+    tau_edges_per_lambda = gi["tau_edges_per_lambda"]
+    split_flags = gi["split_flags"]
+    lambda_edges_per_tau = gi["lambda_edges_per_tau"]
+    flag_tau_bin_edges: list[float] | None = None  # per-tau/flag modes: clamped shared tau edges (filename)
+    n_tau = len(tau_bin_edges) - 1
 
-    if lambda_per_tau:
-        # ---- Per-tau-group lambda mode: each tau group has its OWN lambda edges ----
-        if split_lambda is not None:
-            raise typer.BadParameter("--lambda-per-tau is mutually exclusive with --split-lambda.")
-        n_tau = len(tau_bin_edges) - 1
-        lambda_edges_per_tau = parse_lambda_per_tau(lambda_per_tau)
-        if len(lambda_edges_per_tau) != n_tau:
-            raise typer.BadParameter(
-                f"--lambda-per-tau has {len(lambda_edges_per_tau)} entries, expected one per tau group ({n_tau})."
-            )
-        if len({e[0] for e in lambda_edges_per_tau}) != 1 or len({e[-1] for e in lambda_edges_per_tau}) != 1:
-            raise typer.BadParameter("all --lambda-per-tau groups must share the same outer [min, max] lambda window.")
-        lambda_bin_edges = [lambda_edges_per_tau[0][0], lambda_edges_per_tau[0][-1]]  # outer window for plot/save
-        n_lambda = 1
-        # Membership from un-clamped edges; descriptor from the atmosphere-top-clamped tau.
-        _gt0, _gl0, offsets = build_group_specs_per_tau(tau_bin_edges, lambda_edges_per_tau)
-        bin_number = assign_per_tau_lambda(
-            tau_rosseland_at_tau_lambda_one,
-            wavelength_grid_subbins_centers,
-            tau_bin_edges,
-            lambda_edges_per_tau,
-            offsets,
-        )
-        flag_tau_bin_edges = list(tau_bin_edges)
-        flag_tau_bin_edges[0] = top_edge
-        group_tau_edges, group_lam_edges, _offc = build_group_specs_per_tau(flag_tau_bin_edges, lambda_edges_per_tau)
+    if gi["mode"] == "per-tau-lambda":
         n_split_groups = sum(1 for e in lambda_edges_per_tau if len(e) > 2)
         console.print(
             f"[green]per-tau-lambda mode: {n_split_groups}/{n_tau} tau-groups split, each with its own λ cut[/green]"
         )
-    elif split_lambda is not None:
-        # ---- Flag mode: shared tau binning + per-tau-group lambda-split flags ----
-        n_tau = len(tau_bin_edges) - 1
-        split_flags = parse_split_lambda(split_lambda)
-        if len(split_flags) != n_tau:
-            raise typer.BadParameter(
-                f"--split-lambda has {len(split_flags)} entries, expected one per tau group ({n_tau})."
-            )
+    elif gi["mode"] == "split-lambda":
         if n_lambda == 1:
             console.print("[yellow]--split-lambda given but only one lambda cell; flags are a no-op.[/yellow]")
-        # Membership from un-clamped edges.
-        _gt0, _gl0, s2cg, s2sg = build_group_specs_split_lambda(tau_bin_edges, lambda_bin_edges, split_flags)
-        bin_number = assign_split_lambda(
-            tau_rosseland_at_tau_lambda_one,
-            wavelength_grid_subbins_centers,
-            tau_bin_edges,
-            lambda_bin_edges,
-            s2cg,
-            s2sg,
-        )
-        # Clamped descriptor for sort/plots/save.
-        flag_tau_bin_edges = list(tau_bin_edges)
-        flag_tau_bin_edges[0] = top_edge
-        group_tau_edges, group_lam_edges, _s2cg, _s2sg = build_group_specs_split_lambda(
-            flag_tau_bin_edges, lambda_bin_edges, split_flags
-        )
         console.print(
             f"[green]split-lambda mode: {sum(split_flags)}/{n_tau} tau-groups split into {n_lambda} λ cells[/green]"
         )
-    else:
-        # No optimization: the same tau edges apply in every lambda cell.
-        tau_edges_per_lambda = [list(tau_bin_edges) for _ in range(n_lambda)]
 
-        # Membership from un-clamped per-cell edges, then clamp + build the descriptor.
-        bin_number = assign_tau_to_bin(
-            tau_rosseland_at_tau_lambda_one,
-            wavelength_grid_subbins_centers,
-            tau_edges_per_lambda=tau_edges_per_lambda,
-            lambda_bin_edges=lambda_bin_edges,
-        )
+    # ---- Single grouping IR: every mode becomes a guillotine tree ----
+    # lpt is a per-tau-group lambda-edge list: a group's own edges (per-tau-lambda), the shared
+    # lambda edges (uniform / a flagged group), or [lmin,lmax] (an unsplit group). tree_from_lpt
+    # lifts it to a tau-outer guillotine partition whose leaves are the (tau, lambda) groups.
+    import qrad_optimize  # runtime-only (qrad_optimize imports tausort, so avoid a top-level cycle)
+
+    tree = qrad_optimize.tree_from_lpt(list(tau_bin_edges), lpt)
+    tw, lw, root = tree["window_tau"], tree["window_lam"], tree["root"]
+    # Membership uses the RAW (un-clamped) tau window; the descriptor clamps the atmosphere-top
+    # edge — mirroring qrad_core.score_binning (raw window for assign_tree, clamped top for specs).
+    bin_number = assign_tree(
+        tau_rosseland_at_tau_lambda_one,
+        wavelength_grid_subbins_centers,
+        root,
+        tw,
+        lw,
+    )
+    group_tau_edges, group_lam_edges = build_group_specs_tree(root, [top_edge, tw[1]], lw)
+    # Encode the clamped top edge in the filename/.npy inputs. Per-tau / flag modes carry the
+    # clamped shared tau edges; uniform mode carries the clamped per-cell edges.
+    if tau_edges_per_lambda is not None:
         for ce in tau_edges_per_lambda:
             ce[0] = top_edge
-        group_tau_edges, group_lam_edges = build_group_specs_per_cell(tau_edges_per_lambda, lambda_bin_edges)
+    else:
+        flag_tau_bin_edges = list(tau_bin_edges)
+        flag_tau_bin_edges[0] = top_edge
 
     console.print("\n[cyan]Calculating tau-binned opacities...[/cyan]")
 

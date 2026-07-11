@@ -3,17 +3,21 @@
 build_split_band_index subdivides each tau-group into n_splits opacity segments
 (low/mid/high) and assigns each member sub-bin the combined band k*n_splits+seg.
 These tests check the core invariants without needing the large ODF data files.
+
+The grouping fixtures (which (lambda, tau) group each sub-bin belongs to) are now
+built through the guillotine tree — `qrad_optimize.tree_from_lpt` -> `assign_tree`
+-> `build_group_specs_tree` — the single grouping IR. `build_split_band_index`
+itself only consumes band_index + descriptors, so it is unchanged.
 """
 
 import unittest
 
 import numpy as np
 
+import qrad_optimize as qo
 from tausort import (
-    assign_split_lambda,
-    assign_tau_to_bin,
-    build_group_index_maps,
-    build_group_specs_split_lambda,
+    assign_tree,
+    build_group_specs_tree,
     build_split_band_index,
     parse_split_lambda,
 )
@@ -129,93 +133,106 @@ class TestBuildSplitBandIndex(unittest.TestCase):
 
 
 class TestLambdaGrouping(unittest.TestCase):
-    def test_offsets_and_counts(self):
-        # cell 0 has 3 tau groups, cell 1 has 2 -> offsets [0, 3], n_groups 5
-        per_cell = [[-0.6, 0.0, 1.0, 7.0], [-0.6, 2.0, 7.0]]
-        offsets, n_groups, g2cell, g2tau = build_group_index_maps(per_cell)
-        self.assertEqual(offsets, [0, 3])
-        self.assertEqual(n_groups, 5)
-        np.testing.assert_array_equal(g2cell, [0, 0, 0, 1, 1])
-        np.testing.assert_array_equal(g2tau, [0, 1, 2, 0, 1])
+    """Uniform per-cell grouping via the guillotine tree (the single grouping IR)."""
 
-    def test_single_cell_matches_tau_only(self):
+    def test_single_cell_matches_tau_index(self):
         # With one lambda cell, the group index is exactly the tau index.
-        # lambda edges [3, 5] put every wavelength in cell 0; tau edges give 3 groups.
+        # lambda edges [3, 5] put every wavelength in the single cell; tau edges give 3 groups.
         rng = np.linspace(1e3, 9e4, 50)  # Angstrom; log10 in (3, 5)
         wl_cm = rng * 1e-8
         # -log10(tau) spanning the edges so all three tau groups get members
         neg_logtau = np.linspace(0.0, 1.4, 50)
         tau = 10.0 ** (-neg_logtau)
         tau_edges = [-0.1, 0.5, 1.0, 1.5]
-        g = assign_tau_to_bin(tau, wl_cm, tau_edges_per_lambda=[tau_edges], lambda_bin_edges=[3.0, 5.0])
+        n_tau = len(tau_edges) - 1
+        tree = qo.tree_from_lpt(tau_edges, [[3.0, 5.0]] * n_tau)
+        g = assign_tree(tau, wl_cm, tree["root"], tree["window_tau"], tree["window_lam"])
         # All assigned, values are the plain tau index in [0, 3).
         self.assertTrue(np.all(g >= 0))
         self.assertTrue(np.all(g < 3))
         self.assertEqual(set(g.tolist()), {0, 1, 2})
 
-    def test_two_cells_flatten_with_offset(self):
-        # Two lambda cells split at log10 lambda = 4 (10000 A); each has 2 tau groups.
-        # Build wavelengths in both cells and a tau that lands in tau-group 1 of each.
+    def test_two_cells_partition_consistent(self):
+        # Two lambda cells split at log10 lambda = 4 (10000 A); same 2 tau groups each.
+        # The tree enumerates tau-major, so points in different cells of the same tau group
+        # land in different leaves — verify via the descriptor rectangle containment.
         wl_cm = np.array([3.0e3, 5.0e4]) * 1e-8  # log10 ~3.48 (cell 0), ~4.70 (cell 1)
         tau = np.array([10.0 ** (-1.2), 10.0 ** (-1.2)])  # -log10(tau)=1.2 -> tau group 1
-        per_cell = [[-0.1, 0.5, 1.5], [-0.1, 0.5, 1.5]]  # 2 tau groups each
-        g = assign_tau_to_bin(tau, wl_cm, tau_edges_per_lambda=per_cell, lambda_bin_edges=[3.0, 4.0, 5.0])
-        # cell 0 tau-group 1 -> g = 0*2 + 1 = 1 ; cell 1 tau-group 1 -> g = 2 + 1 = 3
-        np.testing.assert_array_equal(g, [1, 3])
+        tau_edges = [-0.1, 0.5, 1.5]
+        tree = qo.tree_from_lpt(tau_edges, [[3.0, 4.0, 5.0]] * 2)
+        g = assign_tree(tau, wl_cm, tree["root"], tree["window_tau"], tree["window_lam"])
+        gte, gle = build_group_specs_tree(tree["root"], tree["window_tau"], tree["window_lam"])
+        # 2 tau groups x 2 lambda cells = 4 leaves; the two points are in tau-group 1 but
+        # different lambda cells -> different leaves.
+        self.assertEqual(gte.shape[0], 4)
+        self.assertNotEqual(g[0], g[1])
+        for i in range(2):
+            te, le = gte[g[i]], gle[g[i]]
+            self.assertTrue(te[0] <= -np.log10(tau[i]) < te[1])
+            self.assertTrue(le[0] <= np.log10(wl_cm[i] * 1e8) < le[1])
 
     def test_out_of_range_dropped(self):
         wl_cm = np.array([1.0e2, 3.0e3]) * 1e-8  # log10 ~2.0 (below 3 -> dropped), ~3.48 (cell 0)
         tau = np.array([10.0 ** (-0.2), 10.0 ** (-0.2)])  # -log10(tau)=0.2 -> tau group 0
-        per_cell = [[-0.1, 0.5, 1.5]]
-        g = assign_tau_to_bin(tau, wl_cm, tau_edges_per_lambda=per_cell, lambda_bin_edges=[3.0, 5.0])
-        self.assertEqual(g[0], -1)  # outside lambda range
-        self.assertEqual(g[1], 0)  # cell 0, tau group 0
+        tau_edges = [-0.1, 0.5, 1.5]
+        tree = qo.tree_from_lpt(tau_edges, [[3.0, 5.0]] * 2)
+        g = assign_tree(tau, wl_cm, tree["root"], tree["window_tau"], tree["window_lam"])
+        self.assertEqual(g[0], -1)  # outside lambda window
+        self.assertEqual(g[1], 0)  # tau group 0, cell 0 -> first leaf
 
 
 class TestSplitLambdaFlags(unittest.TestCase):
-    def test_group_specs_count_and_order(self):
-        # 3 tau groups, 2 lambda cells, flags [True, False, True] -> 5 groups slot-major.
+    """Split-flag grouping via the guillotine tree (flags -> per-tau lambda edges -> tree)."""
+
+    @staticmethod
+    def _lpt(flags, lam):
+        lmin, lmax = lam[0], lam[-1]
+        return [list(lam) if f else [lmin, lmax] for f in flags]
+
+    def test_group_specs_count_and_rectangles(self):
+        # 3 tau groups, 2 lambda cells, flags [True, False, True] -> 5 groups tau-major.
         tau = [-0.1, 0.5, 1.0, 1.5]
         lam = [3.0, 4.0, 5.0]
-        gt, gl, s2cg, s2sg = build_group_specs_split_lambda(tau, lam, [True, False, True])
-        self.assertEqual(gt.shape, (5, 2))
-        self.assertEqual(gl.shape, (5, 2))
-        # slot-major: k0 split (g0,g1), k1 single (g2), k2 split (g3,g4)
-        np.testing.assert_array_equal(s2cg, [[0, 1], [-1, -1], [3, 4]])
-        np.testing.assert_array_equal(s2sg, [-1, 2, -1])
-        # unsplit group spans the whole lambda range; split groups are confined to a cell.
-        np.testing.assert_allclose(gl[2], [3.0, 5.0])
-        np.testing.assert_allclose(gl[0], [3.0, 4.0])
-        np.testing.assert_allclose(gl[1], [4.0, 5.0])
+        tree = qo.tree_from_lpt(tau, self._lpt([True, False, True], lam))
+        gte, gle = build_group_specs_tree(tree["root"], tree["window_tau"], tree["window_lam"])
+        self.assertEqual(gte.shape, (5, 2))
+        # tau-major: k0 split (g0=cell0, g1=cell1), k1 single (g2=whole), k2 split (g3, g4)
+        np.testing.assert_allclose(gle[0], [3.0, 4.0])
+        np.testing.assert_allclose(gle[1], [4.0, 5.0])
+        np.testing.assert_allclose(gle[2], [3.0, 5.0])  # unsplit spans the whole range
+        np.testing.assert_allclose(gle[3], [3.0, 4.0])
+        np.testing.assert_allclose(gle[4], [4.0, 5.0])
         # tau ranges follow the shared edges.
-        np.testing.assert_allclose(gt[2], [0.5, 1.0])
+        np.testing.assert_allclose(gte[2], [0.5, 1.0])  # k1
 
     def test_assign_split_vs_unsplit(self):
         tau_edges = [-0.1, 0.5, 1.0, 1.5]
         lam = [3.0, 4.0, 5.0]
-        _gt, _gl, s2cg, s2sg = build_group_specs_split_lambda(tau_edges, lam, [True, False, True])
+        tree = qo.tree_from_lpt(tau_edges, self._lpt([True, False, True], lam))
         # wavelengths: cell0 (~10^3.5 A), cell1 (~10^4.5 A); tau slots k1 (unsplit), k0 (split)
         wl_cm = np.array([3162.0, 31623.0, 3162.0, 31623.0]) * 1e-8
         tau = 10.0 ** (-np.array([0.7, 0.7, 0.2, 0.2]))  # k1, k1, k0, k0
-        g = assign_split_lambda(tau, wl_cm, tau_edges, lam, s2cg, s2sg)
-        # unsplit slot k1 -> both lambda cells collapse to group 2; split slot k0 -> 0 / 1
+        g = assign_tree(tau, wl_cm, tree["root"], tree["window_tau"], tree["window_lam"])
+        # tau-major: k0 split -> g0(cell0)/g1(cell1); k1 single -> g2; k2 split -> g3/g4.
+        # unsplit slot k1 -> both lambda cells collapse to group 2; split slot k0 -> 0 / 1.
         np.testing.assert_array_equal(g, [2, 2, 0, 1])
 
     def test_all_true_matches_uniform_count(self):
         # All-True flags reproduce the uniform-split group count (n_tau * n_lambda).
         tau = [-0.1, 0.5, 1.0, 1.5]
         lam = [3.0, 4.0, 5.0]
-        gt, _gl, _s2cg, _s2sg = build_group_specs_split_lambda(tau, lam, [True, True, True])
-        self.assertEqual(gt.shape[0], 3 * 2)
+        tree = qo.tree_from_lpt(tau, self._lpt([True, True, True], lam))
+        gte, _gle = build_group_specs_tree(tree["root"], tree["window_tau"], tree["window_lam"])
+        self.assertEqual(gte.shape[0], 3 * 2)
 
     def test_all_false_is_one_per_tau(self):
         tau = [-0.1, 0.5, 1.0, 1.5]
         lam = [3.0, 4.0, 5.0]
-        gt, gl, _s2cg, s2sg = build_group_specs_split_lambda(tau, lam, [False, False, False])
-        self.assertEqual(gt.shape[0], 3)
+        tree = qo.tree_from_lpt(tau, self._lpt([False, False, False], lam))
+        gte, gle = build_group_specs_tree(tree["root"], tree["window_tau"], tree["window_lam"])
+        self.assertEqual(gte.shape[0], 3)
         # every group spans the full lambda range
-        self.assertTrue(np.all(gl[:, 0] == 3.0) and np.all(gl[:, 1] == 5.0))
-        np.testing.assert_array_equal(s2sg, [0, 1, 2])
+        self.assertTrue(np.all(gle[:, 0] == 3.0) and np.all(gle[:, 1] == 5.0))
 
     def test_parse_split_lambda(self):
         self.assertEqual(parse_split_lambda("00111100"), [False, False, True, True, True, True, False, False])

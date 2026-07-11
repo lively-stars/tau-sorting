@@ -178,34 +178,6 @@ class TestEmptyPenalty(unittest.TestCase):
         self.assertGreater(c1, c0)
 
 
-class TestPerTauGroupLambdaCore(unittest.TestCase):
-    def test_equivalence_with_split_flags(self):
-        # a flags-equivalent per-tau lambda must reproduce the split-flag grouping exactly
-        tau = [-0.63, 0.35, 1.23, 2.89, 7.0]
-        lam = [3.0, 3.8, 5.0]
-        flags = [True, False, True, True]
-        lpt = [lam if f else [lam[0], lam[-1]] for f in flags]
-        gt_s, gl_s, s2c, s2s = ts.build_group_specs_split_lambda(tau, lam, flags)
-        gt_p, gl_p, offs = ts.build_group_specs_per_tau(tau, lpt)
-        self.assertTrue(np.allclose(gt_s, gt_p))
-        self.assertTrue(np.allclose(gl_s, gl_p))
-        rng = np.random.default_rng(1)
-        n = 3000
-        tv = 10.0 ** (-rng.uniform(-1, 7, n))
-        wl = 10.0 ** (rng.uniform(3, 5, n)) / 1e8
-        bi_s = ts.assign_split_lambda(tv, wl, tau, lam, s2c, s2s)
-        bi_p = ts.assign_per_tau_lambda(tv, wl, tau, lpt, offs)
-        self.assertTrue(np.array_equal(bi_s, bi_p))
-
-    def test_per_group_specs_and_offsets(self):
-        tau = [-0.63, 1.0, 7.0]
-        lpt = [[3.0, 3.5, 5.0], [3.0, 5.0]]  # group0 split, group1 unsplit
-        gt, gl, offs = ts.build_group_specs_per_tau(tau, lpt)
-        self.assertEqual(gt.shape[0], 3)  # 2 cells + 1 cell
-        self.assertEqual(offs, [0, 2])
-        self.assertTrue(np.allclose(gl, [[3.0, 3.5], [3.5, 5.0], [3.0, 5.0]]))
-
-
 class TestPerGroupLambdaOptimizer(unittest.TestCase):
     def test_each_group_finds_its_own_split(self):
         targets = [3.5, None, 4.2, 3.9]  # group1 should NOT split; others split at these cuts
@@ -492,13 +464,13 @@ def _tree_leafcount_score():
 
 
 class TestTreeOptimizer(unittest.TestCase):
-    def test_tree_from_lpt_matches_per_tau(self):
-        # the warm-start tree reproduces the exact rectangles (and DFS order) of the per-tau mode.
+    def test_tree_from_lpt_matches_descriptor(self):
+        # tree_from_lpt's leaf rectangles (DFS order) must match build_group_specs_tree's rows.
         tau = [-0.63, 0.35, 1.23, 7.0]
         lpt = [[3.0, 3.8, 5.0], [3.0, 5.0], [3.0, 4.2, 5.0]]
         tree = qo.tree_from_lpt(tau, lpt)
         rects = list(qo._leaf_rects(tree["root"], qo._root_rect(tree)))
-        gte, gle, _off = ts.build_group_specs_per_tau(tau, lpt)
+        gte, gle = ts.build_group_specs_tree(tree["root"], tree["window_tau"], tree["window_lam"])
         self.assertEqual(len(rects), gte.shape[0])
         for i, (tlo, thi, llo, lhi) in enumerate(rects):
             self.assertAlmostEqual(tlo, gte[i][0])
@@ -562,11 +534,11 @@ class TestTreeOptimizer(unittest.TestCase):
 
 
 class TestTreeEquivalence(unittest.TestCase):
-    """Gating tests pinning that the general guillotine-tree path is equivalent to the
-    per-tau-group-lambda path it generalizes — at the membership level (data-free) and at the
-    full .dat byte level (ODF-dependent). These are the P1a deletion gate."""
+    """Gating tests for the guillotine tree (now the sole grouping IR): data-free membership
+    self-consistency (every assigned sub-bin lies inside its leaf rectangle), and an ODF-dependent
+    byte-level check that the per-tau-lambda and explicit-tree qrad_core entry points agree."""
 
-    # data-free: tree_from_lpt's assign_tree must match assign_per_tau_lambda exactly
+    # data-free: tree_from_lpt's assign_tree membership must be self-consistent with the descriptor
     LPT_CASES = [
         # tau edges, per-tau-group lambda edges (mixed split/unsplit)
         ([-0.63, 0.35, 1.23, 7.0], [[3.0, 3.8, 5.0], [3.0, 5.0], [3.0, 4.2, 5.0]]),
@@ -577,26 +549,28 @@ class TestTreeEquivalence(unittest.TestCase):
         ),
     ]
 
-    def test_assign_tree_matches_per_tau_membership(self):
+    def test_assign_tree_membership_self_consistent(self):
         # for several lpt binnings (incl. mixed split/unsplit tau groups) and thousands of
-        # random (tau_rosseland, wavelength) points, tree membership == per-tau membership.
+        # random (tau_rosseland, wavelength) points, every assigned sub-bin lies inside its leaf
+        # rectangle (>= lo, < hi) and out-of-window points are -1.
         rng = np.random.default_rng(7)
         n = 4000
         for tau_edges, lpt in self.LPT_CASES:
             with self.subTest(tau=tau_edges, lpt=lpt):
                 tau = [float(e) for e in tau_edges]
                 tree = qo.tree_from_lpt(tau, lpt)
-                _gt, _gl, offs = ts.build_group_specs_per_tau(tau, lpt)
                 tv = 10.0 ** (-rng.uniform(-1, 7, n))
                 wl = 10.0 ** (rng.uniform(3, 5, n)) / 1e8
-                bi_tree = ts.assign_tree(tv, wl, tree["root"], tree["window_tau"], tree["window_lam"])
-                bi_lpt = ts.assign_per_tau_lambda(tv, wl, tau, lpt, offs)
-                self.assertTrue(
-                    np.array_equal(bi_tree, bi_lpt),
-                    f"tree vs per-tau membership differ for tau={tau}, lpt={lpt}",
-                )
+                bi = ts.assign_tree(tv, wl, tree["root"], tree["window_tau"], tree["window_lam"])
+                gte, gle = ts.build_group_specs_tree(tree["root"], tree["window_tau"], tree["window_lam"])
                 # sanity: most points land somewhere (not all rejected)
-                self.assertGreater((bi_tree >= 0).sum(), n // 4)
+                self.assertGreater((bi >= 0).sum(), n // 4)
+                xs = np.log10(wl * 1e8)
+                ys = -np.log10(np.clip(tv, 1e-300, None))
+                for i in np.flatnonzero(bi >= 0):
+                    te, le = gte[bi[i]], gle[bi[i]]
+                    self.assertTrue(te[0] <= ys[i] < te[1], (i, te.tolist(), ys[i]))
+                    self.assertTrue(le[0] <= xs[i] < le[1], (i, le.tolist(), xs[i]))
 
     @staticmethod
     def _data_ready():
@@ -795,6 +769,77 @@ class TestBeamSearch(unittest.TestCase):
         )
         self.assertTrue(qo._tree_feasible(again["binning_tree"], qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
         self.assertLessEqual(again["rms"], first["rms"] + 1e-6)
+
+
+class TestMainGroupingDispatch(unittest.TestCase):
+    """Regression guard for the main() rewrite (P3): every CLI grouping mode resolves to the
+    per-tau-group lambda-edge list (``lpt``) feeding the single guillotine-tree IR, and the tree
+    membership produced by main()'s path (``_resolve_grouping_inputs`` -> ``tree_from_lpt`` ->
+    ``assign_tree``) is self-consistent with the descriptor. Data-free."""
+
+    @staticmethod
+    def _subbins(rng, n, ylo, yhi, xlo, xhi):
+        y = rng.uniform(ylo, yhi, n)
+        x = rng.uniform(xlo, xhi, n)
+        return 10.0 ** (-y), 10.0**x / 1e8
+
+    def _verify(self, gi, tau_edges, seed):
+        # main()'s grouping path: lpt -> tree_from_lpt -> assign_tree + build_group_specs_tree.
+        tree = qo.tree_from_lpt(list(tau_edges), gi["lpt"])
+        tw, lw = tree["window_tau"], tree["window_lam"]
+        rng = np.random.default_rng(seed)
+        n = 6000
+        tv, wl = self._subbins(rng, n, tw[0], tw[1], lw[0], lw[1])
+        bi = ts.assign_tree(tv, wl, tree["root"], tw, lw)
+        gte, gle = ts.build_group_specs_tree(tree["root"], [tw[0], tw[1]], lw)
+        # sampling across the whole window -> almost everything is assigned
+        self.assertGreater((bi >= 0).sum(), n * 0.9)
+        # every assigned sub-bin lies inside its leaf rectangle (>= lo, < hi)
+        xs = np.log10(wl * 1e8)
+        ys = -np.log10(np.clip(tv, 1e-300, None))
+        for i in np.flatnonzero(bi >= 0):
+            te, le = gte[bi[i]], gle[bi[i]]
+            self.assertTrue(te[0] <= ys[i] < te[1], (i, te.tolist(), ys[i]))
+            self.assertTrue(le[0] <= xs[i] < le[1], (i, le.tolist(), xs[i]))
+        return gte.shape[0]
+
+    def test_single_cell_uniform(self):
+        tau = [-0.63, 0.15, 1.5, 3.8, 7.0]
+        gi = ts._resolve_grouping_inputs(tau, [3.0, 5.0], None, [])
+        self.assertEqual(gi["mode"], "uniform")
+        self.assertIsNone(gi["split_flags"])
+        self.assertIsNone(gi["lambda_edges_per_tau"])
+        self.assertEqual(gi["lpt"], [[3.0, 5.0]] * (len(tau) - 1))
+        n_groups = self._verify(gi, tau, seed=1)
+        self.assertEqual(n_groups, len(tau) - 1)  # 1 lambda cell x n_tau
+
+    def test_split_flag(self):
+        tau = [-0.63, 0.35, 1.23, 2.89, 7.0]  # n_tau = 4
+        gi = ts._resolve_grouping_inputs(tau, [3.0, 3.8, 5.0], "1010", [])
+        self.assertEqual(gi["mode"], "split-lambda")
+        self.assertEqual(gi["split_flags"], [True, False, True, False])
+        # flagged groups subdivide into the lambda cells; unsplit groups span [3, 5]
+        self.assertEqual(
+            gi["lpt"],
+            [[3.0, 3.8, 5.0], [3.0, 5.0], [3.0, 3.8, 5.0], [3.0, 5.0]],
+        )
+        n_groups = self._verify(gi, tau, seed=2)
+        self.assertEqual(n_groups, 2 * 2 + 2 * 1)  # 2 flagged (2 cells) + 2 unsplit (1)
+
+    def test_per_tau_lambda(self):
+        tau = [-0.63, 0.3488, 1.2275, 2.885, 7.0]  # n_tau = 4
+        specs = ["3,3.82,5", "3,3.65,5", "3,5", "3,3.8,5"]
+        gi = ts._resolve_grouping_inputs(tau, [3.0, 5.0], None, specs)
+        self.assertEqual(gi["mode"], "per-tau-lambda")
+        self.assertIsNone(gi["split_flags"])
+        self.assertEqual(gi["lambda_bin_edges"], [3.0, 5.0])  # outer window
+        self.assertEqual(gi["n_lambda"], 1)
+        self.assertEqual(
+            gi["lpt"],
+            [[3.0, 3.82, 5.0], [3.0, 3.65, 5.0], [3.0, 5.0], [3.0, 3.8, 5.0]],
+        )
+        n_groups = self._verify(gi, tau, seed=3)
+        self.assertEqual(n_groups, 2 + 2 + 1 + 2)  # (len(edges_k) - 1) per group
 
 
 if __name__ == "__main__":
