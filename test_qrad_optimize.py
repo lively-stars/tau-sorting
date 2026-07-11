@@ -11,6 +11,7 @@ import unittest
 
 import numpy as np
 
+import qrad_core as qc
 import qrad_optimize as qo
 import tausort as ts
 
@@ -558,6 +559,242 @@ class TestTreeOptimizer(unittest.TestCase):
             max_evals=5000,
         )
         self.assertTrue(qo._tree_feasible(res["binning_tree"], qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
+
+
+class TestTreeEquivalence(unittest.TestCase):
+    """Gating tests pinning that the general guillotine-tree path is equivalent to the
+    per-tau-group-lambda path it generalizes — at the membership level (data-free) and at the
+    full .dat byte level (ODF-dependent). These are the P1a deletion gate."""
+
+    # data-free: tree_from_lpt's assign_tree must match assign_per_tau_lambda exactly
+    LPT_CASES = [
+        # tau edges, per-tau-group lambda edges (mixed split/unsplit)
+        ([-0.63, 0.35, 1.23, 7.0], [[3.0, 3.8, 5.0], [3.0, 5.0], [3.0, 4.2, 5.0]]),
+        ([-0.63, 1.0, 7.0], [[3.0, 3.5, 5.0], [3.0, 5.0]]),  # split, unsplit
+        (
+            [-0.63, 0.3488, 1.2275, 2.885, 7.0],
+            [[3.0, 3.82, 5.0], [3.0, 3.65, 5.0], [3.0, 5.0], [3.0, 3.8, 5.0]],
+        ),
+    ]
+
+    def test_assign_tree_matches_per_tau_membership(self):
+        # for several lpt binnings (incl. mixed split/unsplit tau groups) and thousands of
+        # random (tau_rosseland, wavelength) points, tree membership == per-tau membership.
+        rng = np.random.default_rng(7)
+        n = 4000
+        for tau_edges, lpt in self.LPT_CASES:
+            with self.subTest(tau=tau_edges, lpt=lpt):
+                tau = [float(e) for e in tau_edges]
+                tree = qo.tree_from_lpt(tau, lpt)
+                _gt, _gl, offs = ts.build_group_specs_per_tau(tau, lpt)
+                tv = 10.0 ** (-rng.uniform(-1, 7, n))
+                wl = 10.0 ** (rng.uniform(3, 5, n)) / 1e8
+                bi_tree = ts.assign_tree(tv, wl, tree["root"], tree["window_tau"], tree["window_lam"])
+                bi_lpt = ts.assign_per_tau_lambda(tv, wl, tau, lpt, offs)
+                self.assertTrue(
+                    np.array_equal(bi_tree, bi_lpt),
+                    f"tree vs per-tau membership differ for tau={tau}, lpt={lpt}",
+                )
+                # sanity: most points land somewhere (not all rejected)
+                self.assertGreater((bi_tree >= 0).sum(), n // 4)
+
+    @staticmethod
+    def _data_ready():
+        from pathlib import Path
+
+        repo = Path(__file__).resolve().parent
+        odf_ok = (repo / "ODF_format.npy").exists() or (repo / "ODF_nc_format.nc").exists()
+        return odf_ok and (repo / "continuumabs.dat").exists() and (repo / "models" / "G2_1D.dat").exists()
+
+    def test_per_tau_lambda_and_tree_produce_identical_kappa_dat(self):
+        # ODF-dependent hard gate: score_binning via lambda_edges_per_tau and via
+        # binning_tree=tree_from_lpt(...) must give identical rms/members, and the serialized
+        # kappa .dat (build_kappa_band_comparison output) must be byte-identical.
+        if not self._data_ready():
+            self.skipTest("ODF / continuum / models/G2_1D.dat not present")
+        import tempfile
+        from pathlib import Path
+
+        from kappa_band_reader import read_kappa_4_band_comparison
+
+        tau = [-0.63, 0.3488, 1.2275, 2.885, 7.0]
+        lpt = [[3.0, 3.82, 5.0], [3.0, 3.65, 5.0], [3.0, 5.0], [3.0, 3.8, 5.0]]
+        tree = qo.tree_from_lpt(tau, lpt)
+        model = "G2_1D.dat"
+
+        res_lpt = qc.score_binning(tau, [3.0, 5.0], None, model=model, lambda_edges_per_tau=lpt)
+        res_tree = qc.score_binning(tau, [3.0, 5.0], None, model=model, binning_tree=tree)
+        self.assertEqual(res_lpt["rms"], res_tree["rms"])
+        self.assertEqual(res_lpt["n_bands"], res_tree["n_bands"])
+        self.assertTrue(np.array_equal(res_lpt["members"], res_tree["members"]))
+        self.assertTrue(np.array_equal(res_lpt["band_index"], res_tree["band_index"]))
+
+        with tempfile.TemporaryDirectory() as td:
+            p_lpt = Path(td) / "lpt.dat"
+            p_tree = Path(td) / "tree.dat"
+            qc.save_kappa_dat(tau, [3.0, 5.0], None, model=model, lambda_edges_per_tau=lpt, path=p_lpt)
+            qc.save_kappa_dat(tau, [3.0, 5.0], None, model=model, binning_tree=tree, path=p_tree)
+            # build_kappa_band_comparison output is byte-identical (same header, axes, data)
+            self.assertEqual(p_lpt.read_bytes(), p_tree.read_bytes())
+            back_lpt = read_kappa_4_band_comparison(p_lpt)
+            back_tree = read_kappa_4_band_comparison(p_tree)
+            self.assertTrue(np.array_equal(back_lpt.kap_mean, back_tree.kap_mean))
+            self.assertTrue(np.array_equal(back_lpt.B_band, back_tree.B_band))
+
+
+def _tree_bimodal_score():
+    """Analytic tree score_fn with a shallow local min (lam cut at 1.0) and a deeper global
+    min (lam cut at 3.0), separated by a barrier at p=2.5.
+
+    Greedy grow only ever tries *midpoint* splits: from p=2.0 it descends to the shallow min
+    at 1.0, and coordinate descent can't cross the barrier -> stuck. Beam tries the fractions
+    0.35/0.5/0.65, so p=2.6 lands in the deep basin and the final polish drives it to 3.0.
+    Tau splits and >=3 leaves are penalized, so the global optimum is exactly a 2-leaf lam
+    split at 3.0 — reachable by beam, not by greedy."""
+    BASE = 1e8
+
+    def score(tau, lam, flags, model, *, binning_tree=None, window=None):
+        t = binning_tree
+        n = _n_leaves(t)
+        has_tau = False
+        lam_cuts = []
+
+        def walk(node):
+            nonlocal has_tau
+            if node.get("leaf") or "axis" not in node:
+                return
+            if node["axis"] == "tau":
+                has_tau = True
+            else:
+                lam_cuts.append(float(node["at"]))
+            walk(node["lo"])
+            walk(node["hi"])
+
+        walk(t["root"])
+        if has_tau:
+            rms = BASE + 40.0 + 5.0 * (n - 1)
+        elif n == 1:
+            rms = BASE + 50.0
+        elif n == 2:
+            p = lam_cuts[0]
+            rms = BASE + (1.0 + (p - 1.0) ** 2 if p <= 2.5 else (p - 3.0) ** 2)
+        else:  # lam-only with >=3 leaves
+            rms = BASE + 5.0 + 2.0 * n
+        return {"rms": rms, "max_abs": 2 * rms, "int_q_pct": 0.0, "n_empty": 0, "n_groups": n}
+
+    return score
+
+
+class TestBeamSearch(unittest.TestCase):
+    def test_beam_finds_global_where_greedy_is_stuck(self):
+        # single-band seed (one leaf) over tau[0,4] x lam[0,4]; optimum = lam split at 3.0.
+        score = _tree_bimodal_score()
+        greedy = qo.optimize_qrad(
+            [0.0, 4.0],
+            [0.0, 4.0],
+            flags=[True],
+            tree=True,
+            grow=True,
+            method="cd",
+            max_groups=4,
+            score_fn=score,
+            max_evals=5000,
+        )
+        beam = qo.optimize_qrad(
+            [0.0, 4.0],
+            [0.0, 4.0],
+            flags=[True],
+            tree=True,
+            grow=True,
+            method="beam",
+            max_groups=4,
+            score_fn=score,
+            max_evals=5000,
+        )
+        self.assertTrue(beam["tree"])
+        BASE = 1e8
+        # beam reached the DEEP basin (rms near the global floor); greedy is stuck in the shallow one
+        self.assertLess(beam["rms"], BASE + 0.5)
+        self.assertGreater(greedy["rms"], BASE + 0.5)
+        self.assertLess(beam["rms"], greedy["rms"] - 0.5)
+
+        def lam_cuts(t):
+            out = []
+
+            def walk(node):
+                if node.get("leaf") or "axis" not in node:
+                    return
+                if node["axis"] == "lam":
+                    out.append(float(node["at"]))
+                walk(node["lo"])
+                walk(node["hi"])
+
+            walk(t["root"])
+            return out
+
+        # basin membership: beam's cut is right of the barrier (deep), greedy's is left (shallow)
+        bcuts, gcuts = lam_cuts(beam["binning_tree"]), lam_cuts(greedy["binning_tree"])
+        self.assertTrue(bcuts and all(p > 2.5 for p in bcuts), bcuts)
+        self.assertTrue(gcuts and all(p < 2.5 for p in gcuts), gcuts)
+
+    def test_beam_respects_leaf_cap(self):
+        res = qo.optimize_qrad(
+            [-0.63, 7.0],
+            [3.0, 5.0],
+            flags=[True],
+            tree=True,
+            grow=True,
+            method="beam",
+            max_groups=5,
+            score_fn=_tree_leafcount_score(),
+            max_evals=5000,
+        )
+        self.assertTrue(res["tree"])
+        self.assertLessEqual(res["n_leaves"], 5)
+        self.assertGreater(res["n_leaves"], 1)
+        self.assertLess(res["rms"], res["rms0"])
+
+    def test_beam_result_is_feasible(self):
+        res = qo.optimize_qrad(
+            [-0.63, 0.5, 7.0],
+            [3.0, 3.4, 5.0],
+            flags=[True, True],
+            tree=True,
+            grow=True,
+            method="beam",
+            max_groups=6,
+            score_fn=_tree_dev_score(),
+            max_evals=5000,
+        )
+        self.assertTrue(qo._tree_feasible(res["binning_tree"], qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
+
+    def test_beam_warm_start_refines(self):
+        # a re-run from a passed tree must keep refining it (not reset), and still be feasible.
+        first = qo.optimize_qrad(
+            [-0.63, 0.5, 7.0],
+            [3.0, 3.4, 5.0],
+            flags=[True, True],
+            tree=True,
+            grow=True,
+            method="beam",
+            max_groups=5,
+            score_fn=_tree_dev_score(),
+            max_evals=5000,
+        )
+        again = qo.optimize_qrad(
+            [-0.63, 0.5, 7.0],
+            [3.0, 3.4, 5.0],
+            flags=[True, True],
+            tree=True,
+            grow=True,
+            method="beam",
+            max_groups=5,
+            score_fn=_tree_dev_score(),
+            max_evals=5000,
+            binning_tree=first["binning_tree"],
+        )
+        self.assertTrue(qo._tree_feasible(again["binning_tree"], qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
+        self.assertLessEqual(again["rms"], first["rms"] + 1e-6)
 
 
 if __name__ == "__main__":

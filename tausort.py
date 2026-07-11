@@ -1850,9 +1850,11 @@ def _iter_leaf_rects(node: dict, rect: tuple[float, float, float, float]):
     if node["axis"] == "tau":
         yield from _iter_leaf_rects(node["lo"], (tlo, at, llo, lhi))
         yield from _iter_leaf_rects(node["hi"], (at, thi, llo, lhi))
-    else:  # "lam"
+    elif node["axis"] == "lam":
         yield from _iter_leaf_rects(node["lo"], (tlo, thi, llo, at))
         yield from _iter_leaf_rects(node["hi"], (tlo, thi, at, lhi))
+    else:
+        raise ValueError(f"unknown tree axis {node['axis']!r}; expected 'tau' or 'lam'")
 
 
 def build_group_specs_tree(
@@ -1920,7 +1922,12 @@ def assign_tree(
             group_index[idx] = counter[0]  # empty idx -> no-op, but the leaf id is still consumed
             counter[0] += 1
             return
-        coord = y_data if node["axis"] == "tau" else x_data
+        if node["axis"] == "tau":
+            coord = y_data
+        elif node["axis"] == "lam":
+            coord = x_data
+        else:
+            raise ValueError(f"unknown tree axis {node['axis']!r}; expected 'tau' or 'lam'")
         go_lo = coord[idx] < float(node["at"])
         _recurse(node["lo"], idx[go_lo])
         _recurse(node["hi"], idx[~go_lo])

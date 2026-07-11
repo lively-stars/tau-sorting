@@ -100,6 +100,29 @@ class TestGuillotineBinning(unittest.TestCase):
         np.testing.assert_allclose(gte, [[-0.63, 7.0]])
         np.testing.assert_allclose(gle, [[3.0, 5.0]])
 
+    def test_membership_window_diverges_from_descriptor_clamped_top(self):
+        # Invariant #4: assign_tree scores membership against the RAW (un-clamped) tau window,
+        # while build_group_specs_tree reports the CLAMPED top edge. When raw_top < clamped_top,
+        # a sub-bin at y in (raw_top, clamped_top) is a member of group 0 (raw window) yet lies
+        # BELOW the descriptor group-0 rectangle's top edge — the intended containment mismatch
+        # that qrad_core.score_binning relies on (membership raw, descriptor clamped).
+        raw_top, clamped_top, hi = 0.0, 0.5, 7.0  # raw_top < clamped_top
+        # simple 1-split tree: cut tau@3.0 -> lo=group0 [..,3], hi=group1 [3,hi]
+        tree = {"axis": "tau", "at": 3.0, "lo": {"leaf": True}, "hi": {"leaf": True}}
+        y, x = 0.25, 4.0  # y in (raw_top, clamped_top), and y < 3.0 so -> group 0
+        tau_r, wl = _subbins([(x, y)])
+
+        # membership uses the RAW window -> the point is in group 0
+        g_raw = assign_tree(tau_r, wl, tree, [raw_top, hi], _WIN_LAM)
+        self.assertEqual(g_raw.tolist(), [0])
+
+        # descriptor uses the CLAMPED top -> group 0's rectangle starts at clamped_top > y,
+        # so the descriptor does NOT contain the point it just assigned.
+        gte, _gle = build_group_specs_tree(tree, [clamped_top, hi], _WIN_LAM)
+        self.assertEqual(gte[0, 0], clamped_top)
+        self.assertGreater(clamped_top, y)
+        self.assertFalse(gte[0, 0] <= y < gte[0, 1])  # descriptor group 0 excludes y
+
 
 if __name__ == "__main__":
     unittest.main()
