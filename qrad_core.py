@@ -302,7 +302,16 @@ def precompute(model=None) -> dict:
 
 
 def score_binning(
-    tau_edges, lambda_edges, flags, model=None, *, n_splits=3, lambda_edges_per_tau=None, binning_tree=None, window=None
+    tau_edges,
+    lambda_edges,
+    flags,
+    model=None,
+    *,
+    n_splits=3,
+    lambda_edges_per_tau=None,
+    binning_tree=None,
+    window=None,
+    min_opacity_delta=1.0,
 ) -> dict:
     """Map a binning to Q_rad + residual metrics against the full-ODF reference.
 
@@ -356,7 +365,11 @@ def score_binning(
         verbose=False,
     )
     split_band_index = ts.build_split_band_index(
-        sorted_per_bin, n_subbin_points=len(band_index), n_groups=n_groups, n_splits=n_splits
+        sorted_per_bin,
+        n_subbin_points=len(band_index),
+        n_groups=n_groups,
+        n_splits=n_splits,
+        min_opacity_delta=min_opacity_delta,
     )
     n_bands = n_groups * n_splits
     res = ts.calculate_tau_bin_opacities(odf=odf, cont=cont, band_index=split_band_index, n_bins=n_bands)
@@ -436,7 +449,16 @@ def _kappa_dat_name(
 
 
 def save_kappa_dat(
-    tau_edges, lambda_edges, flags, model=None, *, lambda_edges_per_tau=None, binning_tree=None, n_splits=3, path=None
+    tau_edges,
+    lambda_edges,
+    flags,
+    model=None,
+    *,
+    lambda_edges_per_tau=None,
+    binning_tree=None,
+    n_splits=3,
+    path=None,
+    min_opacity_delta=1.0,
 ):
     """Build the binning's C-format kappa table and write it to disk.
 
@@ -485,7 +507,11 @@ def save_kappa_dat(
         verbose=False,
     )
     split_band_index = ts.build_split_band_index(
-        sorted_per_bin, n_subbin_points=len(band_index), n_groups=n_groups, n_splits=n_splits
+        sorted_per_bin,
+        n_subbin_points=len(band_index),
+        n_groups=n_groups,
+        n_splits=n_splits,
+        min_opacity_delta=min_opacity_delta,
     )
     n_bands = n_groups * n_splits
     res = ts.calculate_tau_bin_opacities(odf=odf, cont=cont, band_index=split_band_index, n_bins=n_bands)

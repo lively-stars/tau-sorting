@@ -19,19 +19,20 @@ from tausort import (
 )
 
 
-def _make_group(member_indices, n):
+def _make_group(member_indices, n, *, lo=-4.0, hi=1.0):
     """A non-empty sorted_per_bin entry with an increasing bot-sorted curve.
 
     sort_idx_bot is identity, so members are already in ascending-opacity order;
     sorted_weighted_kappa_bot is a smooth increasing positive curve that
-    analyze_group can segment into low/mid/high.
+    analyze_group can segment into low/mid/high. `lo`/`hi` set the log10 dynamic
+    range (max/min = 10**(hi-lo)); default 1e5x.
     """
     member_indices = np.asarray(member_indices, dtype=np.int64)
     assert member_indices.size == n
     return {
         "member_indices": member_indices,
         "sort_idx_bot": np.arange(n, dtype=np.int64),
-        "sorted_weighted_kappa_bot": np.logspace(-4.0, 1.0, n),
+        "sorted_weighted_kappa_bot": np.logspace(lo, hi, n),
     }
 
 
@@ -97,6 +98,34 @@ class TestBuildSplitBandIndex(unittest.TestCase):
         # Must stay < n_groups*n_splits so calculate_tau_bin_opacities accepts it.
         self.assertTrue(np.all(idx < 2 * 3))
         self.assertTrue(np.all(idx >= -1))
+
+    def test_min_opacity_delta_collapses_narrow_group(self):
+        # A group with only a 10x opacity range (max/min = 10) collapses to a single
+        # band (split 0) when min_opacity_delta=20 demands a wider dynamic range.
+        g = np.arange(0, 200)
+        sorted_per_bin = {0: _make_group(g, g.size, lo=-1.0, hi=0.0)}  # 10x range
+        idx = build_split_band_index(sorted_per_bin, 1000, n_groups=1, n_splits=3, min_opacity_delta=20.0)
+        # Every member lands on band 0 (split 0); splits 1 and 2 are never used.
+        self.assertTrue(np.all(idx[g] == 0))
+        self.assertEqual(set(idx[idx >= 0].tolist()), {0})
+
+    def test_min_opacity_delta_splits_wide_group(self):
+        # The same threshold (20) leaves a wide-range group (1e5x) split into all three.
+        g = np.arange(0, 200)
+        sorted_per_bin = {0: _make_group(g, g.size)}  # 1e5x range
+        idx = build_split_band_index(sorted_per_bin, 1000, n_groups=1, n_splits=3, min_opacity_delta=20.0)
+        segs = set(idx[g].tolist())
+        self.assertEqual(segs, {0, 1, 2})
+
+    def test_min_opacity_delta_default_always_splits(self):
+        # Default (1.0) preserves the original behaviour: even the 10x group is split.
+        g = np.arange(0, 200)
+        sorted_per_bin = {0: _make_group(g, g.size, lo=-1.0, hi=0.0)}
+        idx_default = build_split_band_index(sorted_per_bin, 1000, n_groups=1, n_splits=3)
+        idx_one = build_split_band_index(sorted_per_bin, 1000, n_groups=1, n_splits=3, min_opacity_delta=1.0)
+        np.testing.assert_array_equal(idx_default, idx_one)
+        # and the default does split into all three segments
+        self.assertEqual(set(idx_default[g].tolist()), {0, 1, 2})
 
 
 class TestLambdaGrouping(unittest.TestCase):

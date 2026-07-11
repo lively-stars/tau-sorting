@@ -2413,6 +2413,7 @@ def build_split_band_index(
     n_groups: int,
     n_splits: int = 3,
     smooth_window: int = 7,
+    min_opacity_delta: float = 1.0,
 ) -> NDArray[np.int32]:
     """
     Build a split-resolved band index from the per-group sorted-opacity curves.
@@ -2436,6 +2437,11 @@ def build_split_band_index(
         n_groups: Number of (lambda cell, tau) groups (= sum of tau-groups over cells).
         n_splits: Number of opacity segments per group (fixed 3: low/mid/high).
         smooth_window: Smoothing window forwarded to analyze_group.
+        min_opacity_delta: Minimum opacity dynamic range (max/min ratio of the bottom
+            weighted opacity within a group) required to justify a low/mid/high split.
+            A group whose range is below this collapses to a single band (split 0).
+            1.0 = always split (preserve the original behaviour); e.g. 20 keeps
+            near-uniform groups unsplit.
 
     Returns:
         split_band_index: int32 array of shape [n_subbin_points], values in
@@ -2457,6 +2463,19 @@ def build_split_band_index(
             # Too few points to segment reliably: assign the whole group to split 0 (low).
             split_band_index[member_indices] = g * n_splits
             console.print(f"[yellow]group {g}: only {n} members (<=10); assigned all to split 0 (low).[/yellow]")
+            continue
+
+        # min_opacity_delta: skip the low/mid/high split when the group's weighted-opacity
+        # dynamic range (max/min) is too small to benefit from it; collapse to one band
+        # (split 0). Measured on the same bottom weighted opacity analyze_group ranks on.
+        s_min = float(s_bot.min())
+        s_max = float(s_bot.max())
+        if s_min > 0 and (s_max / s_min) < min_opacity_delta:
+            split_band_index[member_indices] = g * n_splits
+            console.print(
+                f"[yellow]group {g}: opacity Δ {s_max / s_min:.2g}x < min_opacity_delta="
+                f"{min_opacity_delta:g}; not split (single band)[/yellow]"
+            )
             continue
 
         try:
@@ -3119,6 +3138,14 @@ def main(
         help="Forward to analyze_group: enable/disable iterative b_mid "
         "refinement when segmenting sorted-opacity curves.",
     ),
+    min_opacity_delta: float = typer.Option(
+        1.0,
+        "--min-opacity-delta",
+        help="Only split a (lambda,tau) group into low/mid/high opacity segments when its "
+        "bottom weighted-opacity dynamic range (max/min) reaches this ratio. Below it the "
+        "group stays one band. 1.0 = always split (default); e.g. 20 keeps near-uniform "
+        "groups unsplit.",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
 ):
     """
@@ -3478,6 +3505,7 @@ def main(
         n_subbin_points=len(bin_number),
         n_groups=n_groups,
         n_splits=n_splits,
+        min_opacity_delta=min_opacity_delta,
     )
     t1 = time.perf_counter()
     n_assigned = int(np.sum(split_band_index >= 0))

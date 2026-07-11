@@ -65,7 +65,16 @@ def _check_feasible(edges, min_gap: float, name: str) -> None:
 
 
 # --- objective ------------------------------------------------------------------
-def make_evaluator(model, *, metric="rms", empty_penalty=EMPTY_PENALTY, score_fn=None, on_eval=None, window=None):
+def make_evaluator(
+    model,
+    *,
+    metric="rms",
+    empty_penalty=EMPTY_PENALTY,
+    score_fn=None,
+    on_eval=None,
+    window=None,
+    min_opacity_delta=None,
+):
     """Return (evaluate, state). `evaluate(tau, lam, flags) -> (cost, raw_dict)`.
 
     cost = base_metric * (1 + empty_penalty * n_empty). The multiplicative empty-band
@@ -81,17 +90,19 @@ def make_evaluator(model, *, metric="rms", empty_penalty=EMPTY_PENALTY, score_fn
     score = score_fn if score_fn is not None else qrad_core.score_binning
     state = {"n_evals": 0}
     _key = {"rms": "rms", "maxabs": "max_abs", "int_q": "int_q_pct"}[metric]
-    _win = {} if window is None else {"window": (float(window[0]), float(window[1]))}
+    _kw = {} if window is None else {"window": (float(window[0]), float(window[1]))}
+    if min_opacity_delta is not None:
+        _kw["min_opacity_delta"] = float(min_opacity_delta)
 
     def evaluate(tau_edges, lambda_edges, flags, *, lambda_edges_per_tau=None, binning_tree=None):
         if binning_tree is not None:
-            r = score(None, None, None, model, binning_tree=binning_tree, **_win)
+            r = score(None, None, None, model, binning_tree=binning_tree, **_kw)
         elif lambda_edges_per_tau is not None:
             r = score(
-                list(tau_edges), None, None, model, lambda_edges_per_tau=[list(x) for x in lambda_edges_per_tau], **_win
+                list(tau_edges), None, None, model, lambda_edges_per_tau=[list(x) for x in lambda_edges_per_tau], **_kw
             )
         else:
-            r = score(list(tau_edges), list(lambda_edges), list(flags), model, **_win)
+            r = score(list(tau_edges), list(lambda_edges), list(flags), model, **_kw)
         base = abs(float(r[_key]))
         cost = base * (1.0 + empty_penalty * int(r.get("n_empty", 0)))
         state["n_evals"] += 1
@@ -687,6 +698,7 @@ def optimize_qrad(
     lambda_edges_per_tau=None,  # per-group-lambda warm start (one lambda-edge list per tau group)
     tree=False,  # general 2D guillotine mode (both tau and lambda locally free)
     binning_tree=None,  # guillotine-tree warm start {window_tau, window_lam, root}
+    min_opacity_delta=None,  # min bottom-opacity max/min ratio to split a group (None -> score default)
     score_fn=None,
     on_progress=None,
     on_eval=None,
@@ -722,7 +734,13 @@ def optimize_qrad(
             on_eval(n, cost, r)
 
     evaluate, state = make_evaluator(
-        model, metric=metric, empty_penalty=empty_penalty, score_fn=score_fn, on_eval=_record_on_eval, window=window
+        model,
+        metric=metric,
+        empty_penalty=empty_penalty,
+        score_fn=score_fn,
+        on_eval=_record_on_eval,
+        window=window,
+        min_opacity_delta=min_opacity_delta,
     )
     budget = _Budget(
         max_evals=max_evals,
@@ -991,6 +1009,11 @@ def main(
     method: str = typer.Option("cd", "--method", help="Position search: cd (coordinate descent) | nm (Nelder-Mead)."),
     min_gap_tau: float = typer.Option(MIN_GAP_TAU, "--min-gap-tau"),
     min_gap_lam: float = typer.Option(MIN_GAP_LAM, "--min-gap-lam"),
+    min_opacity_delta: float = typer.Option(
+        1.0,
+        "--min-opacity-delta",
+        help="Only split a group into low/mid/high when its bottom opacity max/min >= this (1 = always split).",
+    ),
     max_groups: int = typer.Option(8, "--max-groups"),
     max_evals: int = typer.Option(400, "--max-evals"),
     max_seconds: float = typer.Option(1800.0, "--max-seconds"),
@@ -1046,6 +1069,7 @@ def main(
         plateau_evals=plateau_evals,
         grow_tol_rel=grow_tol_rel,
         per_group_lambda=per_group_lambda,
+        min_opacity_delta=min_opacity_delta,
         on_progress=_progress,
     )
 
@@ -1069,17 +1093,35 @@ def main(
             if result.get("per_group_lambda")
             else {"lam": result["lambda_edges"], "flags": result["flags"]}
         )
-        _plot_before_after(tau_bin_edges, lambda_bin_edges, flags, result["tau_edges"], after, save_plot, model_name)
+        _plot_before_after(
+            tau_bin_edges,
+            lambda_bin_edges,
+            flags,
+            result["tau_edges"],
+            after,
+            save_plot,
+            model_name,
+            min_opacity_delta=min_opacity_delta,
+        )
         print(f"  before/after plot -> {save_plot}")
 
     if save_dat:
         if result.get("per_group_lambda"):
             written, _name = qrad_core.save_kappa_dat(
-                result["tau_edges"], None, None, model_name, lambda_edges_per_tau=result["lambda_edges_per_tau"]
+                result["tau_edges"],
+                None,
+                None,
+                model_name,
+                lambda_edges_per_tau=result["lambda_edges_per_tau"],
+                min_opacity_delta=min_opacity_delta,
             )
         else:
             written, _name = qrad_core.save_kappa_dat(
-                result["tau_edges"], result["lambda_edges"], result["flags"], model_name
+                result["tau_edges"],
+                result["lambda_edges"],
+                result["flags"],
+                model_name,
+                min_opacity_delta=min_opacity_delta,
             )
         print(f"  kappa table -> {written}")
 
@@ -1088,17 +1130,20 @@ def _fmt(edges) -> str:
     return "[" + ", ".join(f"{float(e):.4g}" for e in edges) + "]"
 
 
-def _plot_before_after(tau0, lam0, flags0, tau1, after, path, model=None):
+def _plot_before_after(tau0, lam0, flags0, tau1, after, path, model=None, min_opacity_delta=None):
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    a = qrad_core.score_binning(tau0, lam0, qrad_core.resolve_flags(flags0, len(tau0) - 1), model)
+    _kw = {} if min_opacity_delta is None else {"min_opacity_delta": min_opacity_delta}
+    a = qrad_core.score_binning(tau0, lam0, qrad_core.resolve_flags(flags0, len(tau0) - 1), model, **_kw)
     if "lpt" in after:
-        b = qrad_core.score_binning(tau1, None, None, model, lambda_edges_per_tau=after["lpt"])
+        b = qrad_core.score_binning(tau1, None, None, model, lambda_edges_per_tau=after["lpt"], **_kw)
     else:
-        b = qrad_core.score_binning(tau1, after["lam"], qrad_core.resolve_flags(after["flags"], len(tau1) - 1), model)
+        b = qrad_core.score_binning(
+            tau1, after["lam"], qrad_core.resolve_flags(after["flags"], len(tau1) - 1), model, **_kw
+        )
     ltau, rho = a["ltau"], a["rho"]
     order = np.argsort(ltau)
     win = (ltau[order] >= qrad_core.WINDOW[0] - 1.0) & (ltau[order] <= qrad_core.WINDOW[1] + 1.0)

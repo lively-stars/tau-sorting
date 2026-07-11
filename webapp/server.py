@@ -146,6 +146,7 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
             lambda_edges_per_tau=opt["lambda_edges_per_tau"],
             tree=opt["tree"],
             binning_tree=opt["binning_tree"],
+            min_opacity_delta=opt["min_opacity_delta"],
             on_eval=on_eval,
             on_progress=on_progress,
             should_stop=lambda: _QOPT["cancel"],
@@ -157,7 +158,16 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
         _QOPT["running"] = False
 
 
-def compute(tau_edges, lambda_edges, split_lambda, model, lambda_edges_per_tau=None, binning_tree=None, window=None):
+def compute(
+    tau_edges,
+    lambda_edges,
+    split_lambda,
+    model,
+    lambda_edges_per_tau=None,
+    binning_tree=None,
+    window=None,
+    min_opacity_delta=1.0,
+):
     """Run the per-edge pipeline (via qrad_core) and shape the Q_rad curves + metrics for the UI.
 
     `model` selects the atmosphere the binning + RTE run on (validated file under models/).
@@ -167,12 +177,24 @@ def compute(tau_edges, lambda_edges, split_lambda, model, lambda_edges_per_tau=N
     """
     with _LOCK:
         if binning_tree is not None:
-            r = qc.score_binning(None, None, None, model, binning_tree=binning_tree, window=window)
+            r = qc.score_binning(
+                None, None, None, model, binning_tree=binning_tree, window=window, min_opacity_delta=min_opacity_delta
+            )
         elif lambda_edges_per_tau is not None:
-            r = qc.score_binning(tau_edges, None, None, model, lambda_edges_per_tau=lambda_edges_per_tau, window=window)
+            r = qc.score_binning(
+                tau_edges,
+                None,
+                None,
+                model,
+                lambda_edges_per_tau=lambda_edges_per_tau,
+                window=window,
+                min_opacity_delta=min_opacity_delta,
+            )
         else:
             flags = qc.resolve_flags(split_lambda, len(tau_edges) - 1)
-            r = qc.score_binning(tau_edges, lambda_edges, flags, model, window=window)
+            r = qc.score_binning(
+                tau_edges, lambda_edges, flags, model, window=window, min_opacity_delta=min_opacity_delta
+            )
         inv = qc.inv_for(model)
 
         ltau, rho = r["ltau"], r["rho"]
@@ -427,6 +449,7 @@ class Handler(BaseHTTPRequestHandler):
                         "grow_tol_rel": float(req.get("grow_tol_rel", 0.01) or 0.01),
                         "min_gap_tau": float(req.get("min_gap_tau", 0.15) or 0.15),
                         "min_gap_lam": float(req.get("min_gap_lam", 0.10) or 0.10),
+                        "min_opacity_delta": float(req.get("min_opacity_delta", 1.0) or 1.0),
                     }
                     threading.Thread(
                         target=_run_qrad_opt, args=(tau_edges, lambda_edges, flags, model, opt), daemon=True
@@ -440,19 +463,30 @@ class Handler(BaseHTTPRequestHandler):
                 # Build the current binning's kappa table and stream it back as a download.
                 lpt = req.get("lambda_edges_per_tau") or None
                 btree = req.get("binning_tree") or None
+                min_od = float(req.get("min_opacity_delta", 1.0) or 1.0)
                 fd, tmp = tempfile.mkstemp(suffix=".dat")
                 os.close(fd)
                 try:
                     with _LOCK:
                         if btree is not None:
-                            _w, name = qc.save_kappa_dat(None, None, None, model, binning_tree=btree, path=tmp)
+                            _w, name = qc.save_kappa_dat(
+                                None, None, None, model, binning_tree=btree, path=tmp, min_opacity_delta=min_od
+                            )
                         elif lpt is not None:
                             _w, name = qc.save_kappa_dat(
-                                tau_edges, None, None, model, lambda_edges_per_tau=lpt, path=tmp
+                                tau_edges,
+                                None,
+                                None,
+                                model,
+                                lambda_edges_per_tau=lpt,
+                                path=tmp,
+                                min_opacity_delta=min_od,
                             )
                         else:
                             flags = qc.resolve_flags(req.get("split_lambda") or None, len(tau_edges) - 1)
-                            _w, name = qc.save_kappa_dat(tau_edges, lambda_edges, flags, model, path=tmp)
+                            _w, name = qc.save_kappa_dat(
+                                tau_edges, lambda_edges, flags, model, path=tmp, min_opacity_delta=min_od
+                            )
                         data = Path(tmp).read_bytes()
                 finally:
                     try:
@@ -472,6 +506,7 @@ class Handler(BaseHTTPRequestHandler):
                 lambda_edges_per_tau=lpt,
                 binning_tree=btree,
                 window=_window(req),
+                min_opacity_delta=float(req.get("min_opacity_delta", 1.0) or 1.0),
             )
             out["elapsed"] = round(time.perf_counter() - t0, 2)
             self._send(200, json.dumps(out))

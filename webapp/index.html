@@ -112,6 +112,14 @@
     <div id="pg_host"></div>
     <div class="hint">Each &tau; group carries its own wavelength cut(s). <b>+</b> adds a cut, <b>&times;</b> removes one; a group with no cuts is unsplit. Edits recompute.</div>
 
+    <label>Min opacity split &nbsp;<span class="hint">(&Delta; ratio per &tau;-&lambda; group)</span></label>
+    <div class="opt-row">
+      <span class="opt-n">split a group into low/mid/high only if max/min &kappa; &ge;
+        <input type="number" id="min_opacity_delta" min="1" step="1" value="1" /></span>
+    </div>
+    <div class="hint">Below this opacity dynamic range a group stays a single band instead of low/mid/high.
+       <code>1</code> = always split (default); e.g. <code>20</code> keeps near-uniform groups unsplit. Applies to Compute, Optimize, and Download.</div>
+
     <label>Scoring window &nbsp;<span class="hint">(log₁₀ τ_Ros, lo → hi)</span></label>
     <div class="opt-row">
       <span class="opt-n"><input type="number" id="win_lo" step="0.5" value="-5" /> to
@@ -353,7 +361,8 @@ async function compute() {
   if (tau.length<2) return setStatus('need ≥2 tau edges', true);
   adaptPgToTauCount(tau.length - 1);  // defensive: keep PG_LAMBDA length-matched to the τ groups
   const body = {tau_edges:tau, lambda_edges:LAM_WINDOW.slice(), model:$('model').value,
-                window_lo:+$('win_lo').value, window_hi:+$('win_hi').value};
+                window_lo:+$('win_lo').value, window_hi:+$('win_hi').value,
+                min_opacity_delta: parseFloat($('min_opacity_delta').value) || 1};
   if (BINNING_TREE) body.binning_tree = BINNING_TREE;
   else body.lambda_edges_per_tau = PG_LAMBDA;
   $('go').disabled = true; setStatus('computing… (binning + radiative transfer)');
@@ -434,6 +443,7 @@ async function qoptStart() {
     grow_tol_rel: (parseFloat($('qv_growtol').value) || 0) / 100,
     min_gap_tau: parseFloat($('qv_gaptau').value) || undefined,
     min_gap_lam: parseFloat($('qv_gaplam').value) || undefined,
+    min_opacity_delta: parseFloat($('min_opacity_delta').value) || 1,
   };
   // warm-start a re-run from the current binning so it keeps refining (not resetting to the box)
   if (wantTree && BINNING_TREE) body.binning_tree = BINNING_TREE;
@@ -489,7 +499,8 @@ async function downloadKappa() {
   catch(e){ return setStatus('could not parse edges', true); }
   if (tau.length<2) return setStatus('need ≥2 τ edges', true);
   adaptPgToTauCount(tau.length - 1);
-  const body = {tau_edges:tau, lambda_edges:LAM_WINDOW.slice(), model:$('model').value};
+  const body = {tau_edges:tau, lambda_edges:LAM_WINDOW.slice(), model:$('model').value,
+                min_opacity_delta: parseFloat($('min_opacity_delta').value) || 1};
   if (BINNING_TREE) body.binning_tree = BINNING_TREE;
   else body.lambda_edges_per_tau = PG_LAMBDA;
   $('dl').disabled = true; setStatus('building kappa table…');
