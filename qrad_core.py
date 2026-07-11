@@ -331,26 +331,25 @@ def score_binning(
     ref = reference(model)
     clamped_top = float(-np.log10(inv["tau_ross"][inv["max_height_idx"]] + 0.2))
 
-    # Normalize per-tau-group-lambda mode into a guillotine tree (same rectangle set + DFS
-    # order as build_group_specs_per_tau, verified byte-identical end-to-end by
-    # test_qrad_optimize.TestTreeEquivalence), so the tree path is the single grouping
-    # implementation for both. An explicit `binning_tree` keeps priority over per-tau-lambda.
+    # Normalize every input mode into a guillotine tree so the tree path is the single grouping
+    # implementation. Precedence: explicit `binning_tree` > per-tau-lambda > shared-flags. The
+    # per-tau-lambda conversion matches build_group_specs_per_tau's rectangle set + DFS order
+    # (verified byte-identical end-to-end by test_qrad_optimize.TestTreeEquivalence); the
+    # shared-flags conversion is the old tree_from_flags inlined (flagged groups subdivide along
+    # lambda, the rest span the window). An explicit `binning_tree` keeps priority — its filename
+    # branch is dispatched separately below.
     tree = binning_tree
-    if tree is None and lambda_edges_per_tau is not None:
-        tree = qrad_optimize.tree_from_lpt(list(tau_edges), [list(x) for x in lambda_edges_per_tau])
+    if tree is None:
+        if lambda_edges_per_tau is not None:
+            tree = qrad_optimize.tree_from_lpt(list(tau_edges), [list(x) for x in lambda_edges_per_tau])
+        else:
+            lpt = [list(lambda_edges) if bool(f) else [float(lambda_edges[0]), float(lambda_edges[-1])] for f in flags]
+            tree = qrad_optimize.tree_from_lpt(list(tau_edges), lpt)
 
-    if tree is not None:
-        # guillotine tree: membership from the raw window, descriptor with the clamped top edge
-        tw, lw, root = tree["window_tau"], tree["window_lam"], tree["root"]
-        band_index = ts.assign_tree(inv["tau_at_lam1"], inv["wl_centers"], root, tw, lw)
-        group_tau_edges, group_lam_edges = ts.build_group_specs_tree(root, [clamped_top, float(tw[1])], lw)
-    else:
-        clamped = list(tau_edges)
-        clamped[0] = clamped_top
-        # shared-tau + per-group split flags
-        _gt0, _gl0, s2cg, s2sg = ts.build_group_specs_split_lambda(tau_edges, lambda_edges, flags)
-        band_index = ts.assign_split_lambda(inv["tau_at_lam1"], inv["wl_centers"], tau_edges, lambda_edges, s2cg, s2sg)
-        group_tau_edges, group_lam_edges, _a, _b = ts.build_group_specs_split_lambda(clamped, lambda_edges, flags)
+    # guillotine tree: membership from the raw window, descriptor with the clamped top edge
+    tw, lw, root = tree["window_tau"], tree["window_lam"], tree["root"]
+    band_index = ts.assign_tree(inv["tau_at_lam1"], inv["wl_centers"], root, tw, lw)
+    group_tau_edges, group_lam_edges = ts.build_group_specs_tree(root, [clamped_top, float(tw[1])], lw)
     n_groups = int(group_tau_edges.shape[0])
 
     sorted_per_bin = ts.sort_weighted_opacity_per_tau_bin(
@@ -475,27 +474,25 @@ def save_kappa_dat(
     clamped_top = float(-np.log10(inv["tau_ross"][inv["max_height_idx"]] + 0.2))
     clamped = None
 
-    # Normalize per-tau-group-lambda mode into a guillotine tree (same rectangle set + DFS
-    # order, verified byte-identical end-to-end by test_qrad_optimize.TestTreeEquivalence) so
-    # the tree path is the single grouping implementation; an explicit `binning_tree` keeps
-    # priority. The .dat filename still reflects the original mode (pt vs tree) because the
-    # untouched `binning_tree` parameter is what _kappa_dat_name dispatches on below.
+    # Normalize every input mode into a guillotine tree so the tree path is the single grouping
+    # implementation. Precedence: explicit `binning_tree` > per-tau-lambda > shared-flags; the
+    # shared-flags conversion is the old tree_from_flags inlined (flagged groups subdivide along
+    # lambda, the rest span the window). The .dat filename still reflects the original mode (pt vs
+    # tree vs sl) because the untouched `binning_tree`/`lambda_edges_per_tau`/`flags` params are
+    # what _kappa_dat_name dispatches on below.
     tree = binning_tree
-    if tree is None and lambda_edges_per_tau is not None:
-        tree = qrad_optimize.tree_from_lpt(list(tau_edges), [list(x) for x in lambda_edges_per_tau])
+    if tree is None:
+        if lambda_edges_per_tau is not None:
+            tree = qrad_optimize.tree_from_lpt(list(tau_edges), [list(x) for x in lambda_edges_per_tau])
+        else:
+            lpt = [list(lambda_edges) if bool(f) else [float(lambda_edges[0]), float(lambda_edges[-1])] for f in flags]
+            tree = qrad_optimize.tree_from_lpt(list(tau_edges), lpt)
         clamped = list(tau_edges)
         clamped[0] = clamped_top
 
-    if tree is not None:
-        tw, lw, root = tree["window_tau"], tree["window_lam"], tree["root"]
-        band_index = ts.assign_tree(inv["tau_at_lam1"], inv["wl_centers"], root, tw, lw)
-        group_tau_edges, _gl = ts.build_group_specs_tree(root, [clamped_top, float(tw[1])], lw)
-    else:
-        clamped = list(tau_edges)
-        clamped[0] = clamped_top
-        _gt0, _gl0, s2cg, s2sg = ts.build_group_specs_split_lambda(tau_edges, lambda_edges, flags)
-        band_index = ts.assign_split_lambda(inv["tau_at_lam1"], inv["wl_centers"], tau_edges, lambda_edges, s2cg, s2sg)
-        group_tau_edges, _gl, _a, _b = ts.build_group_specs_split_lambda(clamped, lambda_edges, flags)
+    tw, lw, root = tree["window_tau"], tree["window_lam"], tree["root"]
+    band_index = ts.assign_tree(inv["tau_at_lam1"], inv["wl_centers"], root, tw, lw)
+    group_tau_edges, _gl = ts.build_group_specs_tree(root, [clamped_top, float(tw[1])], lw)
     n_groups = int(group_tau_edges.shape[0])
 
     sorted_per_bin = ts.sort_weighted_opacity_per_tau_bin(
