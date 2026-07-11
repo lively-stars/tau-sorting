@@ -100,14 +100,6 @@
     <input type="text" id="tau" />
     <div class="hint">N edges → N&minus;1 tau groups. e.g. <code>-0.63, 0.35, 1.23, 2.89, 7</code></div>
 
-    <label>Optimize &tau; edges &nbsp;<span class="hint">(greedy high-overlap)</span></label>
-    <div class="opt-row">
-      <button id="opt" class="secondary">Optimize &rarr;</button>
-      <span class="opt-n">to <input type="number" id="maxbins" min="2" max="12" value="4" /> &tau; groups</span>
-    </div>
-    <div class="hint">Grows to N optimally-placed &tau; groups over the whole &lambda; range (keeps the outer window),
-       then fills the box above and recomputes.</div>
-
     <label>&lambda; cuts per &tau;-group &nbsp;<span class="hint">(log₁₀ &lambda;/Å; outer window fixed at 3–5)</span></label>
     <div id="pg_host"></div>
     <div class="hint">Each &tau; group carries its own wavelength cut(s). <b>+</b> adds a cut, <b>&times;</b> removes one; a group with no cuts is unsplit. Edits recompute.</div>
@@ -145,7 +137,8 @@
       <summary>Advanced optimizer settings &amp; stopping conditions</summary>
       <div class="adv-grid">
         <label>metric <select id="qv_metric"><option value="rms">rms</option><option value="maxabs">max |Δ|</option><option value="int_q">∫Q</option></select></label>
-        <label>method <select id="qv_method"><option value="cd">coord-desc</option><option value="nm">Nelder-Mead</option></select></label>
+        <label>method <select id="qv_method" onchange="$('qv_beamwrap').style.display=(this.value==='beam'?'':'none')"><option value="cd">coord-desc</option><option value="nm">Nelder-Mead</option><option value="beam">beam search</option></select></label>
+        <label id="qv_beamwrap" style="display:none">beam width <input type="number" id="qv_beamwidth" min="1" max="12" value="3" title="rival topologies kept in parallel (method=beam)" /></label>
         <label>max &tau;-groups <input type="number" id="qv_maxgroups" min="2" max="8" value="5" /></label>
         <label>max evals <input type="number" id="qv_maxevals" min="20" value="5000" /></label>
         <label>target rms <input type="number" id="qv_targetrms" min="0" step="1000000" value="0" title="0 = off" /></label>
@@ -377,28 +370,6 @@ async function compute() {
   finally { $('go').disabled = false; }
 }
 
-async function optimize() {
-  let tau;
-  try { tau = parseEdges($('tau').value); }
-  catch(e){ return setStatus('could not parse edges', true); }
-  if (tau.length<2) return setStatus('need ≥2 τ edges for the window', true);
-  const maxbins = Math.max(2, Math.min(12, parseInt($('maxbins').value,10)||4));
-  $('opt').disabled = $('go').disabled = true;
-  setStatus(`optimizing τ edges → ${maxbins} groups… (greedy search, a few seconds)`);
-  try {
-    const r = await fetch('/api/optimize', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({tau_edges:tau, lambda_edges:LAM_WINDOW.slice(), max_bins:maxbins, model:$('model').value})});
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error||'optimize failed');
-    $('tau').value = d.tau_edges.join(', ');
-    adaptPgToTauCount(d.tau_edges.length - 1);  // keep cuts by index; seed new groups with the default
-    renderPgGrid();
-    setStatus(`optimized to ${d.tau_edges.length-1} τ groups in ${d.elapsed}s · computing Q_rad…`);
-    await compute();
-  } catch(e){ setStatus(e.message, true); }
-  finally { $('opt').disabled = false; $('go').disabled = false; }
-}
-
 // --- Q_rad optimizer: start a background job, poll it, apply the result ---
 let QPOLL = null;
 
@@ -436,6 +407,7 @@ async function qoptStart() {
     max_seconds: Math.max(20, Math.min(1800, parseInt($('qbudget').value,10)||180)),
     window_lo: +$('win_lo').value, window_hi: +$('win_hi').value,
     metric: $('qv_metric').value, method: $('qv_method').value,
+    beam_width: parseInt($('qv_beamwidth').value,10) || 3,
     max_groups: parseInt($('qv_maxgroups').value,10) || undefined,
     max_evals: parseInt($('qv_maxevals').value,10) || undefined,
     target_rms: parseFloat($('qv_targetrms').value) || 0,
@@ -741,7 +713,6 @@ $('model').addEventListener('change', () => {
   compute();  // keep the Q_rad view (+ metrics) in sync for when the tab is next shown
 });
 document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.tab)));
-$('opt').addEventListener('click', optimize);
 $('qopt').addEventListener('click', qoptStart);
 $('qcancel').addEventListener('click', qoptCancel);
 $('dl').addEventListener('click', downloadKappa);

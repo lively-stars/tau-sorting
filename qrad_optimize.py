@@ -16,6 +16,11 @@ optionally grow the tau-group count by inserting an edge, accepting only real rm
 improvements. Each evaluation is a full RTE solve (~3 s via `qrad_core.score_binning`),
 so this is a run-and-wait / batch tool, bounded by an eval + wall-clock budget.
 
+In tree mode (`tree=True`), `method="beam"` swaps the greedy grow (one midpoint split,
+committed immediately, no backtracking) for a beam search that keeps rival topologies
+alive and tries several split positions per leaf — a bounded exploration of the tiling
+space rather than a single greedy trajectory.
+
 CLI:  uv run python qrad_optimize.py --help
 """
 
@@ -668,6 +673,94 @@ def _grow_tree(tree, cost_tree, *, cfg, budget, min_gap_tau, min_gap_lam, max_tr
     return (best_tree, best_c) if best_tree is not None else None
 
 
+def _tree_signature(tree):
+    """Canonical signature of a tree's leaf-rectangle set (rounded, sorted). Two tilings
+    with the same signature score identically, so beam search can drop duplicates."""
+    rects = list(_leaf_rects(tree["root"], _root_rect(tree)))
+    return tuple(sorted((round(tlo, 3), round(thi, 3), round(llo, 3), round(lhi, 3)) for tlo, thi, llo, lhi in rects))
+
+
+def _beam_grow_tree(
+    tree,
+    cost_tree,
+    *,
+    cfg,
+    budget,
+    min_gap_tau,
+    min_gap_lam,
+    max_groups,
+    beam_width=3,
+    beam_positions=(0.35, 0.5, 0.65),
+    beam_leaves=4,
+    grow_tol=0.0,
+    report=None,
+):
+    """Non-greedy beam search over guillotine-tree topologies (``method="beam"``).
+
+    Maintains up to ``beam_width`` candidate trees in parallel. Each round expands every
+    survivor by splitting its widest few leaves on tau and/or lambda at several positions
+    (not only the midpoint), scores each child at its split position, and keeps the best
+    ``beam_width`` *distinct* tilings (deduped by leaf-rectangle signature). Stops when a
+    round's best child fails to beat the running best by more than ``grow_tol``, or when the
+    leaf cap / budget is hit.
+
+    Unlike greedy ``_grow_tree`` — which tries only midpoint splits and commits the single
+    best immediately, pruning every alternative — beam keeps rival topologies alive so an
+    unfavourable early split can't lock out a better one. It is a genuine (beam-bounded)
+    exploration of the tiling space rather than one greedy trajectory.
+
+    Child positions are scored raw during the search (no per-child refine); the caller's
+    final ``_block_fixed_point_tree`` polish optimizes the winner's cut positions. Returns
+    the single best ``(tree, cost)`` seen across all rounds.
+    """
+    best_tree, best_c = copy.deepcopy(tree), cost_tree(tree)
+    beam = [(copy.deepcopy(tree), best_c)]
+    while _n_leaves(best_tree) < max_groups and not budget.exhausted():
+        children = []  # (signature, tree, cost)
+        for btree, _bc in beam:
+            cands = sorted(
+                _iter_leaves_with_path(btree["root"], _root_rect(btree)),
+                key=lambda pr: (pr[1][1] - pr[1][0]) * (pr[1][3] - pr[1][2]),
+                reverse=True,
+            )[:beam_leaves]
+            for path, (tlo, thi, llo, lhi) in cands:
+                for axis, lo, hi, mg in (("tau", tlo, thi, min_gap_tau), ("lam", llo, lhi, min_gap_lam)):
+                    if (hi - lo) < 2 * mg:
+                        continue
+                    for f in beam_positions:
+                        if budget.exhausted():
+                            break
+                        pos = lo + f * (hi - lo)
+                        if pos - lo < mg - 1e-12 or hi - pos < mg - 1e-12:
+                            continue
+                        cand = copy.deepcopy(btree)
+                        leaf = _node_at_path(cand["root"], path)
+                        leaf.clear()
+                        leaf.update({"axis": axis, "at": pos, "lo": {"leaf": True}, "hi": {"leaf": True}})
+                        if not _tree_feasible(cand, min_gap_tau, min_gap_lam):
+                            continue
+                        children.append((_tree_signature(cand), cand, cost_tree(cand)))
+        if not children:
+            break
+        children.sort(key=lambda t: t[2])
+        new_beam, seen = [], set()
+        for sig, ct, cc in children:
+            if sig in seen:
+                continue
+            seen.add(sig)
+            new_beam.append((ct, cc))
+            if len(new_beam) >= beam_width:
+                break
+        round_best_tree, round_best_c = new_beam[0]
+        if report:
+            report("beam", round_best_c, _n_leaves(round_best_tree))
+        if (best_c - round_best_c) <= grow_tol:
+            break  # this round didn't beat the running best past the threshold -> converged
+        best_tree, best_c = copy.deepcopy(round_best_tree), round_best_c
+        beam = new_beam
+    return best_tree, best_c
+
+
 # --- public API -----------------------------------------------------------------
 def optimize_qrad(
     tau_edges,
@@ -698,6 +791,10 @@ def optimize_qrad(
     lambda_edges_per_tau=None,  # per-group-lambda warm start (one lambda-edge list per tau group)
     tree=False,  # general 2D guillotine mode (both tau and lambda locally free)
     binning_tree=None,  # guillotine-tree warm start {window_tau, window_lam, root}
+    # method="beam" knobs (non-greedy tree-topology search; inert unless tree mode + grow):
+    beam_width=3,  # rival tree topologies kept in parallel each round
+    beam_positions=(0.35, 0.5, 0.65),  # split-position fractions tried per (leaf, axis)
+    beam_leaves=4,  # widest leaves considered for splitting, per beam tree
     min_opacity_delta=None,  # min bottom-opacity max/min ratio to split a group (None -> score default)
     score_fn=None,
     on_progress=None,
@@ -799,30 +896,50 @@ def optimize_qrad(
         # a single leaf is split — leaving a plain grid. Grow lets tau/lambda cuts nest to any
         # depth (a tau sub-split inside one lambda region == the non-grid tiling we want).
         if grow:
-            while _n_leaves(btree) < max_groups and not budget.exhausted():
-                cand = _grow_tree(
+            gtol = grow_tol if grow_tol is not None else 0.0
+            if cfg.method == "beam":
+                # Non-greedy: keep rival topologies alive (beam search) instead of committing the
+                # single best midpoint split. Explores a beam-bounded slice of the tiling space;
+                # the final _block_fixed_point_tree polish below optimizes the winner's positions.
+                btree, best = _beam_grow_tree(
                     btree,
                     cost_tree,
                     cfg=cfg,
                     budget=budget,
                     min_gap_tau=min_gap_tau,
                     min_gap_lam=min_gap_lam,
-                    light=True,
+                    max_groups=max_groups,
+                    beam_width=beam_width,
+                    beam_positions=tuple(beam_positions),
+                    beam_leaves=beam_leaves,
+                    grow_tol=gtol,
+                    report=on_step,
                 )
-                if cand is None:
-                    break
-                ctree, cbest = cand
-                # Tree policy: grow to the leaf cap, accepting ANY real rms improvement (gtol 0 by
-                # default, overridable via grow_tol). A guillotine split adds DOF so it almost always
-                # helps a little; the empty-band penalty + min-gap still reject degenerate/empty
-                # splits (those raise the cost), so "grow to more" can't collapse the binning.
-                gtol = grow_tol if grow_tol is not None else 0.0
-                if (best - cbest) > gtol:
-                    btree, best = ctree, cbest
-                    budget.reset_plateau(state["n_evals"])
-                    checkpoint("grow", evaluate(None, None, None, binning_tree=btree)[1])
-                else:
-                    break
+                budget.reset_plateau(state["n_evals"])
+                checkpoint("grow", evaluate(None, None, None, binning_tree=btree)[1])
+            else:
+                # Greedy: one midpoint split per round, committed immediately (no backtracking).
+                while _n_leaves(btree) < max_groups and not budget.exhausted():
+                    cand = _grow_tree(
+                        btree,
+                        cost_tree,
+                        cfg=cfg,
+                        budget=budget,
+                        min_gap_tau=min_gap_tau,
+                        min_gap_lam=min_gap_lam,
+                        light=True,
+                    )
+                    if cand is None:
+                        break
+                    ctree, cbest = cand
+                    # A guillotine split adds DOF so it almost always helps a little; the empty-band
+                    # penalty + min-gap still reject degenerate/empty splits (those raise the cost).
+                    if (best - cbest) > gtol:
+                        btree, best = ctree, cbest
+                        budget.reset_plateau(state["n_evals"])
+                        checkpoint("grow", evaluate(None, None, None, binning_tree=btree)[1])
+                    else:
+                        break
         # Final polish: sweep every cut position with whatever budget is left.
         if not budget.exhausted():
             btree, best = _block_fixed_point_tree(
@@ -1006,7 +1123,12 @@ def main(
         False, "--per-group-lambda/--shared-lambda", help="Give each tau group its own lambda split."
     ),
     metric: str = typer.Option("rms", "--metric", help="Objective: rms | maxabs | int_q."),
-    method: str = typer.Option("cd", "--method", help="Position search: cd (coordinate descent) | nm (Nelder-Mead)."),
+    method: str = typer.Option(
+        "cd",
+        "--method",
+        help="Position/structure search: cd (coordinate descent) | nm (Nelder-Mead) | beam "
+        "(non-greedy beam search over tree topologies; tree mode + grow only).",
+    ),
     min_gap_tau: float = typer.Option(MIN_GAP_TAU, "--min-gap-tau"),
     min_gap_lam: float = typer.Option(MIN_GAP_LAM, "--min-gap-lam"),
     min_opacity_delta: float = typer.Option(
@@ -1027,6 +1149,16 @@ def main(
     save_plot: str = typer.Option("", "--save-plot", help="Write a before/after Q/rho plot to this path."),
     save_dat: bool = typer.Option(
         False, "--save-dat/--no-save-dat", help="After optimizing, write the optimized binning's kappa .dat table."
+    ),
+    tree: bool = typer.Option(False, "--tree/--no-tree", help="General 2D guillotine mode (required for method=beam)."),
+    beam_width: int = typer.Option(
+        3, "--beam-width", help="method=beam: rival tree topologies kept in parallel each round."
+    ),
+    beam_leaves: int = typer.Option(
+        4, "--beam-leaves", help="method=beam: widest leaves considered for splitting, per beam tree."
+    ),
+    beam_positions: list[float] = typer.Option(
+        [0.35, 0.5, 0.65], "--beam-positions", help="method=beam: split-position fractions tried per (leaf, axis)."
     ),
 ):
     model_name = qrad_core._model_name(model or None)
@@ -1069,6 +1201,10 @@ def main(
         plateau_evals=plateau_evals,
         grow_tol_rel=grow_tol_rel,
         per_group_lambda=per_group_lambda,
+        tree=tree,
+        beam_width=beam_width,
+        beam_positions=tuple(beam_positions),
+        beam_leaves=beam_leaves,
         min_opacity_delta=min_opacity_delta,
         on_progress=_progress,
     )
@@ -1076,37 +1212,68 @@ def main(
     imp = (result["rms0"] - result["rms"]) / result["rms0"] * 100.0
     print("\n[qrad-opt] DONE")
     print(f"  rms: {result['rms0']:.4e} -> {result['rms']:.4e}  ({imp:+.1f}%)")
-    print(f"  tau   = {_fmt(result['tau_edges'])}   ({result['n_groups']} tau groups)")
-    if result.get("per_group_lambda"):
-        print(f"  per-group lambda ({result['n_bands_total']} (tau,lambda) groups), n_empty={result['n_empty']}:")
-        for k, lp in enumerate(result["lambda_edges_per_tau"]):
-            cut = "no split" if len(lp) <= 2 else f"cuts at {_fmt(lp[1:-1])}"
-            print(f"    tau{k}: {cut}")
+    if result.get("tree"):
+        print(f"  general-2D tree: {result['n_leaves']} leaf bands, n_empty={result['n_empty']}")
+        print("    " + _tree_bands_str(result["binning_tree"]))
     else:
-        print(f"  lambda= {_fmt(result['lambda_edges'])}")
-        print(f"  flags = {_flags_str(result['flags'])}   n_empty={result['n_empty']}")
+        print(f"  tau   = {_fmt(result['tau_edges'])}   ({result['n_groups']} tau groups)")
+        if result.get("per_group_lambda"):
+            print(f"  per-group lambda ({result['n_bands_total']} (tau,lambda) groups), n_empty={result['n_empty']}:")
+            for k, lp in enumerate(result["lambda_edges_per_tau"]):
+                cut = "no split" if len(lp) <= 2 else f"cuts at {_fmt(lp[1:-1])}"
+                print(f"    tau{k}: {cut}")
+        else:
+            print(f"  lambda= {_fmt(result['lambda_edges'])}")
+            print(f"  flags = {_flags_str(result['flags'])}   n_empty={result['n_empty']}")
     print(f"  {result['n_evals']} evals in {result['elapsed']}s")
 
     if save_plot:
-        after = (
-            {"lpt": result["lambda_edges_per_tau"]}
-            if result.get("per_group_lambda")
-            else {"lam": result["lambda_edges"], "flags": result["flags"]}
-        )
-        _plot_before_after(
-            tau_bin_edges,
-            lambda_bin_edges,
-            flags,
-            result["tau_edges"],
-            after,
-            save_plot,
-            model_name,
-            min_opacity_delta=min_opacity_delta,
-        )
+        if result.get("tree"):
+            after = {"tree": result["binning_tree"]}
+            seed_tree = tree_from_lpt(
+                tau_bin_edges,
+                [[lambda_bin_edges[0], lambda_bin_edges[-1]] for _ in range(len(tau_bin_edges) - 1)],
+            )
+            _plot_before_after(
+                tau_bin_edges,
+                lambda_bin_edges,
+                flags,
+                tau_bin_edges,
+                after,
+                save_plot,
+                model_name,
+                min_opacity_delta=min_opacity_delta,
+                before_tree=seed_tree,
+            )
+        else:
+            after = (
+                {"lpt": result["lambda_edges_per_tau"]}
+                if result.get("per_group_lambda")
+                else {"lam": result["lambda_edges"], "flags": result["flags"]}
+            )
+            _plot_before_after(
+                tau_bin_edges,
+                lambda_bin_edges,
+                flags,
+                result["tau_edges"],
+                after,
+                save_plot,
+                model_name,
+                min_opacity_delta=min_opacity_delta,
+            )
         print(f"  before/after plot -> {save_plot}")
 
     if save_dat:
-        if result.get("per_group_lambda"):
+        if result.get("tree"):
+            written, _name = qrad_core.save_kappa_dat(
+                None,
+                None,
+                None,
+                model_name,
+                binning_tree=result["binning_tree"],
+                min_opacity_delta=min_opacity_delta,
+            )
+        elif result.get("per_group_lambda"):
             written, _name = qrad_core.save_kappa_dat(
                 result["tau_edges"],
                 None,
@@ -1130,15 +1297,26 @@ def _fmt(edges) -> str:
     return "[" + ", ".join(f"{float(e):.4g}" for e in edges) + "]"
 
 
-def _plot_before_after(tau0, lam0, flags0, tau1, after, path, model=None, min_opacity_delta=None):
+def _tree_bands_str(tree) -> str:
+    """One line per leaf rectangle (tau window, lambda window) — the general-2D bands."""
+    rects = list(_leaf_rects(tree["root"], _root_rect(tree)))
+    return "\n    ".join(f"tau[{tlo:.3f},{thi:.3f}] lam[{llo:.3f},{lhi:.3f}]" for tlo, thi, llo, lhi in rects)
+
+
+def _plot_before_after(tau0, lam0, flags0, tau1, after, path, model=None, min_opacity_delta=None, before_tree=None):
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     _kw = {} if min_opacity_delta is None else {"min_opacity_delta": min_opacity_delta}
-    a = qrad_core.score_binning(tau0, lam0, qrad_core.resolve_flags(flags0, len(tau0) - 1), model, **_kw)
-    if "lpt" in after:
+    if before_tree is not None:
+        a = qrad_core.score_binning(None, None, None, model, binning_tree=before_tree, **_kw)
+    else:
+        a = qrad_core.score_binning(tau0, lam0, qrad_core.resolve_flags(flags0, len(tau0) - 1), model, **_kw)
+    if "tree" in after:
+        b = qrad_core.score_binning(None, None, None, model, binning_tree=after["tree"], **_kw)
+    elif "lpt" in after:
         b = qrad_core.score_binning(tau1, None, None, model, lambda_edges_per_tau=after["lpt"], **_kw)
     else:
         b = qrad_core.score_binning(
