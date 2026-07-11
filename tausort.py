@@ -2510,163 +2510,6 @@ def build_split_band_index(
     return split_band_index
 
 
-def optimize_tau_bin_edges(
-    atm: AtmosphericData,
-    odf: ODFData,
-    interpolated_opacity: NDArray[np.float64],
-    tau_rosseland: NDArray[np.float64],
-    tau_rosseland_at_tau_lambda_one: NDArray[np.float64],
-    wavelength_grid_subbins_centers: NDArray[np.float64],
-    max_height_idx: int,
-    initial_tau_bin_edges: list[float],
-    lambda_bin_edges: list[int | float],
-    threshold: float = 0.70,
-    max_bins: int = 8,
-    adjust_steps: tuple[float, ...] = (0.10, 0.05, 0.02),
-    max_outer_iters: int = 50,
-    smooth_window: int = 7,
-    refine_mid: bool = True,
-) -> list[list[float]]:
-    """
-    Greedy adjust+insert search over tau edges, run INDEPENDENTLY within each
-    lambda cell, to push the high-segment overlap (from
-    compute_bot_segment_overlap_per_tau_bin) above `threshold` in every
-    non-empty (cell, tau) group. Within a cell it nudges interior edges on a
-    small step grid; when no nudge improves the minimum score it inserts a new
-    edge at the midpoint of the worst tau group; it stops when all groups clear
-    the threshold, when stuck at `max_bins`, or at `max_outer_iters`.
-
-    The lambda edges stay fixed; only tau edges move, so each cell can end with
-    a different number of tau groups (the per-cell "jump").
-
-    Returns tau_edges_per_lambda: one optimized tau-edge list per lambda cell.
-    """
-    threshold_pct = threshold * 100.0
-    lambda_edges = [float(e) for e in lambda_bin_edges]
-    n_lambda = len(lambda_edges) - 1
-
-    def _valid_monotone(edges: list[float]) -> bool:
-        return all(edges[i] < edges[i + 1] for i in range(len(edges) - 1))
-
-    def _high_score(overlaps: dict, k: int) -> float:
-        rec = overlaps.get(k, {})
-        segs = rec.get("segments")
-        if not segs or "high" not in segs:
-            return 0.0
-        return float(segs["high"]["overlap_pct"])
-
-    def _optimize_one_lambda_cell(cell: int, window: list[float]) -> list[float]:
-        # Restrict to this lambda cell by passing a single-cell window, so only
-        # this column's sub-bins participate; groups are then just tau indices.
-        def _evaluate(edges: list[float]) -> dict:
-            # Membership uses the un-clamped edges; the descriptor for sort/overlap
-            # gets the atmosphere-top clamp on the first tau slot (as the original
-            # in-sort clamp did), so top/bot layer lookup is unchanged.
-            band_idx = assign_tau_to_bin(
-                tau_rosseland_at_tau_lambda_one,
-                wavelength_grid_subbins_centers,
-                tau_edges_per_lambda=[list(edges)],
-                lambda_bin_edges=window,
-            )
-            clamped = list(edges)
-            clamped[0] = -np.log10(tau_rosseland[max_height_idx] + 0.2)
-            gt, gl = build_group_specs_per_cell([clamped], window)
-            sorted_per_bin = sort_weighted_opacity_per_tau_bin(
-                atm=atm,
-                odf=odf,
-                interpolated_opacity=interpolated_opacity,
-                tau_rosseland=tau_rosseland,
-                band_index=band_idx,
-                group_tau_edges=gt,
-                wavelength_grid_subbins_centers=wavelength_grid_subbins_centers,
-                write_debug_json=False,
-                verbose=False,
-            )
-            return compute_bot_segment_overlap_per_tau_bin(
-                sorted_per_bin,
-                group_tau_edges=gt,
-                group_lam_edges=gl,
-                smooth_window=smooth_window,
-                print_table=False,
-                verbose=False,
-                refine_mid=refine_mid,
-            )
-
-        def _scores(edges: list[float], overlaps: dict) -> list[float]:
-            return [_high_score(overlaps, k) for k in range(len(edges) - 1)]
-
-        console.print(
-            f"\n[cyan]Optimizing tau edges for λ cell {cell} "
-            f"(λ∈[{window[0]}, {window[1]}], threshold={threshold_pct:.1f}%, max_bins={max_bins})...[/cyan]"
-        )
-        edges = list(initial_tau_bin_edges)
-        overlaps = _evaluate(edges)
-        scores = _scores(edges, overlaps)
-        min_score = min(scores) if scores else 0.0
-        console.print(f"  cell {cell} iter   0: bins={len(edges) - 1:2d}  min_high={min_score:6.2f}  action=start")
-
-        for it in range(1, max_outer_iters + 1):
-            if min_score >= threshold_pct:
-                console.print(f"[green]✓ cell {cell} converged at iter {it - 1}[/green]")
-                return edges
-
-            best_edges = None
-            best_overlaps = None
-            best_min = min_score
-
-            for i in range(1, len(edges)):
-                for step in adjust_steps:
-                    for direction in (-1.0, +1.0):
-                        cand = list(edges)
-                        cand[i] = edges[i] + direction * step
-                        if not _valid_monotone(cand):
-                            continue
-                        cand_overlaps = _evaluate(cand)
-                        cand_scores = _scores(cand, cand_overlaps)
-                        cand_min = min(cand_scores) if cand_scores else 0.0
-                        if cand_min > best_min + 1e-9:
-                            best_min = cand_min
-                            best_edges = cand
-                            best_overlaps = cand_overlaps
-
-            if best_edges is not None:
-                edges = best_edges
-                scores = _scores(edges, best_overlaps)
-                min_score = best_min
-                console.print(
-                    f"  cell {cell} iter {it:3d}: bins={len(edges) - 1:2d}  min_high={min_score:6.2f}  action=adjust"
-                )
-                continue
-
-            if len(edges) - 1 >= max_bins:
-                console.print(
-                    f"[yellow]✗ cell {cell} stuck at cap (bins={len(edges) - 1}, min_high={min_score:.2f}%)[/yellow]"
-                )
-                return edges
-
-            k_worst = int(np.argmin(scores))
-            new_edge = (edges[k_worst] + edges[k_worst + 1]) / 2.0
-            edges = list(edges[: k_worst + 1]) + [new_edge] + list(edges[k_worst + 1 :])
-            overlaps = _evaluate(edges)
-            scores = _scores(edges, overlaps)
-            min_score = min(scores) if scores else 0.0
-            console.print(
-                f"  cell {cell} iter {it:3d}: bins={len(edges) - 1:2d}  min_high={min_score:6.2f}  "
-                f"action=split@k={k_worst} new_edge={new_edge:.3f}"
-            )
-
-        console.print(
-            f"[yellow]✗ cell {cell} max_outer_iters={max_outer_iters} reached (min_high={min_score:.2f}%)[/yellow]"
-        )
-        return edges
-
-    tau_edges_per_lambda: list[list[float]] = []
-    for cell in range(n_lambda):
-        window = [lambda_edges[cell], lambda_edges[cell + 1]]
-        tau_edges_per_lambda.append(_optimize_one_lambda_cell(cell, window))
-    return tau_edges_per_lambda
-
-
 def calculate_tau_bin_opacities(
     odf: ODFData,
     cont: ContinuumData,
@@ -3091,7 +2934,7 @@ def main(
             help="Per-tau-group lambda-split flags, one per tau group in order, as a 0/1 "
             "string (e.g. 00111100) or comma/space-separated true/false. Selects which tau "
             "groups subdivide along lambda. Activates the shared-tau split-flag mode; "
-            "mutually exclusive with --optimize-high-overlap. Omit to keep the default "
+            "mutually exclusive with --lambda-per-tau. Omit to keep the default "
             "(uniform split when >1 lambda cell).",
         ),
     ] = None,
@@ -3103,7 +2946,7 @@ def main(
             "comma-separated increasing edge list, e.g. --lambda-per-tau=3,3.82,5 "
             "--lambda-per-tau=3,5 ... . Each tau group gets its OWN wavelength split (2 edges = "
             "no split); all groups must share the same outer [min,max] window. Activates "
-            "per-tau-lambda mode; mutually exclusive with --split-lambda / --optimize-high-overlap.",
+            "per-tau-lambda mode; mutually exclusive with --split-lambda.",
         ),
     ] = [],
     skip_first_n_wavelengths: int | None = typer.Option(
@@ -3116,28 +2959,6 @@ def main(
         "tau_bin_opacities.npy",
         "--tau-bin-output",
         help="Output .npy file for tau-binned Planck/Rosseland/mixed opacities",
-    ),
-    optimize_high_overlap: bool = typer.Option(
-        False,
-        "--optimize-high-overlap",
-        help="Run greedy optimizer over tau_bin_edges until every bin's "
-        "high-segment overlap clears the threshold, then print and stop.",
-    ),
-    high_overlap_threshold: float = typer.Option(
-        0.70,
-        "--high-overlap-threshold",
-        help="Minimum acceptable high-segment overlap (0–1) for the optimizer.",
-    ),
-    max_bins: int = typer.Option(
-        8,
-        "--max-bins",
-        help="Cap on the number of tau groups --optimize-high-overlap may grow to.",
-    ),
-    save_after_optimize: bool = typer.Option(
-        False,
-        "--save-after-optimize/--no-save-after-optimize",
-        help="After --optimize-high-overlap finishes, continue the normal "
-        "pipeline with the optimized edges (saving .npy/.dat) instead of stopping.",
     ),
     refine_mid: bool = typer.Option(
         False,
@@ -3305,10 +3126,8 @@ def main(
 
     if lambda_per_tau:
         # ---- Per-tau-group lambda mode: each tau group has its OWN lambda edges ----
-        if optimize_high_overlap or split_lambda is not None:
-            raise typer.BadParameter(
-                "--lambda-per-tau is mutually exclusive with --split-lambda and --optimize-high-overlap."
-            )
+        if split_lambda is not None:
+            raise typer.BadParameter("--lambda-per-tau is mutually exclusive with --split-lambda.")
         n_tau = len(tau_bin_edges) - 1
         lambda_edges_per_tau = parse_lambda_per_tau(lambda_per_tau)
         if len(lambda_edges_per_tau) != n_tau:
@@ -3337,8 +3156,6 @@ def main(
         )
     elif split_lambda is not None:
         # ---- Flag mode: shared tau binning + per-tau-group lambda-split flags ----
-        if optimize_high_overlap:
-            raise typer.BadParameter("--split-lambda and --optimize-high-overlap are mutually exclusive.")
         n_tau = len(tau_bin_edges) - 1
         split_flags = parse_split_lambda(split_lambda)
         if len(split_flags) != n_tau:
@@ -3367,64 +3184,8 @@ def main(
             f"[green]split-lambda mode: {sum(split_flags)}/{n_tau} tau-groups split into {n_lambda} λ cells[/green]"
         )
     else:
-        if optimize_high_overlap:
-            t0 = time.perf_counter()
-            tau_edges_per_lambda = optimize_tau_bin_edges(
-                atm=atm,
-                odf=odf,
-                interpolated_opacity=interpolated_opacity,
-                tau_rosseland=tau_rosseland,
-                tau_rosseland_at_tau_lambda_one=tau_rosseland_at_tau_lambda_one,
-                wavelength_grid_subbins_centers=wavelength_grid_subbins_centers,
-                max_height_idx=max_height_idx,
-                initial_tau_bin_edges=tau_bin_edges,
-                lambda_bin_edges=lambda_bin_edges,
-                threshold=high_overlap_threshold,
-                max_bins=max_bins,
-                refine_mid=refine_mid,
-            )
-            t1 = time.perf_counter()
-            console.print(f"[dim]⏱  optimize_tau_bin_edges: {t1 - t0:.3f}s[/dim]")
-            for cell, edges in enumerate(tau_edges_per_lambda):
-                console.print(
-                    f"[green]λ cell {cell}: {len(edges) - 1} tau-groups, edges = {[round(e, 4) for e in edges]}[/green]"
-                )
-            if not save_after_optimize:
-                # Print-only: diagnostic overlap table for the optimized edges, then stop.
-                diag_bin_number = assign_tau_to_bin(
-                    tau_rosseland_at_tau_lambda_one,
-                    wavelength_grid_subbins_centers,
-                    tau_edges_per_lambda=tau_edges_per_lambda,
-                    lambda_bin_edges=lambda_bin_edges,
-                )
-                diag_edges = [list(e) for e in tau_edges_per_lambda]
-                for ce in diag_edges:
-                    ce[0] = top_edge
-                diag_gt, diag_gl = build_group_specs_per_cell(diag_edges, lambda_bin_edges)
-                diag_sorted = sort_weighted_opacity_per_tau_bin(
-                    atm=atm,
-                    odf=odf,
-                    interpolated_opacity=interpolated_opacity,
-                    tau_rosseland=tau_rosseland,
-                    band_index=diag_bin_number,
-                    group_tau_edges=diag_gt,
-                    wavelength_grid_subbins_centers=wavelength_grid_subbins_centers,
-                    write_debug_json=False,
-                    verbose=False,
-                )
-                compute_bot_segment_overlap_per_tau_bin(
-                    diag_sorted,
-                    group_tau_edges=diag_gt,
-                    group_lam_edges=diag_gl,
-                    print_table=True,
-                    verbose=True,
-                    refine_mid=refine_mid,
-                )
-                return
-            console.print("[cyan]--save-after-optimize: continuing pipeline with optimized per-cell edges[/cyan]")
-        else:
-            # No optimization: the same tau edges apply in every lambda cell.
-            tau_edges_per_lambda = [list(tau_bin_edges) for _ in range(n_lambda)]
+        # No optimization: the same tau edges apply in every lambda cell.
+        tau_edges_per_lambda = [list(tau_bin_edges) for _ in range(n_lambda)]
 
         # Membership from un-clamped per-cell edges, then clamp + build the descriptor.
         bin_number = assign_tau_to_bin(

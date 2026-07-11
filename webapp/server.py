@@ -33,7 +33,6 @@ sys.path.insert(0, str(_REPO))
 
 import qrad_core as qc  # noqa: E402
 import qrad_optimize as qopt  # noqa: E402
-import tausort as ts  # noqa: E402
 
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8771"))
@@ -245,37 +244,6 @@ def compute(
         return out
 
 
-def optimize_edges(tau_window, lambda_edges, max_bins, threshold, model=None):
-    """Greedy high-overlap optimizer -> an optimized *shared* tau binning.
-
-    Runs tausort's optimizer over a single lambda cell spanning the whole given
-    lambda range, so it returns one tau-edge list (not per-cell) that the webapp's
-    shared-tau + split-flag model can consume directly. Starts from the outer
-    [top, bottom] window and grows interior edges up to `max_bins` groups, nudging
-    them to maximize the worst group's high-segment overlap. With threshold >= ~1
-    (unreachable) it always grows to exactly `max_bins` optimally-placed groups.
-    """
-    with _LOCK:
-        inv = qc.inv_for(model)
-        window_lambda = [float(lambda_edges[0]), float(lambda_edges[-1])]
-        outer = [float(tau_window[0]), float(tau_window[-1])]
-        per_cell = ts.optimize_tau_bin_edges(
-            atm=inv["atm"],
-            odf=inv["odf"],
-            interpolated_opacity=inv["interpolated_opacity"],
-            tau_rosseland=inv["tau_ross"],
-            tau_rosseland_at_tau_lambda_one=inv["tau_at_lam1"],
-            wavelength_grid_subbins_centers=inv["wl_centers"],
-            max_height_idx=inv["max_height_idx"],
-            initial_tau_bin_edges=outer,
-            lambda_bin_edges=window_lambda,
-            threshold=float(threshold),
-            max_bins=int(max_bins),
-            refine_mid=False,
-        )
-        return [round(float(e), 4) for e in per_cell[0]]
-
-
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, body, ctype="application/json"):
         data = body if isinstance(body, bytes) else body.encode()
@@ -370,7 +338,7 @@ class Handler(BaseHTTPRequestHandler):
             _QOPT["cancel"] = True
             self._send(200, json.dumps({"cancelled": True}))
             return
-        if self.path not in ("/api/compute", "/api/optimize", "/api/optimize_qrad", "/api/kappa_dat"):
+        if self.path not in ("/api/compute", "/api/optimize_qrad", "/api/kappa_dat"):
             self._send(404, json.dumps({"error": "not found"}))
             return
         try:
@@ -388,15 +356,6 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("lambda edges must be strictly increasing")
             model = _resolve_model(req)
             t0 = time.perf_counter()
-            if self.path == "/api/optimize":
-                max_bins = int(req.get("max_bins", 4))
-                if not 2 <= max_bins <= 12:
-                    raise ValueError("target tau groups must be between 2 and 12")
-                # unreachable threshold -> grow to exactly max_bins, optimally placed
-                edges = optimize_edges(tau_edges, lambda_edges, max_bins, threshold=1.01, model=model)
-                out = {"tau_edges": edges, "elapsed": round(time.perf_counter() - t0, 2)}
-                self._send(200, json.dumps(out))
-                return
             if self.path == "/api/optimize_qrad":
                 with _QOPT_LOCK:
                     if _QOPT["running"]:
