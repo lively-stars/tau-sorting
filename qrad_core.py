@@ -29,6 +29,7 @@ import numpy as np
 _REPO = Path(__file__).resolve().parent
 sys.path.insert(0, str(_REPO))
 
+import qrad_optimize  # noqa: E402  # tree_from_lpt: per-tau-lambda -> guillotine tree (runtime-only; qrad_optimize imports us too)
 import tausort as ts  # noqa: E402
 from kappa_band_reader import read_kappa_4_band_comparison  # noqa: E402
 from rte import Solver, compute_tau  # noqa: E402
@@ -330,20 +331,19 @@ def score_binning(
     ref = reference(model)
     clamped_top = float(-np.log10(inv["tau_ross"][inv["max_height_idx"]] + 0.2))
 
-    if binning_tree is not None:
+    # Normalize per-tau-group-lambda mode into a guillotine tree (same rectangle set + DFS
+    # order as build_group_specs_per_tau, verified byte-identical end-to-end by
+    # test_qrad_optimize.TestTreeEquivalence), so the tree path is the single grouping
+    # implementation for both. An explicit `binning_tree` keeps priority over per-tau-lambda.
+    tree = binning_tree
+    if tree is None and lambda_edges_per_tau is not None:
+        tree = qrad_optimize.tree_from_lpt(list(tau_edges), [list(x) for x in lambda_edges_per_tau])
+
+    if tree is not None:
         # guillotine tree: membership from the raw window, descriptor with the clamped top edge
-        tw, lw, root = binning_tree["window_tau"], binning_tree["window_lam"], binning_tree["root"]
+        tw, lw, root = tree["window_tau"], tree["window_lam"], tree["root"]
         band_index = ts.assign_tree(inv["tau_at_lam1"], inv["wl_centers"], root, tw, lw)
         group_tau_edges, group_lam_edges = ts.build_group_specs_tree(root, [clamped_top, float(tw[1])], lw)
-    elif lambda_edges_per_tau is not None:
-        # per-tau-group lambda: membership from un-clamped tau, descriptor from clamped
-        clamped = list(tau_edges)
-        clamped[0] = clamped_top
-        _gt0, _gl0, offs = ts.build_group_specs_per_tau(tau_edges, lambda_edges_per_tau)
-        band_index = ts.assign_per_tau_lambda(
-            inv["tau_at_lam1"], inv["wl_centers"], tau_edges, lambda_edges_per_tau, offs
-        )
-        group_tau_edges, group_lam_edges, _offc = ts.build_group_specs_per_tau(clamped, lambda_edges_per_tau)
     else:
         clamped = list(tau_edges)
         clamped[0] = clamped_top
@@ -475,18 +475,21 @@ def save_kappa_dat(
     clamped_top = float(-np.log10(inv["tau_ross"][inv["max_height_idx"]] + 0.2))
     clamped = None
 
-    if binning_tree is not None:
-        tw, lw, root = binning_tree["window_tau"], binning_tree["window_lam"], binning_tree["root"]
-        band_index = ts.assign_tree(inv["tau_at_lam1"], inv["wl_centers"], root, tw, lw)
-        group_tau_edges, _gl = ts.build_group_specs_tree(root, [clamped_top, float(tw[1])], lw)
-    elif lambda_edges_per_tau is not None:
+    # Normalize per-tau-group-lambda mode into a guillotine tree (same rectangle set + DFS
+    # order, verified byte-identical end-to-end by test_qrad_optimize.TestTreeEquivalence) so
+    # the tree path is the single grouping implementation; an explicit `binning_tree` keeps
+    # priority. The .dat filename still reflects the original mode (pt vs tree) because the
+    # untouched `binning_tree` parameter is what _kappa_dat_name dispatches on below.
+    tree = binning_tree
+    if tree is None and lambda_edges_per_tau is not None:
+        tree = qrad_optimize.tree_from_lpt(list(tau_edges), [list(x) for x in lambda_edges_per_tau])
         clamped = list(tau_edges)
         clamped[0] = clamped_top
-        _gt0, _gl0, offs = ts.build_group_specs_per_tau(tau_edges, lambda_edges_per_tau)
-        band_index = ts.assign_per_tau_lambda(
-            inv["tau_at_lam1"], inv["wl_centers"], tau_edges, lambda_edges_per_tau, offs
-        )
-        group_tau_edges, _gl, _o = ts.build_group_specs_per_tau(clamped, lambda_edges_per_tau)
+
+    if tree is not None:
+        tw, lw, root = tree["window_tau"], tree["window_lam"], tree["root"]
+        band_index = ts.assign_tree(inv["tau_at_lam1"], inv["wl_centers"], root, tw, lw)
+        group_tau_edges, _gl = ts.build_group_specs_tree(root, [clamped_top, float(tw[1])], lw)
     else:
         clamped = list(tau_edges)
         clamped[0] = clamped_top
