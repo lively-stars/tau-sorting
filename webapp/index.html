@@ -136,8 +136,7 @@
       <summary>Advanced optimizer settings &amp; stopping conditions</summary>
       <div class="adv-grid">
         <label>metric <select id="qv_metric"><option value="rms">rms</option><option value="maxabs">max |Δ|</option><option value="int_q">∫Q</option></select></label>
-        <label>method <select id="qv_method" onchange="$('qv_beamwrap').style.display=(this.value==='beam'?'':'none')"><option value="cd">coord-desc</option><option value="beam">beam search</option></select></label>
-        <label id="qv_beamwrap" style="display:none">beam width <input type="number" id="qv_beamwidth" min="1" max="12" value="3" title="rival topologies kept in parallel (method=beam)" /></label>
+        <label>beam width <input type="number" id="qv_beamwidth" min="1" max="12" value="3" title="rival tree topologies kept in parallel each grow round (1 = greedy)" /></label>
         <label>max &tau;-groups <input type="number" id="qv_maxgroups" min="2" max="8" value="5" /></label>
         <label>max evals <input type="number" id="qv_maxevals" min="20" value="5000" /></label>
         <label>target rms <input type="number" id="qv_targetrms" min="0" step="1000000" value="0" title="0 = off" /></label>
@@ -403,7 +402,7 @@ async function qoptStart() {
     tree: true,
     max_seconds: Math.max(20, Math.min(1800, parseInt($('qbudget').value,10)||180)),
     window_lo: +$('win_lo').value, window_hi: +$('win_hi').value,
-    metric: $('qv_metric').value, method: $('qv_method').value,
+    metric: $('qv_metric').value,
     beam_width: parseInt($('qv_beamwidth').value,10) || 3,
     max_groups: parseInt($('qv_maxgroups').value,10) || undefined,
     max_evals: parseInt($('qv_maxevals').value,10) || undefined,

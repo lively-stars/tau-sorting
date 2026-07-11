@@ -48,29 +48,21 @@ uv run python tausort.py main --lambda-bin-edges 3 --lambda-bin-edges 3.8 --lamb
 
 # Per-tau-group lambda: each tau-group gets its OWN wavelength split (its own cut, or none) --
 # repeat --lambda-per-tau once per tau-group (2 edges = no split). Here 4 tau-groups cut at
-# 3.82 / 3.65 / none / 3.8. This is the shape the Q_rad optimizer's per-group-lambda mode finds.
+# 3.82 / 3.65 / none / 3.8. (`--per-group-lambda` in `qrad_optimize.py` seeds its tree from this shape.)
 uv run python tausort.py main \
     --tau-bin-edges=-0.63 --tau-bin-edges=0.3488 --tau-bin-edges=1.2275 --tau-bin-edges=2.885 --tau-bin-edges=7 \
     --lambda-per-tau=3,3.82,5 --lambda-per-tau=3,3.65,5 --lambda-per-tau=3,5 --lambda-per-tau=3,3.8,5
-
-# Optimize tau edges (greedy high-segment-overlap search); print only
-uv run python tausort.py main --optimize-high-overlap
-# ...and save the table (grows per lambda cell up to --max-bins; threshold > 1 is unreachable
-# so it always grows to the cap)
-uv run python tausort.py main --optimize-high-overlap --save-after-optimize --max-bins 4 \
-    --high-overlap-threshold 1.01 --tau-bin-edges=-0.63 --tau-bin-edges=7.0
 
 uv run python tausort.py main --help        # all options
 ```
 
 Key flags: `--tau-bin-edges` (repeat once per edge), `--lambda-bin-edges` (log10 Å; ≥3 edges
 turns on the wavelength dimension), `--split-lambda` (a 0/1 string, one digit per tau-group;
-mutually exclusive with `--optimize-high-overlap`), `--lambda-per-tau` (repeat once per tau-group,
-each a comma-separated edge list — per-group wavelength splits; mutually exclusive with
-`--split-lambda` / `--optimize-high-overlap`), `--optimize-high-overlap` /
-`--save-after-optimize` / `--max-bins` / `--high-overlap-threshold`, and
-`--refine-mid/--no-refine-mid`. See [Tau-bin edge optimization and segmentation
-flags](#tau-bin-edge-optimization-and-segmentation-flags) below for detail.
+selects the split-flag mode; mutually exclusive with `--lambda-per-tau`), `--lambda-per-tau`
+(repeat once per tau-group, each a comma-separated edge list — per-group wavelength splits;
+mutually exclusive with `--split-lambda`), and `--refine-mid/--no-refine-mid`. The three modes
+all seed the same guillotine-tree grouping (see CLAUDE.md → "Outputs"); see [Sorted-opacity
+segmentation flags](#sorted-opacity-segmentation-flags) below for `--refine-mid`.
 
 ### 2. Validate tables — `compare_Qrad_from_kappa.py`
 
@@ -132,24 +124,21 @@ stacked panels:
   curve is added too — a fixed "known-good" binning to compare your table against. It's optional:
   when the file is absent it's simply not shown.
 
-**Optimize τ edges** runs the greedy high-overlap optimizer (same as
-`tausort.py main --optimize-high-overlap`): it grows to *N* optimally-placed τ groups over the
-whole λ range, fills the τ box, and recomputes — a one-click way to get good edges to start from.
-(It maximizes high-segment *overlap*, a binning-quality proxy, so more groups need not lower the
-Q_rad residual — the tool lets you see that.)
+**Optimize for Q_rad** runs the direct tree optimizer (§2c) as a background job, warm-started from
+the current binning: tick which of τ / λ / grow-N to vary, set a time budget, and watch the rms tick
+down live (with a **cancel** that keeps the best binning found so far). When it finishes it loads the
+optimized binning — a free-form **general-2D guillotine tree** (τ and λ cuts nested arbitrarily) — and
+recomputes. It minimizes the residual *directly* — a full RTE solve per step (~2.5 s). Under
+**Advanced** set the **beam width** (`1` = greedy grow, `≥ 2` = non-greedy beam search over
+rival tree topologies — the default), plus `max τ-groups`, the `metric`, and the stopping
+conditions.
 
-**Optimize for Q_rad** runs the direct optimizer (§2c) as a background job, warm-started from the
-current binning: tick which of τ / λ / flags / grow-N to vary, set a time budget, and watch the rms
-tick down live (with a **cancel** that keeps the best binning found so far). When it finishes it
-loads the optimized edges + flags and recomputes. This minimizes the residual *directly*, so it
-typically beats the high-overlap button — at the cost of a full RTE solve per step (~2.5 s).
-
-Tick **per-group λ** to let *each τ group choose its own wavelength split* (its own cut position, or
-none) instead of one shared cut + on/off flags. The binning diagram then shows the λ cuts "jumping"
-per τ band; a summary lists each group's cut. (Editing the τ/λ boxes by hand reverts to shared-λ.)
+The manual binning editor is **per-group λ**: each τ-group has its own row of λ cuts (add/remove
+with the `+` / `×` buttons), so the wavelength split can differ (or be absent) per τ-group. Editing
+the τ box exits any optimizer tree overlay and restores this editor.
 
 **Download kappa table (.dat)** writes the *current* binning's C-format kappa table (self-describing
-name, e.g. `kappa_24band_...dat`) — after an optimize run that's the optimized table, per-group λ
+name, e.g. `kappa_24band_...dat`) — after an optimize run that's the optimized table, tree binning
 included. It streams the file to your browser without touching the repo.
 
 Needs the same inputs as `compare_Qrad_from_kappa.py` (the `data/` reference tables + `models/G2_1D.dat`).
@@ -157,53 +146,54 @@ Pure stdlib server (no extra dependencies).
 
 ### 2c. Q_rad-driven optimizer — `qrad_optimize.py`
 
-The webapp's "Optimize τ edges" button and `tausort.py main --optimize-high-overlap` both maximize
-a *proxy* (per-group high-segment overlap). This optimizer instead **minimizes the Q_rad rms
-residual directly** — the metric that actually matters — searching over the τ edges, the λ-cell
-edge positions, the per-τ-group split flags, and (optionally) the number of τ groups, on the single
-atmosphere `models/G2_1D.dat`:
+This optimizer **minimizes the Q_rad rms residual directly** — the metric that actually matters —
+by searching over a **guillotine-tree** binning of the (−log₁₀ τ, log₁₀ λ) plane on the chosen
+atmosphere (`models/G2_1D.dat` by default; `--model <file>` picks another validated model). The
+tree's leaves are the (τ, λ) groups; a τ cut and a λ cut can nest arbitrarily, so it can express
+any rectangular tiling (the "general 2D" the webapp loads after a run). Every input shape —
+shared-tau + `--split-lambda` flags, `--per-group-lambda`, or an explicit tree — is normalized to
+one tree and refined via a single seed → grow → polish path.
 
 ```bash
-# reposition the 4 τ edges to minimize the single-cell rms (fast, ~5 min)
+# greedy grow (--beam-width 1): seed from 4 τ-groups, grow up to --max-groups leaves
 uv run python qrad_optimize.py \
     --tau-bin-edges=-0.63 --tau-bin-edges=0.35 --tau-bin-edges=1.23 --tau-bin-edges=2.885 --tau-bin-edges=7 \
-    --lambda-bin-edges 3 --lambda-bin-edges 5 --no-opt-lambda --no-opt-flags --no-grow
+    --lambda-bin-edges 3 --lambda-bin-edges 3.8 --lambda-bin-edges 5 \
+    --grow --beam-width 1 --max-seconds 1500 --save-plot plots/qrad_before_after.png
 
-# full scope: also move λ edges, flip split flags, and grow the τ-group count (~20-30 min)
+# non-greedy beam search over tree topologies (--tree --beam-width 3, the default width): keeps rival tilings alive
 uv run python qrad_optimize.py \
     --tau-bin-edges=-0.63 --tau-bin-edges=0.35 --tau-bin-edges=1.23 --tau-bin-edges=2.885 --tau-bin-edges=7 \
-    --lambda-bin-edges 3 --lambda-bin-edges 3.8 --lambda-bin-edges 5 --split-lambda 1111 \
-    --grow --max-seconds 1500 --save-plot plots/qrad_before_after.png
+    --lambda-bin-edges 3 --lambda-bin-edges 3.8 --lambda-bin-edges 5 \
+    --tree --beam-width 3 --max-seconds 1800 --save-dat
 
-# per-group λ: each τ group picks its own wavelength split (its own cut, or none)
+# seed from a per-τ-group λ layout, then let the grow/polish reshape the tree freely
 uv run python qrad_optimize.py \
     --tau-bin-edges=-0.63 --tau-bin-edges=0.35 --tau-bin-edges=1.23 --tau-bin-edges=2.885 --tau-bin-edges=7 \
     --lambda-bin-edges 3 --lambda-bin-edges 5 --per-group-lambda --max-seconds 300
 ```
 
-Search is **block-coordinate**: alternate coordinate descent on τ edges, greedy split-flag flips,
-and coordinate descent on λ edges to a fixed point, then optionally grow the τ-group count (a new
-edge is accepted only if rms improves past a tolerance). Each evaluation is a full RTE solve
-(~2.5 s via the shared `qrad_core.score_binning`), so it is a **run-and-wait / batch tool**, bounded
-by `--max-evals` / `--max-seconds`; it logs progress and prints the before/after rms + edges + flags.
-Guardrails keep edges strictly increasing and above a per-axis min-gap, and an empty-band penalty
-stops the search from collapsing groups. Toggle blocks with `--no-opt-tau/--no-opt-lambda/--no-opt-flags/--no-grow`;
-pick the objective with `--metric rms|maxabs|int_q` and the position search with `--method cd|nm`
-(Nelder-Mead over a monotone reparameterization).
-
-With `--per-group-lambda`, the shared cut + flags are replaced by a **per-τ-group** λ binning: for
-each τ group the search keeps the better of *no split* or a *single λ cut* (its position optimized),
-so the wavelength split can differ (or be absent) per τ group — the "jumping" cuts. It prints each
-group's cut and (with `--save-plot`) the before/after.
+The optimizer first seeds a tree from the inputs, then **grows** it — as a non-greedy
+**beam search** by default (`--beam-width 3`: up to 3 rival topologies kept in parallel,
+several split positions tried per leaf, deduped by leaf-rectangle signature), or greedily
+(`--beam-width 1`: one midpoint split of the widest leaf per round, committed only if rms improves) —
+and finally **polishes** every cut position. Each evaluation is a full RTE solve (~2.5 s via the
+shared `qrad_core.score_binning`), so it is a **run-and-wait / batch tool**, bounded by `--max-evals`
+/ `--max-seconds`; it logs progress and prints the before/after rms and the resulting tree's leaf
+bands. Guardrails keep edges strictly increasing and above a per-axis min-gap, and an empty-band
+penalty stops the search from collapsing groups. `--split-lambda`, `--per-group-lambda`, and
+`--lambda-bin-edges` are **seed shapes** (not optimizer modes): once seeded, the grow/polish
+reshapes the tree freely. Pick the objective with `--metric rms|maxabs|int_q` and the grow
+strategy with `--beam-width` (1 = greedy, ≥ 2 = beam); cap the leaf count with `--max-groups`.
 
 Add `--save-dat` to write the optimized binning's **kappa `.dat` table** when the run finishes
-(`qrad_core.save_kappa_dat` → `tausort.build_kappa_band_comparison` / `write_kappa_4_band_comparison`);
-the filename encodes the binning (per-group λ included, via the `--lambda-per-tau` naming). This is
-the direct way to materialize the optimized table without re-running `tausort.py main`.
+(`qrad_core.save_kappa_dat` → `tausort.build_kappa_band_comparison` /
+`write_kappa_4_band_comparison`); a tree result is written as
+`kappa_<N>band_tree<Nleaves>_sp3_<hash>.dat`. This is the direct way to materialize the optimized
+table without re-running `tausort.py main`.
 
-The full-scope run above tightens the residual noticeably — trading the uniform 4×2 split for
-fewer, better-placed τ groups and a smarter split pattern — and beats the high-overlap proxy on the
-metric that matters. Before/after on `models/G2_1D.dat`:
+A grow run tightens the residual noticeably — trading the uniform grid for fewer, better-placed
+groups and a smarter split pattern. Before/after on `models/G2_1D.dat`:
 
 ![Q_rad before/after optimization](plots/qrad_before_after.png)
 
@@ -319,36 +309,10 @@ variables:
     $$ \kappa_\text{ross} = \frac{\integrate_0^\inf\kappa_\text{all} \frac{dB_\lambda}{dT} d\lambda}{\integrate_0^\inf \frac{dB_\lambda}{dT} d\lambda} $$
 3. Interpolate kappa calcualted on the T,p grid from ODFs to the T,p grid of the atmospheric model
 
-## Tau-bin edge optimization and segmentation flags
+## Sorted-opacity segmentation flags
 
-`tausort.py main` exposes a small number of new CLI flags that control how
-the tau-bin edges are chosen and how the per-bin sorted-opacity curves are
-segmented.
-
-### `--optimize-high-overlap` / `--high-overlap-threshold`
-
-```
---optimize-high-overlap         (default: off)
---high-overlap-threshold FLOAT  (default: 0.70)
-```
-
-When `--optimize-high-overlap` is passed, the tool runs a greedy optimizer
-over `--tau-bin-edges` instead of producing the usual per-tau-bin plot.
-
-The optimizer:
-
-1. Computes the *high segment* (large-tau tail of the sorted-opacity curve)
-   overlap for every bin defined by the current edge list.
-2. While any bin has a high-segment overlap below `--high-overlap-threshold`,
-   the optimizer greedily adjusts an existing edge — or inserts a new one —
-   to lift the worst-offending bin above the threshold.
-3. Iteration stops once every bin clears the threshold (or the cap of
-   8 bins is reached). The final edge list and per-bin overlap table are
-   printed and the tool exits **before** the sorted-opacity plot is written.
-
-Use the optimizer to *find* good edges, then re-run with the printed
-`--tau-bin-edges ...` (no `--optimize-high-overlap`) to actually produce
-the sorted-opacity plot.
+`tausort.py main` exposes the `--refine-mid` flag, which controls how the per-bin
+sorted-opacity curves are segmented.
 
 ### `--refine-mid` / `--no-refine-mid`
 
@@ -402,7 +366,7 @@ drawn and the middle segment is a single piece.*
 
 ![8 tau-bins, refine-mid on](plots/sorted_8bin_refinemid.jpg)
 
-*8 tau-bins (edges from a previous `--optimize-high-overlap` run), with
+*8 tau-bins (edges from an earlier tree-optimizer run), with
 mid-segment refinement enabled. With more, narrower tau-bins the
 sorted-opacity curves are flatter, but several still benefit from a
 `b_mid` split.*
@@ -477,7 +441,7 @@ reference:
 
 The two 24-band tables let us ask "spend the budget on τ depth, or on wavelength?", and the
 15-band one asks "do we even need to split every τ-group?". (The 4-group τ-edges below were
-found earlier with `--optimize-high-overlap`; you can also let the optimizer pick them.)
+found earlier with the Q_rad tree optimizer (`qrad_optimize.py`); you can also let it pick them.)
 
 **Commands.**
 
@@ -568,8 +532,8 @@ env vars in your compose/run:
 - `MALLOC_ARENA_MAX=2` and `MALLOC_TRIM_THRESHOLD_=0` — stop glibc from retaining freed numpy
   memory, so repeated computes don't ratchet RSS up (without these, back-to-back computes leak
   toward OOM).
-- `QRAD_MAX_GROUPS=5` (default 8) — cap how many tau-groups the optimizer may grow to; each extra
-  group enlarges the per-eval opacity arrays. Lower it if the optimizer OOMs.
+- `QRAD_MAX_GROUPS=5` (default 8) — cap how many groups (tree leaves) the optimizer may grow to; each
+  extra group enlarges the per-eval opacity arrays. Lower it if the optimizer OOMs.
 - `ODF_MMAP=1` (default off) — memory-map the ~1.4 GB ODF `.npy` instead of loading it into RAM.
   It's read-only downstream so results are identical; this keeps the ODF as reclaimable, file-backed
   page cache (the kernel drops it under pressure) rather than anonymous RSS that OOMs. Big win on a

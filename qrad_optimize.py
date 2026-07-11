@@ -12,16 +12,11 @@ model under models/; None -> DEFAULT_MODEL).
 
 The optimizer is **tree-only**: every grouping (an explicit guillotine tree, per-tau-group
 lambda edges, or shared tau + split flags) is normalized to a guillotine tree and refined via
-a single seed/grow/polish path. `method` selects the *grow* strategy — `"beam"` (non-greedy
-beam search over tree topologies) vs the default `"cd"` greedy grow (one midpoint split per
-round, committed immediately). Each evaluation is a full RTE solve (~3 s
-via `qrad_core.score_binning`), so this is a run-and-wait / batch tool, bounded by an eval +
-wall-clock budget.
-
-In tree mode, `method="beam"` swaps the greedy grow (one midpoint split, committed
-immediately, no backtracking) for a beam search that keeps rival topologies alive and tries
-several split positions per leaf — a bounded exploration of the tiling space rather than a
-single greedy trajectory.
+a single seed/grow/polish path. `beam_width` is the structural knob: `>= 2` (default 3) runs
+a non-greedy beam search over tree topologies (keeps rival tilings alive, tries several split
+positions per leaf); `1` falls back to the greedy grow (one midpoint split per round,
+committed immediately). Each evaluation is a full RTE solve (~3 s via `qrad_core.score_binning`),
+so this is a run-and-wait / batch tool, bounded by an eval + wall-clock budget.
 
 CLI:  uv run python qrad_optimize.py --help
 """
@@ -165,7 +160,6 @@ class _Budget:
 
 @dataclass
 class _Cfg:
-    method: str = "cd"
     min_gap_tau: float = MIN_GAP_TAU
     min_gap_lam: float = MIN_GAP_LAM
     adjust_steps: tuple = ADJUST_STEPS
@@ -444,7 +438,7 @@ def _beam_grow_tree(
     grow_tol=0.0,
     report=None,
 ):
-    """Non-greedy beam search over guillotine-tree topologies (``method="beam"``).
+    """Non-greedy beam search over guillotine-tree topologies (``beam_width >= 2``).
 
     Maintains up to ``beam_width`` candidate trees in parallel. Each round expands every
     survivor by splitting its widest few leaves on tau and/or lambda at several positions
@@ -522,7 +516,6 @@ def optimize_qrad(
     opt_flags=True,
     grow=True,
     metric="rms",
-    method="cd",
     min_gap_tau=MIN_GAP_TAU,
     min_gap_lam=MIN_GAP_LAM,
     empty_penalty=EMPTY_PENALTY,
@@ -540,7 +533,7 @@ def optimize_qrad(
     lambda_edges_per_tau=None,  # per-group-lambda warm start (one lambda-edge list per tau group)
     tree=False,  # general 2D guillotine mode (both tau and lambda locally free)
     binning_tree=None,  # guillotine-tree warm start {window_tau, window_lam, root}
-    # method="beam" knobs (non-greedy tree-topology search; inert unless tree mode + grow):
+    # beam-search knobs (non-greedy tree-topology search; used when beam_width >= 2):
     beam_width=3,  # rival tree topologies kept in parallel each round
     beam_positions=(0.35, 0.5, 0.65),  # split-position fractions tried per (leaf, axis)
     beam_leaves=4,  # widest leaves considered for splitting, per beam tree
@@ -557,8 +550,8 @@ def optimize_qrad(
     Tree-only: every input shape (an explicit `binning_tree`, `lambda_edges_per_tau`,
     `per_group_lambda`, or shared tau + `flags`) is normalized to a guillotine tree and refined
     via a single seed/grow/polish path. `grow` enables splitting leaves (accepted only when rms
-    improves by > grow_tol, default an absolute 0); `method="beam"` swaps the greedy grow for a
-    non-greedy beam search over tree topologies (cd is greedy). The opt_tau/
+    improves by > grow_tol, default an absolute 0); `beam_width >= 2` (default 3) runs a
+    non-greedy beam search over tree topologies, `beam_width == 1` the greedy grow. The opt_tau/
     opt_lambda/opt_flags toggles are retained for API compatibility but are inert under the
     tree path.
 
@@ -602,7 +595,7 @@ def optimize_qrad(
         plateau_evals=plateau_evals,
         plateau_rel=plateau_rel,
     )
-    cfg = _Cfg(method=method, min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam, adjust_steps=tuple(adjust_steps))
+    cfg = _Cfg(min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam, adjust_steps=tuple(adjust_steps))
 
     history: list[dict] = []
 
@@ -652,7 +645,7 @@ def optimize_qrad(
     # depth (a tau sub-split inside one lambda region == the non-grid tiling we want).
     if grow:
         gtol = grow_tol if grow_tol is not None else 0.0
-        if cfg.method == "beam":
+        if beam_width >= 2:
             # Non-greedy: keep rival topologies alive (beam search) instead of committing the
             # single best midpoint split. Explores a beam-bounded slice of the tiling space;
             # the final _block_fixed_point_tree polish below optimizes the winner's positions.
@@ -750,12 +743,6 @@ def main(
         False, "--per-group-lambda/--shared-lambda", help="Give each tau group its own lambda split."
     ),
     metric: str = typer.Option("rms", "--metric", help="Objective: rms | maxabs | int_q."),
-    method: str = typer.Option(
-        "cd",
-        "--method",
-        help="Grow strategy: cd (greedy grow, one midpoint split per round) | beam "
-        "(non-greedy beam search over guillotine-tree topologies). The optimizer is tree-only.",
-    ),
     min_gap_tau: float = typer.Option(MIN_GAP_TAU, "--min-gap-tau"),
     min_gap_lam: float = typer.Option(MIN_GAP_LAM, "--min-gap-lam"),
     min_opacity_delta: float = typer.Option(
@@ -777,15 +764,15 @@ def main(
     save_dat: bool = typer.Option(
         False, "--save-dat/--no-save-dat", help="After optimizing, write the optimized binning's kappa .dat table."
     ),
-    tree: bool = typer.Option(False, "--tree/--no-tree", help="General 2D guillotine mode (required for method=beam)."),
+    tree: bool = typer.Option(False, "--tree/--no-tree", help="General 2D guillotine mode."),
     beam_width: int = typer.Option(
-        3, "--beam-width", help="method=beam: rival tree topologies kept in parallel each round."
+        3, "--beam-width", help="Rival tree topologies kept in parallel each grow round (1 = greedy grow)."
     ),
     beam_leaves: int = typer.Option(
-        4, "--beam-leaves", help="method=beam: widest leaves considered for splitting, per beam tree."
+        4, "--beam-leaves", help="Widest leaves considered for splitting, per beam tree (beam_width >= 2)."
     ),
     beam_positions: list[float] = typer.Option(
-        [0.35, 0.5, 0.65], "--beam-positions", help="method=beam: split-position fractions tried per (leaf, axis)."
+        [0.35, 0.5, 0.65], "--beam-positions", help="Split-position fractions tried per (leaf, axis) (beam_width >= 2)."
     ),
 ):
     model_name = qrad_core._model_name(model or None)
@@ -801,7 +788,7 @@ def main(
     if len(flags) != n_tau:
         raise typer.BadParameter(f"--split-lambda has {len(flags)} entries, expected {n_tau}")
 
-    print(f"[qrad-opt] atmosphere=models/{model_name} metric={metric} method={method} grow={grow}")
+    print(f"[qrad-opt] atmosphere=models/{model_name} metric={metric} beam_width={beam_width} grow={grow}")
     print(f"[qrad-opt] start: tau={_fmt(tau_bin_edges)} lam={_fmt(lambda_bin_edges)} flags={_flags_str(flags)}")
 
     def _progress(tag, value, groups, n):
@@ -817,7 +804,6 @@ def main(
         opt_flags=opt_flags,
         grow=grow,
         metric=metric,
-        method=method,
         min_gap_tau=min_gap_tau,
         min_gap_lam=min_gap_lam,
         max_groups=max_groups,

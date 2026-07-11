@@ -130,7 +130,6 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
             opt_flags=opt["opt_flags"],
             grow=opt["grow"],
             metric=opt["metric"],
-            method=opt["method"],
             beam_width=opt["beam_width"],
             max_seconds=opt["max_seconds"],
             max_evals=opt["max_evals"],
@@ -380,9 +379,6 @@ class Handler(BaseHTTPRequestHandler):
                     metric = req.get("metric", "rms")
                     if metric not in ("rms", "maxabs", "int_q"):
                         raise ValueError(f"metric must be rms|maxabs|int_q, got {metric!r}")
-                    method = req.get("method", "cd")
-                    if method not in ("cd", "beam"):
-                        raise ValueError(f"method must be cd|beam, got {method!r}")
                     target = req.get("target_rms")
                     opt = {
                         "opt_tau": bool(req.get("opt_tau", True)),
@@ -395,8 +391,7 @@ class Handler(BaseHTTPRequestHandler):
                         "tree": bool(req.get("tree", False)),
                         "binning_tree": req.get("binning_tree") or None,
                         "metric": metric,
-                        "method": method,
-                        "beam_width": max(1, int(req.get("beam_width", 3) or 3)),  # method=beam only
+                        "beam_width": max(1, int(req.get("beam_width", 3) or 3)),  # 1 = greedy grow, >= 2 = beam
                         "max_seconds": float(req.get("max_seconds", 300.0)),
                         "max_evals": int(req.get("max_evals", 5000)),
                         # user may ask for fewer than the host ceiling, never more.
