@@ -40,6 +40,11 @@ diff_binning
 # Debug dumps from sort_weighted_opacity_per_tau_bin
 debug_tau_bin_*.json
 
+# Run artifacts (transient logs, result dumps, rendered videos)
+*.log
+*.txt
+*.mp4
+
 # Q_rad explorer server runtime (make start/stop)
 .webapp.pid
 webapp.log
