@@ -42,7 +42,7 @@ _SBC = (2 * np.pi**5 * _kB**4) / (15 * _cvac**2 * _h**3)
 
 DZ = 1.0e6  # atmosphere grid spacing [cm] (uniform; matches models/G2_1D.dat) for the int-Q weight
 NMU = 4
-WINDOW = (-5.0, 2.5)  # log10(tau_ross) window for the rms metric
+WINDOW = (-1.0, 2.0)  # log10(tau_ross) window for the rms metric (photosphere focus)
 SKIP = 1440  # first N (far-UV) sub-bins skipped in the binning-diagram scatter
 
 MODELS_DIR = _REPO / "models"  # 1D atmospheres live here (ASCII: z rho p T, one row per depth)
@@ -387,7 +387,7 @@ def score_binning(
     rho = ref["rho"]
     q_full = ref["q_full"]
     resid = (q - q_full) / rho
-    # rms / max_abs are scored over the log10(tau_Ross) window (default WINDOW=(-5,2.5)); the
+    # rms / max_abs are scored over the log10(tau_Ross) window (default WINDOW=(-1,2)); the
     # caller can narrow it to focus the fit on a depth slice. int_q stays whole-atmosphere.
     win = WINDOW if window is None else (float(window[0]), float(window[1]))
     in_win = (ltau >= min(win)) & (ltau <= max(win))

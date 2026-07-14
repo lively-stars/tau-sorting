@@ -60,11 +60,11 @@ optimize (set the seconds box to ~30) after each change and watch the result.
      Change any of these, Optimize -> EXPECT it runs with no error and honors the setting.
        (An out-of-range value like an unknown metric is rejected server-side -> red status.)
 
-  SCORING WINDOW (affects both Compute and Optimize):
-  e. Set "Scoring window" to lo=-1, hi=2 and click "Compute Q_rad".
-     EXPECT: the rms value CHANGES (narrowing to the photosphere raises it, ~1.2e8 vs the
-     full-window ~6.5e7), and the middle+bottom plot panels show a faint ORANGE SHADED BAND
-     spanning [-1, 2] marking where rms is measured. Widen back to -5..4 to clear it.
+  SCORING WINDOW (affects both Compute and Optimize; default is -1..2, the photosphere):
+  e. Widen "Scoring window" to lo=-5, hi=4 and click "Compute Q_rad".
+     EXPECT: the rms value CHANGES (widening to the full column lowers it, ~6.5e7 vs the
+     default photosphere -1..2 ~1.2e8), and the ORANGE SHADED BAND widens across the
+     middle+bottom plot panels to span [-5, 4]. Reset to -1..2 to refocus on the photosphere.
 
   STOPPING CONDITIONS (Advanced panel; 0 = that stop is off):
   f. target rms: set it just ABOVE the current rms (e.g. 7e7) and Optimize ->
