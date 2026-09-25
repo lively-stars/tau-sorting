@@ -1454,6 +1454,8 @@ def plot_tau_rosselend_at_tau_lambda_one_vs_wavelength(
     output_file: str = "tau_rosseland_at_tau_lambda_one.jpg",
     use_2d_histogram: bool = True,
     band_index: NDArray[np.int32] | None = None,
+    poly_verts_concat: NDArray[np.float64] | None = None,
+    n_verts_per_group: NDArray[np.int32] | None = None,
 ) -> None:
     """
     Plot the Rosseland optical depth at the height where the optical depth
@@ -1499,18 +1501,26 @@ def plot_tau_rosselend_at_tau_lambda_one_vs_wavelength(
     ax.set_xlim(3, 5)
     ax.set_ylim(-1, 7)
 
-    # Draw each group's (tau, lambda) box outline. Horizontal tau edges are confined
-    # to the group's lambda window, and vertical lambda edges to its tau range, so a
-    # lambda cut only appears within tau slots that are actually lambda-split (and
-    # per-cell-optimized tau edges still "jump" across the lambda lines).
+    # Draw each group's (tau, lambda) outline: one closed vertex path per group in
+    # polygon mode, else the per-group box outline (horizontal tau edges confined to
+    # the group's lambda window, vertical lambda edges to its tau range).
     n_groups = int(group_tau_edges.shape[0])
-    for g in range(n_groups):
-        x_lo = float(group_lam_edges[g, 0])
-        x_hi = float(group_lam_edges[g, 1])
-        y_lo = float(group_tau_edges[g, 0])
-        y_hi = float(group_tau_edges[g, 1])
-        ax.hlines([y_lo, y_hi], xmin=x_lo, xmax=x_hi, color="k", lw=0.8)
-        ax.vlines([x_lo, x_hi], ymin=y_lo, ymax=y_hi, color="k", lw=0.8)
+    if poly_verts_concat is not None and n_verts_per_group is not None:
+        off = 0
+        for g in range(n_groups):
+            nv = int(n_verts_per_group[g])
+            vv = np.asarray(poly_verts_concat[off : off + nv], dtype=np.float64)
+            off += nv
+            loop = np.vstack([vv, vv[:1]])  # close the boundary path
+            ax.plot(loop[:, 1], loop[:, 0], color="k", lw=0.8)
+    else:
+        for g in range(n_groups):
+            x_lo = float(group_lam_edges[g, 0])
+            x_hi = float(group_lam_edges[g, 1])
+            y_lo = float(group_tau_edges[g, 0])
+            y_hi = float(group_tau_edges[g, 1])
+            ax.hlines([y_lo, y_hi], xmin=x_lo, xmax=x_hi, color="k", lw=0.8)
+            ax.vlines([x_lo, x_hi], ymin=y_lo, ymax=y_hi, color="k", lw=0.8)
 
     if band_index is not None:
         if band_index.shape[0] != tau_rosseland.shape[0]:
@@ -1691,6 +1701,210 @@ def assign_tree(
     return group_index
 
 
+# --- polygon bins (non-rectangular groups: exactly one simple rectilinear polygon per bin) ---
+def decompose_rectilinear_polygon(verts: NDArray[np.float64]) -> list[tuple[float, float, float, float]]:
+    """Decompose a simple rectilinear polygon into maximal horizontal slabs.
+
+    `verts` is (n, 2) in (tau, lam) = (-log10 tau, log10 lambda) coordinates, listed
+    along the boundary (CW or CCW; closing edge implicit). Sort the distinct vertex
+    tau values; per open tau-interval compute the polygon's lambda cross-section by a
+    parity sweep over its vertical edges, then merge consecutive intervals with an
+    identical cross-section. Returns (y_lo, y_hi, x_lo, x_hi) rectangles sorted by
+    (y_lo, x_lo). Raises ValueError on an odd crossing count (self-intersection).
+    """
+    v = np.asarray(verts, dtype=np.float64)
+    if v.ndim != 2 or v.shape[1] != 2 or v.shape[0] < 4:
+        raise ValueError(f"need >= 4 (tau, lam) vertices, got shape {v.shape}")
+    if np.array_equal(v[0], v[-1]):
+        v = v[:-1]  # tolerate a repeated closing vertex
+    n = int(v.shape[0])
+    yvals = sorted({float(v[k, 0]) for k in range(n)})
+    slabs: list[tuple[float, float, tuple[float, ...]]] = []  # (y_lo, y_hi, paired xs)
+    for k in range(len(yvals) - 1):
+        y_lo, y_hi = yvals[k], yvals[k + 1]
+        y_mid = 0.5 * (y_lo + y_hi)
+        xs: list[float] = []
+        for e in range(n):
+            y0, x0 = float(v[e, 0]), float(v[e, 1])
+            y1 = float(v[(e + 1) % n, 0])
+            if float(v[(e + 1) % n, 1]) != x0:
+                continue  # horizontal edge: never crosses y_mid (which avoids all vertex taus)
+            if (y0 <= y_mid < y1) or (y1 <= y_mid < y0):
+                xs.append(x0)
+        xs.sort()
+        if len(xs) % 2:
+            raise ValueError("self-intersecting or degenerate polygon")
+        if not xs:
+            continue
+        iv = tuple(xs)  # paired (lo, hi, lo, hi, ...)
+        if slabs and slabs[-1][2] == iv and slabs[-1][1] == y_lo:
+            slabs[-1] = (slabs[-1][0], y_hi, iv)
+        else:
+            slabs.append((y_lo, y_hi, iv))
+    rects: list[tuple[float, float, float, float]] = []
+    for y_lo, y_hi, iv in slabs:
+        for a, b in zip(iv[0::2], iv[1::2]):
+            rects.append((y_lo, y_hi, a, b))
+    rects.sort(key=lambda r: (r[0], r[2]))
+    return rects
+
+
+def parse_bins_json(text: str) -> list[dict]:
+    """Parse + validate a polygon-bin spec object.
+
+    Schema: ``{"bins": [{"vertices": [{"tau": y, "lam": x}, ...]}, ...]}`` with
+    (tau, lam) = (-log10 tau, log10 lambda); vertices listed along the boundary
+    (CW or CCW, closing edge implicit, collinear vertices tolerated, first vertex
+    not repeated). Each returned bin is ``{"vertices": (n, 2) float64,
+    "rects": [(y_lo, y_hi, x_lo, x_hi), ...]}`` in spec order. Raises ValueError
+    naming the bin index. Coverage of the window is not required.
+    """
+    try:
+        spec = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"invalid bins JSON: {e}") from e
+    if not isinstance(spec, dict) or not isinstance(spec.get("bins"), list) or not spec["bins"]:
+        raise ValueError("spec needs a non-empty 'bins' list")
+    out: list[dict] = []
+    for i, b in enumerate(spec["bins"]):
+        if not isinstance(b, dict) or set(b.keys()) != {"vertices"}:
+            raise ValueError(f"bin {i}: needs exactly one 'vertices' array")
+        verts = b["vertices"]
+        if not isinstance(verts, list) or len(verts) < 4:
+            n = len(verts) if isinstance(verts, list) else type(verts).__name__
+            raise ValueError(f"bin {i}: need >= 4 vertices, got {n}")
+        pts: list[tuple[float, float]] = []
+        for j, vtx in enumerate(verts):
+            if not isinstance(vtx, dict) or set(vtx.keys()) != {"tau", "lam"}:
+                raise ValueError(f"bin {i}: vertex {j} must have exactly keys 'tau' and 'lam'")
+            t, lam = vtx["tau"], vtx["lam"]
+            if (
+                isinstance(t, bool)
+                or isinstance(lam, bool)
+                or not isinstance(t, (int, float))
+                or not isinstance(lam, (int, float))
+                or not np.isfinite(t)
+                or not np.isfinite(lam)
+            ):
+                raise ValueError(f"bin {i}: vertex {j} has non-finite tau/lam ({t!r}, {lam!r})")
+            pts.append((float(t), float(lam)))
+        n = len(pts)
+        for k in range(n):
+            dx = pts[(k + 1) % n][1] - pts[k][1]
+            dy = pts[(k + 1) % n][0] - pts[k][0]
+            if dx == 0.0 and dy == 0.0:
+                raise ValueError(f"bin {i}: zero-length edge at vertex {k}")
+            if (dx == 0.0) == (dy == 0.0):
+                raise ValueError(f"bin {i}: non-rectilinear edge from vertex {k} to {(k + 1) % n}")
+        vv = np.asarray(pts, dtype=np.float64)
+        try:
+            rects = decompose_rectilinear_polygon(vv)
+        except ValueError as e:
+            raise ValueError(f"bin {i}: {e}") from e
+        x = vv[:, 1]
+        y = vv[:, 0]
+        shoe = 0.5 * abs(float(np.dot(x, np.roll(y, -1)) - np.dot(np.roll(x, -1), y)))
+        area = sum((r[1] - r[0]) * (r[3] - r[2]) for r in rects)
+        if shoe <= 0.0 or abs(area - shoe) > 1e-9 * shoe:
+            raise ValueError(f"bin {i}: self-intersecting or degenerate polygon")
+        out.append({"vertices": vv, "rects": rects})
+    for i in range(len(out)):
+        for j in range(i + 1, len(out)):
+            for r in out[i]["rects"]:
+                for s in out[j]["rects"]:
+                    oy = min(r[1], s[1]) - max(r[0], s[0])
+                    ox = min(r[3], s[3]) - max(r[2], s[2])
+                    if oy > 0.0 and ox > 0.0 and oy * ox > 1e-12:
+                        raise ValueError(f"bins {i} and {j} overlap")
+    return out
+
+
+def assign_polygons(
+    tau_rosseland: NDArray[np.float64],
+    wavelength_grid_input: NDArray[np.float64],
+    bins: list[dict],
+) -> tuple[NDArray[np.int32], NDArray[np.float64]]:
+    """Assign each sub-bin to a polygon bin (spec order; empty bins consume their id).
+
+    Sub-bin coordinates reuse assign_tree's exact maps (x = log10 lambda[A],
+    y = -log10 tau); membership per slab rectangle is half-open
+    (``>= lo, < hi``: a point on a cut lands in the hi side). Uses the RAW slab
+    rectangles for membership; descriptor clamping is applied separately by
+    build_group_specs_polygons. Returns (bin_index[n_subbins] in [0, n_bins) or
+    -1, member_span[n_subbins, 2] with the containing slab's (y_lo, y_hi);
+    unassigned rows are (0, 0) and never read).
+    """
+    x_data = np.log10(wavelength_grid_input * 1e8)  # log10 lambda [Angstrom]
+    y_data = -np.log10(np.clip(tau_rosseland, 1.0e-300, None))  # -log10 tau
+    n = int(x_data.shape[0])
+    bin_index = np.full(n, -1, dtype=np.int32)
+    member_span = np.zeros((n, 2), dtype=np.float64)
+    for g, b in enumerate(bins):
+        for y_lo, y_hi, x_lo, x_hi in b["rects"]:
+            m = (bin_index < 0) & (y_data >= y_lo) & (y_data < y_hi) & (x_data >= x_lo) & (x_data < x_hi)
+            bin_index[m] = g
+            member_span[m, 0] = y_lo
+            member_span[m, 1] = y_hi
+    return bin_index, member_span
+
+
+def build_group_specs_polygons(
+    bins: list[dict],
+    clamp_lo: float | None,
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64], NDArray[np.int32]]:
+    """Per-bin descriptor for polygon bins (pure: bins are never mutated).
+
+    Returns (group_tau_edges, group_lam_edges, poly_verts_concat, n_verts_per_group):
+    per-bin bbox rows in spec order, the raw parsed vertices concatenated as float64
+    (n_verts_total, 2) columns (tau, lam), and int32 (n_bins,) vertex counts. When
+    `clamp_lo` is given, every bbox lo becomes max(y_lo, clamp_lo) — mirroring the
+    raw-membership / clamped-descriptor split of the tree path (assign_polygons keeps
+    using the raw slabs; the sort clamps each member's span to its group lo). A bin
+    whose every slab has y_hi <= clamp_lo raises ValueError.
+    """
+    tau_rows: list[tuple[float, float]] = []
+    lam_rows: list[tuple[float, float]] = []
+    vert_blocks: list[NDArray[np.float64]] = []
+    counts: list[int] = []
+    for g, b in enumerate(bins):
+        rects = b["rects"]
+        if clamp_lo is not None and all(r[1] <= clamp_lo for r in rects):
+            raise ValueError(f"bin {g} lies entirely below the atmosphere clamp {clamp_lo}")
+        y_lo = min(r[0] for r in rects)
+        y_hi = max(r[1] for r in rects)
+        if clamp_lo is not None:
+            y_lo = max(y_lo, float(clamp_lo))
+        tau_rows.append((y_lo, y_hi))
+        lam_rows.append((min(r[2] for r in rects), max(r[3] for r in rects)))
+        vv = np.asarray(b["vertices"], dtype=np.float64).reshape(-1, 2)
+        vert_blocks.append(vv)
+        counts.append(int(vv.shape[0]))
+    concat = np.concatenate(vert_blocks, axis=0).reshape(-1, 2) if vert_blocks else np.zeros((0, 2), dtype=np.float64)
+    return (
+        np.asarray(tau_rows, dtype=np.float64).reshape(-1, 2),
+        np.asarray(lam_rows, dtype=np.float64).reshape(-1, 2),
+        concat,
+        np.asarray(counts, dtype=np.int32),
+    )
+
+
+def layer_indices_for_span(
+    y_lo: float,
+    y_hi: float,
+    tau_full: NDArray[np.float64],
+) -> tuple[int, int]:
+    """Layer bracket for a (y_lo, y_hi) = -log10(tau) span on a tau profile.
+
+    ``(searchsorted(tau_full, 10**-y_hi), searchsorted(tau_full, 10**-y_lo))`` —
+    the exact formulas of sort_weighted_opacity_per_tau_bin's per-group lookup,
+    extracted as a pure seam (no clipping; the caller clips to its layer range).
+    """
+    return (
+        int(np.searchsorted(tau_full, 10.0 ** (-y_hi), side="left")),
+        int(np.searchsorted(tau_full, 10.0 ** (-y_lo), side="left")),
+    )
+
+
 def _resolve_grouping_inputs(
     tau_bin_edges: list[float],
     lambda_bin_edges: list[float],
@@ -1763,6 +1977,7 @@ def sort_weighted_opacity_per_tau_bin(
     band_index: NDArray[np.int32],
     group_tau_edges: NDArray[np.float64],
     wavelength_grid_subbins_centers: NDArray[np.float64],
+    member_span: NDArray[np.float64] | None = None,
     write_debug_json: bool = True,
     verbose: bool = True,
 ) -> dict[int, dict[str, NDArray[np.float64] | NDArray[np.int64] | float | int | bool]]:
@@ -1780,6 +1995,12 @@ def sort_weighted_opacity_per_tau_bin(
          interpolated_opacity[i_top] and interpolated_opacity[i_bot].
       4. Weight by Δλ_subbin × B_λ(λ_subbin, T) using the corresponding T.
       5. argsort weighted_kappa.
+
+    Polygon bins pass ``member_span`` ([n_subbins, 2], each member's own slab
+    (y_lo, y_hi) from assign_polygons): each member then reads opacities at the
+    layers of its own slab (today's rule per rectangle) while the sorted curve
+    and its segments still cover all the group's members. ``None`` broadcasts
+    ``group_tau_edges[g]`` over the group's members (current behavior).
 
     Args:
         atm: Atmospheric model.
@@ -1830,10 +2051,12 @@ def sort_weighted_opacity_per_tau_bin(
             f"sub-bin width ({subbin_widths_flat.shape[0]}) and center "
             f"({wavelength_grid_subbins_centers.shape[0]}) lengths differ"
         )
-    if band_index.shape[0] != subbin_widths_flat.shape[0]:
-        raise ValueError(
-            f"band_index length ({band_index.shape[0]}) does not match nbins*nsubbins ({subbin_widths_flat.shape[0]})"
-        )
+    if member_span is not None:
+        member_span = np.asarray(member_span, dtype=np.float64).reshape(-1, 2)
+        if member_span.shape[0] != band_index.shape[0]:
+            raise ValueError(
+                f"member_span length ({member_span.shape[0]}) does not match band_index length ({band_index.shape[0]})"
+            )
 
     results: dict[
         int,
@@ -1868,22 +2091,56 @@ def sort_weighted_opacity_per_tau_bin(
             results[g] = {"empty": True, "members": 0}
             continue
 
-        kappa_top = interpolated_opacity[i_top].reshape(-1)[member_idx]
-        kappa_bot = interpolated_opacity[i_bot].reshape(-1)[member_idx]
-        widths = subbin_widths_flat[member_idx]
-        lambdas = wavelength_grid_subbins_centers[member_idx]
+        flat = interpolated_opacity.reshape(n_layers, -1)
+        if member_span is None:
+            kappa_top = flat[i_top][member_idx]
+            kappa_bot = flat[i_bot][member_idx]
+            widths = subbin_widths_flat[member_idx]
+            lambdas = wavelength_grid_subbins_centers[member_idx]
+            T_top_m = np.full(member_idx.shape, float(atm.T[i_top]))
+            T_bot_m = np.full(member_idx.shape, float(atm.T[i_bot]))
+            span_layers: list[tuple] = []
+        else:
+            spans = np.asarray(member_span[member_idx], dtype=np.float64).reshape(-1, 2)
+            slo_eff = np.maximum(spans[:, 0], neglogtau_lo)
+            shi_eff = spans[:, 1]
+            j_top_m = np.empty(member_idx.size, dtype=np.int64)
+            j_bot_m = np.empty(member_idx.size, dtype=np.int64)
+            for k in range(member_idx.size):
+                jt, jb = layer_indices_for_span(float(slo_eff[k]), float(shi_eff[k]), tau_full)
+                j_top_m[k] = min(max(jt, 0), n_layers - 1)
+                j_bot_m[k] = min(max(jb, 0), n_layers - 1)
+            kappa_top = flat[j_top_m, member_idx]
+            kappa_bot = flat[j_bot_m, member_idx]
+            widths = subbin_widths_flat[member_idx]
+            lambdas = wavelength_grid_subbins_centers[member_idx]
+            T_top_m = np.asarray(atm.T)[j_top_m]
+            T_bot_m = np.asarray(atm.T)[j_bot_m]
+            seen: dict[tuple, None] = {}
+            for k in range(member_idx.size):
+                key = (
+                    float(slo_eff[k]),
+                    float(shi_eff[k]),
+                    int(j_top_m[k]),
+                    int(j_bot_m[k]),
+                    float(T_top_m[k]),
+                    float(T_bot_m[k]),
+                )
+                seen[key] = None
+            uniq = sorted(seen.keys())
+            span_layers = uniq if len(uniq) > 1 else []
 
-        T_top = float(atm.T[i_top])
-        T_bot = float(atm.T[i_bot])
-
-        weights_top = widths * planck_function(lambdas, T_top)
-        weights_bot = widths * planck_function(lambdas, T_bot)
+        weights_top = widths * planck_function(lambdas, T_top_m)
+        weights_bot = widths * planck_function(lambdas, T_bot_m)
 
         weighted_top = kappa_top * weights_top
         weighted_bot = kappa_bot * weights_bot
 
         sort_idx_top = np.argsort(weighted_top)
         sort_idx_bot = np.argsort(weighted_bot)
+
+        T_top = float(atm.T[i_top])
+        T_bot = float(atm.T[i_bot])
 
         results[g] = {
             "members": int(member_idx.size),
@@ -1904,6 +2161,7 @@ def sort_weighted_opacity_per_tau_bin(
             "sort_idx_bot": sort_idx_bot,
             "sorted_weighted_kappa_top": weighted_top[sort_idx_top],
             "sorted_weighted_kappa_bot": weighted_bot[sort_idx_bot],
+            "span_layers": span_layers,
         }
 
         if write_debug_json:
@@ -2448,6 +2706,8 @@ def save_tau_bin_opacities_npy(
     lambda_bin_edges: NDArray[np.float64] | list[float] | None = None,
     tau_edges_per_lambda: list[list[float]] | None = None,
     split_along_lambda: list[bool] | None = None,
+    poly_verts_concat: NDArray[np.float64] | None = None,
+    n_verts_per_group: NDArray[np.int32] | None = None,
 ) -> None:
     """
     Save tau-binned opacity products to a structured .npy file.
@@ -2484,6 +2744,16 @@ def save_tau_bin_opacities_npy(
     tau_edges_concat = np.asarray([v for e in cells for v in e], dtype=np.float64)
     tau_edges_cell0 = np.asarray(cells[0] if cells else [], dtype=np.float64)
     split_flags = np.asarray([] if split_along_lambda is None else split_along_lambda, dtype=np.int8)
+    poly_concat = (
+        np.asarray(poly_verts_concat, dtype=np.float64).reshape(-1, 2)
+        if poly_verts_concat is not None
+        else np.zeros((0, 2), dtype=np.float64)
+    )
+    poly_counts = (
+        np.asarray(n_verts_per_group, dtype=np.int32).reshape(-1)
+        if n_verts_per_group is not None
+        else np.zeros((0,), dtype=np.int32)
+    )
 
     if not (planck.shape == rosseland.shape == mixed.shape):
         raise ValueError(
@@ -2522,6 +2792,8 @@ def save_tau_bin_opacities_npy(
             ("n_tau_per_lambda", np.int32, (n_tau_per_lambda.size,)),
             ("tau_edges_concat", np.float64, (tau_edges_concat.size,)),
             ("split_along_lambda", np.int8, (split_flags.size,)),
+            ("poly_verts_concat", np.float64, (poly_concat.shape[0], 2)),
+            ("n_verts_per_group", np.int32, (poly_counts.size,)),
         ]
     )
 
@@ -2540,6 +2812,8 @@ def save_tau_bin_opacities_npy(
     packed["n_tau_per_lambda"] = n_tau_per_lambda
     packed["tau_edges_concat"] = tau_edges_concat
     packed["split_along_lambda"] = split_flags
+    packed["poly_verts_concat"] = poly_concat
+    packed["n_verts_per_group"] = poly_counts
 
     np.save(output_file, packed)
     console.print(f"[green]✓ Saved tau-bin opacities to {output_file}[/green]")
@@ -2554,10 +2828,13 @@ def build_kappa_dat_filename(
     split_along_lambda: list[bool] | None = None,
     lambda_edges_per_tau: list[list[float]] | None = None,
     binning_tree: dict | None = None,
+    bins: list[dict] | None = None,
 ) -> str:
     """
     Build a .dat filename that encodes the binning parameters.
 
+    - Polygon bins: leaf count + a short structural hash of the rounded spec,
+      e.g. ``kappa_9band_poly3_sp3_<8hex>.dat`` (full vertices live in the .npy).
     - Single lambda cell (backward compatible) spells out the tau edges, e.g.
       ``kappa_24band_tg8_sp3_tau_-0.6347_-0.4_..._7_lam_3_5.dat``.
     - Per-cell multi-lambda: ragged tau edges would make the name unbounded, so
@@ -2573,6 +2850,21 @@ def build_kappa_dat_filename(
 
     def _fmt(vals: list[float]) -> str:
         return "_".join(f"{round(float(v), 4):g}" for v in vals)
+
+    if bins is not None:
+        # Polygon bins: encode bin count + a short hash of the rounded spec
+        # (full vertices live in the .npy).
+        import hashlib
+
+        spec = {
+            "bins": [
+                {"vertices": [{"tau": round(float(v[0]), 4), "lam": round(float(v[1]), 4)} for v in b["vertices"]]}
+                for b in bins
+            ]
+        }
+        canon = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+        sig = hashlib.blake2s(canon.encode(), digest_size=4).hexdigest()
+        return f"kappa_{nbands}band_poly{len(bins)}_sp{n_splits}_{sig}.dat"
 
     if binning_tree is not None:
         # General guillotine tree: ragged edges make a full name unbounded, so encode leaf
@@ -2713,9 +3005,18 @@ def main(
             "per-tau-lambda mode; mutually exclusive with --split-lambda.",
         ),
     ] = [],
+    bins_file: Path | None = typer.Option(
+        None,
+        "--bins-file",
+        help="JSON file with polygon bins (non-rectangular groups); see README",
+    ),
+    bins_json: str | None = typer.Option(
+        None,
+        "--bins",
+        help="Inline JSON, same object as --bins-file",
+    ),
     skip_first_n_wavelengths: int | None = typer.Option(
         1440,
-        "--skip-first-n-wavelengths",
         "-s",
         help="Number of initial wavelength points to skip",
     ),
@@ -2883,6 +3184,24 @@ def main(
     # un-clamped edges), reproducing the original in-sort clamp.
     top_edge = -np.log10(tau_rosseland[max_height_idx] + 0.2)
 
+    polygon_mode = (bins_file is not None) or (bins_json is not None)
+    if bins_file is not None and bins_json is not None:
+        raise typer.BadParameter("--bins-file and --bins are mutually exclusive; give exactly one")
+    if polygon_mode and (split_lambda is not None or lambda_per_tau):
+        raise typer.BadParameter(
+            "polygon mode (--bins-file/--bins) is mutually exclusive with --split-lambda/--lambda-per-tau"
+        )
+    polygon_bins: list[dict] | None = None
+    member_span: NDArray[np.float64] | None = None
+    poly_verts_concat: NDArray[np.float64] | None = None
+    n_verts_per_group: NDArray[np.int32] | None = None
+    if polygon_mode:
+        try:
+            text = Path(bins_file).read_text() if bins_file is not None else str(bins_json)
+            polygon_bins = parse_bins_json(text)
+        except ValueError as e:
+            raise typer.BadParameter(str(e)) from e
+
     gi = _resolve_grouping_inputs(tau_bin_edges, lambda_bin_edges, split_lambda, lambda_per_tau)
     # Re-bind main()'s locals from the resolved grouping (lambda_bin_edges/n_lambda may change in
     # per-tau-lambda mode; the filename/.npy inputs are mode-specific).
@@ -2895,44 +3214,57 @@ def main(
     flag_tau_bin_edges: list[float] | None = None  # per-tau/flag modes: clamped shared tau edges (filename)
     n_tau = len(tau_bin_edges) - 1
 
-    if gi["mode"] == "per-tau-lambda":
-        n_split_groups = sum(1 for e in lambda_edges_per_tau if len(e) > 2)
-        console.print(
-            f"[green]per-tau-lambda mode: {n_split_groups}/{n_tau} tau-groups split, each with its own λ cut[/green]"
-        )
-    elif gi["mode"] == "split-lambda":
-        if n_lambda == 1:
-            console.print("[yellow]--split-lambda given but only one lambda cell; flags are a no-op.[/yellow]")
-        console.print(
-            f"[green]split-lambda mode: {sum(split_flags)}/{n_tau} tau-groups split into {n_lambda} λ cells[/green]"
-        )
-
-    # ---- Single grouping IR: every mode becomes a guillotine tree ----
-    # lpt is a per-tau-group lambda-edge list: a group's own edges (per-tau-lambda), the shared
-    # lambda edges (uniform / a flagged group), or [lmin,lmax] (an unsplit group). tree_from_lpt
-    # lifts it to a tau-outer guillotine partition whose leaves are the (tau, lambda) groups.
-    import qrad_optimize  # runtime-only (qrad_optimize imports tausort, so avoid a top-level cycle)
-
-    tree = qrad_optimize.tree_from_lpt(list(tau_bin_edges), lpt)
-    tw, lw, root = tree["window_tau"], tree["window_lam"], tree["root"]
-    # Membership uses the RAW (un-clamped) tau window; the descriptor clamps the atmosphere-top
-    # edge — mirroring qrad_core.score_binning (raw window for assign_tree, clamped top for specs).
-    bin_number = assign_tree(
-        tau_rosseland_at_tau_lambda_one,
-        wavelength_grid_subbins_centers,
-        root,
-        tw,
-        lw,
-    )
-    group_tau_edges, group_lam_edges = build_group_specs_tree(root, [top_edge, tw[1]], lw)
-    # Encode the clamped top edge in the filename/.npy inputs. Per-tau / flag modes carry the
-    # clamped shared tau edges; uniform mode carries the clamped per-cell edges.
-    if tau_edges_per_lambda is not None:
-        for ce in tau_edges_per_lambda:
-            ce[0] = top_edge
+    if polygon_mode:
+        assert polygon_bins is not None
+        try:
+            bin_number, member_span = assign_polygons(
+                tau_rosseland_at_tau_lambda_one, wavelength_grid_subbins_centers, polygon_bins
+            )
+            group_tau_edges, group_lam_edges, poly_verts_concat, n_verts_per_group = build_group_specs_polygons(
+                polygon_bins, top_edge
+            )
+        except ValueError as e:
+            raise typer.BadParameter(str(e)) from e
+        console.print(f"[green]polygon mode: {len(polygon_bins)} bins[/green]")
     else:
-        flag_tau_bin_edges = list(tau_bin_edges)
-        flag_tau_bin_edges[0] = top_edge
+        if gi["mode"] == "per-tau-lambda":
+            n_split_groups = sum(1 for e in lambda_edges_per_tau if len(e) > 2)
+            console.print(
+                f"[green]per-tau-lambda mode: {n_split_groups}/{n_tau} tau-groups split, each with its own λ cut[/green]"
+            )
+        elif gi["mode"] == "split-lambda":
+            if n_lambda == 1:
+                console.print("[yellow]--split-lambda given but only one lambda cell; flags are a no-op.[/yellow]")
+            console.print(
+                f"[green]split-lambda mode: {sum(split_flags)}/{n_tau} tau-groups split into {n_lambda} λ cells[/green]"
+            )
+
+        # ---- Single grouping IR: every mode becomes a guillotine tree ----
+        # lpt is a per-tau-group lambda-edge list: a group's own edges (per-tau-lambda), the shared
+        # lambda edges (uniform / a flagged group), or [lmin,lmax] (an unsplit group). tree_from_lpt
+        # lifts it to a tau-outer guillotine partition whose leaves are the (tau, lambda) groups.
+        import qrad_optimize  # runtime-only (qrad_optimize imports tausort, so avoid a top-level cycle)
+
+        tree = qrad_optimize.tree_from_lpt(list(tau_bin_edges), lpt)
+        tw, lw, root = tree["window_tau"], tree["window_lam"], tree["root"]
+        # Membership uses the RAW (un-clamped) tau window; the descriptor clamps the atmosphere-top
+        # edge — mirroring qrad_core.score_binning (raw window for assign_tree, clamped top for specs).
+        bin_number = assign_tree(
+            tau_rosseland_at_tau_lambda_one,
+            wavelength_grid_subbins_centers,
+            root,
+            tw,
+            lw,
+        )
+        group_tau_edges, group_lam_edges = build_group_specs_tree(root, [top_edge, tw[1]], lw)
+        # Encode the clamped top edge in the filename/.npy inputs. Per-tau / flag modes carry the
+        # clamped shared tau edges; uniform mode carries the clamped per-cell edges.
+        if tau_edges_per_lambda is not None:
+            for ce in tau_edges_per_lambda:
+                ce[0] = top_edge
+        else:
+            flag_tau_bin_edges = list(tau_bin_edges)
+            flag_tau_bin_edges[0] = top_edge
 
     console.print("\n[cyan]Calculating tau-binned opacities...[/cyan]")
 
@@ -2951,6 +3283,8 @@ def main(
         group_lam_edges=group_lam_edges,
         lambda_bin_edges=lambda_bin_edges,
         band_index=bin_number[skip_first_n_wavelengths:],
+        poly_verts_concat=poly_verts_concat,
+        n_verts_per_group=n_verts_per_group,
     )
 
     t0 = time.perf_counter()
@@ -2962,6 +3296,7 @@ def main(
         band_index=bin_number,
         group_tau_edges=group_tau_edges,
         wavelength_grid_subbins_centers=wavelength_grid_subbins_centers,
+        member_span=member_span,
     )
     t1 = time.perf_counter()
     n_nonempty = sum(1 for v in sorted_per_bin.values() if not v.get("empty", False))
@@ -3057,6 +3392,8 @@ def main(
         lambda_bin_edges=lambda_bin_edges,
         tau_edges_per_lambda=tau_edges_per_lambda,
         split_along_lambda=split_flags,
+        poly_verts_concat=poly_verts_concat,
+        n_verts_per_group=n_verts_per_group,
     )
     t1 = time.perf_counter()
     console.print(f"[dim]⏱  save_tau_bin_opacities_npy: {t1 - t0:.3f}s[/dim]")
@@ -3073,6 +3410,7 @@ def main(
         tau_bin_edges=flag_tau_bin_edges,
         split_along_lambda=split_flags,
         lambda_edges_per_tau=lambda_edges_per_tau,
+        bins=polygon_bins,
     )
     write_kappa_4_band_comparison(kappa_dat_path, build_kappa_band_comparison(tau_bin_results, odf))
     t1 = time.perf_counter()

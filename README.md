@@ -53,7 +53,19 @@ uv run python tausort.py main \
     --tau-bin-edges=-0.63 --tau-bin-edges=0.3488 --tau-bin-edges=1.2275 --tau-bin-edges=2.885 --tau-bin-edges=7 \
     --lambda-per-tau=3,3.82,5 --lambda-per-tau=3,3.65,5 --lambda-per-tau=3,5 --lambda-per-tau=3,3.8,5
 
-uv run python tausort.py main --help        # all options
+# Polygon bins (non-rectangular groups): each bin is exactly one simple rectilinear polygon in
+# the (−log10 τ, log10 λ) plane — the λ cut may differ between adjacent τ layers (L-/staircase
+# bins). Mutually exclusive with --split-lambda/--lambda-per-tau; --tau-bin-edges/--lambda-bin-edges
+# are ignored in this mode.
+# Schema (same object for --bins-file and --bins): {"bins": [{"vertices": [{"tau": y, "lam": x}, ...]}]}
+# with vertices along the boundary (CW or CCW, closing edge implicit, first vertex not repeated).
+# Validation: non-empty bins; ≥4 vertices per bin; exactly keys tau/lam, finite floats; every edge
+# rectilinear (exactly one coordinate changes) and non-zero-length; simple region (slab area equals
+# |shoelace|); pairwise bin overlap rejected. Points outside every polygon are unassigned (-1).
+# The .npy gains poly_verts_concat (n_verts_total, 2) + n_verts_per_group (n_bins,); the .dat is
+# named kappa_<nBands>band_poly<n_bins>_sp<n_splits>_<8hex>.dat (hash of the rounded spec).
+uv run python tausort.py main --bins-file bins.json
+uv run python tausort.py main --bins '{"bins": [{"vertices": [{"tau": 3.8, "lam": 3.0}, {"tau": 7.0, "lam": 3.0}, {"tau": 7.0, "lam": 5.0}, {"tau": 3.8, "lam": 5.0}]}]}'
 ```
 
 Key flags: `--tau-bin-edges` (repeat once per edge), `--lambda-bin-edges` (log10 Å; ≥3 edges

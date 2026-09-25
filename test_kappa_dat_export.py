@@ -50,12 +50,31 @@ class TestKappaDatExport(unittest.TestCase):
         self.assertTrue(fn.startswith("kappa_15band_lm2_sl101_sp3_tau_"))
         self.assertIn("_lam_3_3.8_5.dat", fn)
 
+    def test_polygon_filename_encoding(self):
+        # Polygon mode: bin count + hash of the rounded spec; stable per spec,
+        # different when a cut moves.
+        from tausort import parse_bins_json
+
+        def _rect(t0, t1, x0, x1):
+            return [(t0, x0), (t0, x1), (t1, x1), (t1, x0)]
+
+        import json
+
+        def _spec(*bins):
+            return json.dumps({"bins": [{"vertices": [{"tau": t, "lam": x} for t, x in v]} for v in bins]})
+
+        bins = parse_bins_json(_spec(_rect(0.0, 1.0, 3.0, 4.0), _rect(1.0, 2.0, 3.0, 4.0), _rect(0.0, 2.0, 4.0, 5.0)))
+        fn1 = build_kappa_dat_filename(nbands=9, n_splits=3, bins=bins)
+        self.assertEqual(fn1, build_kappa_dat_filename(nbands=9, n_splits=3, bins=bins))
+        self.assertRegex(fn1, r"^kappa_9band_poly3_sp3_[0-9a-f]{8}\.dat$")
+        moved = parse_bins_json(_spec(_rect(0.0, 1.0, 3.0, 4.1), _rect(1.0, 2.0, 3.0, 4.1), _rect(0.0, 2.0, 4.1, 5.0)))
+        self.assertNotEqual(fn1, build_kappa_dat_filename(nbands=9, n_splits=3, bins=moved))
+
     def test_pack_shapes_logs_axes(self):
         nt, npr, nb = 5, 4, 6
         results, odf = _synthetic_results(nt, npr, nb)
         kbc = build_kappa_band_comparison(results, odf)  # type: ignore  # lightweight test stubs
 
-        # Leading band axis, C convention.
         self.assertEqual(kbc.kap_mean.shape, (nb, nt, npr))
         self.assertEqual(kbc.B_band.shape, (nb, nt))
         # kap_mean = ln(mixed), reordered [NT, Np, Nbands] -> [Nbands, NT, Np].

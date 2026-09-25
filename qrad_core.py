@@ -311,6 +311,7 @@ def score_binning(
     n_splits=3,
     lambda_edges_per_tau=None,
     binning_tree=None,
+    bins=None,
     window=None,
     min_opacity_delta=1.0,
 ) -> dict:
@@ -318,6 +319,7 @@ def score_binning(
 
     `model` selects the atmosphere the binning + RTE run on (a bare filename under models/;
     None -> DEFAULT_MODEL). It is precomputed on first use. Grouping modes (highest priority first):
+      - polygon bins: pass `bins` (parse_bins_json output); exact rectilinear polygons.
       - general 2D guillotine: pass `binning_tree` (a {window_tau, window_lam, root} tree); the
         other edge args are ignored. Any rectangular tiling (see `build_group_specs_tree`).
       - per-tau-group lambda: pass `lambda_edges_per_tau` (one lambda-edge list per tau group).
@@ -331,26 +333,39 @@ def score_binning(
     ref = reference(model)
     clamped_top = float(-np.log10(inv["tau_ross"][inv["max_height_idx"]] + 0.2))
 
-    # Normalize every input mode into a guillotine tree so the tree path is the single grouping
-    # implementation. Precedence: explicit `binning_tree` > per-tau-lambda > shared-flags. The
-    # per-tau-lambda conversion matches build_group_specs_per_tau's rectangle set + DFS order
-    # (verified byte-identical end-to-end by test_qrad_optimize.TestTreeEquivalence); the
-    # shared-flags conversion is the old tree_from_flags inlined (flagged groups subdivide along
-    # lambda, the rest span the window). An explicit `binning_tree` keeps priority — its filename
-    # branch is dispatched separately below.
-    tree = binning_tree
-    if tree is None:
-        if lambda_edges_per_tau is not None:
-            tree = qrad_optimize.tree_from_lpt(list(tau_edges), [list(x) for x in lambda_edges_per_tau])
-        else:
-            lpt = [list(lambda_edges) if bool(f) else [float(lambda_edges[0]), float(lambda_edges[-1])] for f in flags]
-            tree = qrad_optimize.tree_from_lpt(list(tau_edges), lpt)
+    poly_verts_concat = None
+    n_verts_per_group = None
+    member_span = None
+    if bins is not None:
+        # Polygon bins: exact rectilinear polygons (highest precedence).
+        band_index, member_span = ts.assign_polygons(inv["tau_at_lam1"], inv["wl_centers"], bins)
+        group_tau_edges, group_lam_edges, poly_verts_concat, n_verts_per_group = ts.build_group_specs_polygons(
+            bins, clamped_top
+        )
+        n_groups = int(group_tau_edges.shape[0])
+    else:
+        # Normalize every input mode into a guillotine tree so the tree path is the single grouping
+        # implementation. Precedence: explicit `binning_tree` > per-tau-lambda > shared-flags. The
+        # per-tau-lambda conversion matches build_group_specs_per_tau's rectangle set + DFS order
+        # (verified byte-identical end-to-end by test_qrad_optimize.TestTreeEquivalence); the
+        # shared-flags conversion is the old tree_from_flags inlined (flagged groups subdivide along
+        # lambda, the rest span the window). An explicit `binning_tree` keeps priority — its filename
+        # branch is dispatched separately below.
+        tree = binning_tree
+        if tree is None:
+            if lambda_edges_per_tau is not None:
+                tree = qrad_optimize.tree_from_lpt(list(tau_edges), [list(x) for x in lambda_edges_per_tau])
+            else:
+                lpt = [
+                    list(lambda_edges) if bool(f) else [float(lambda_edges[0]), float(lambda_edges[-1])] for f in flags
+                ]
+                tree = qrad_optimize.tree_from_lpt(list(tau_edges), lpt)
 
-    # guillotine tree: membership from the raw window, descriptor with the clamped top edge
-    tw, lw, root = tree["window_tau"], tree["window_lam"], tree["root"]
-    band_index = ts.assign_tree(inv["tau_at_lam1"], inv["wl_centers"], root, tw, lw)
-    group_tau_edges, group_lam_edges = ts.build_group_specs_tree(root, [clamped_top, float(tw[1])], lw)
-    n_groups = int(group_tau_edges.shape[0])
+        # guillotine tree: membership from the raw window, descriptor with the clamped top edge
+        tw, lw, root = tree["window_tau"], tree["window_lam"], tree["root"]
+        band_index = ts.assign_tree(inv["tau_at_lam1"], inv["wl_centers"], root, tw, lw)
+        group_tau_edges, group_lam_edges = ts.build_group_specs_tree(root, [clamped_top, float(tw[1])], lw)
+        n_groups = int(group_tau_edges.shape[0])
 
     sorted_per_bin = ts.sort_weighted_opacity_per_tau_bin(
         atm=atm,
@@ -360,6 +375,7 @@ def score_binning(
         band_index=band_index,
         group_tau_edges=group_tau_edges,
         wavelength_grid_subbins_centers=inv["wl_centers"],
+        member_span=member_span,
         write_debug_json=False,
         verbose=False,
     )
@@ -419,15 +435,18 @@ def score_binning(
         "band_index": band_index,
         "group_tau_edges": group_tau_edges,
         "group_lam_edges": group_lam_edges,
-        "q_per_band": q_per_band,
+        "poly_verts_concat": poly_verts_concat,
+        "n_verts_per_group": n_verts_per_group,
         "n_splits": int(n_splits),
     }
 
 
 def _kappa_dat_name(
-    tau_edges, lambda_edges, flags, lambda_edges_per_tau, clamped_tau, n_bands, n_splits, binning_tree=None
+    tau_edges, lambda_edges, flags, lambda_edges_per_tau, clamped_tau, n_bands, n_splits, binning_tree=None, bins=None
 ):
     """Self-describing .dat filename for a binning (delegates to tausort per mode)."""
+    if bins is not None:
+        return ts.build_kappa_dat_filename(nbands=n_bands, n_splits=n_splits, bins=bins)
     if binning_tree is not None:
         return ts.build_kappa_dat_filename(nbands=n_bands, n_splits=n_splits, binning_tree=binning_tree)
     if lambda_edges_per_tau is not None:
@@ -455,6 +474,7 @@ def save_kappa_dat(
     *,
     lambda_edges_per_tau=None,
     binning_tree=None,
+    bins=None,
     n_splits=3,
     path=None,
     min_opacity_delta=1.0,
@@ -467,33 +487,44 @@ def save_kappa_dat(
     (`kap_mean = ln(mixed)` in `[nBands, NT, Np]`). `flags` may be None in per-tau mode. `path`
     overrides the output path; otherwise a self-describing name is used (in the CWD). `model`
     selects the atmosphere the binning runs on (bare filename under models/; None -> default).
-    Returns `(written_path, descriptive_name)`.
+    Grouping precedence: `bins` > `binning_tree` > `lambda_edges_per_tau` > flags.
     """
     inv = inv_for(model)
     odf, cont, atm = inv["odf"], inv["cont"], inv["atm"]
     clamped_top = float(-np.log10(inv["tau_ross"][inv["max_height_idx"]] + 0.2))
     clamped = None
 
-    # Normalize every input mode into a guillotine tree so the tree path is the single grouping
-    # implementation. Precedence: explicit `binning_tree` > per-tau-lambda > shared-flags; the
-    # shared-flags conversion is the old tree_from_flags inlined (flagged groups subdivide along
-    # lambda, the rest span the window). The .dat filename still reflects the original mode (pt vs
-    # tree vs sl) because the untouched `binning_tree`/`lambda_edges_per_tau`/`flags` params are
-    # what _kappa_dat_name dispatches on below.
-    tree = binning_tree
-    if tree is None:
-        if lambda_edges_per_tau is not None:
-            tree = qrad_optimize.tree_from_lpt(list(tau_edges), [list(x) for x in lambda_edges_per_tau])
-        else:
-            lpt = [list(lambda_edges) if bool(f) else [float(lambda_edges[0]), float(lambda_edges[-1])] for f in flags]
-            tree = qrad_optimize.tree_from_lpt(list(tau_edges), lpt)
-        clamped = list(tau_edges)
-        clamped[0] = clamped_top
+    # Polygon bins take precedence over every tree mode. The .dat filename still reflects
+    # the original mode because the untouched `bins`/`binning_tree`/`lambda_edges_per_tau`/
+    # `flags` params are what _kappa_dat_name dispatches on below.
+    member_span = None
+    if bins is not None:
+        band_index, member_span = ts.assign_polygons(inv["tau_at_lam1"], inv["wl_centers"], bins)
+        group_tau_edges, _gl = ts.build_group_specs_polygons(bins, clamped_top)[:2]
+        n_groups = int(group_tau_edges.shape[0])
+    else:
+        # Normalize every input mode into a guillotine tree so the tree path is the single grouping
+        # implementation. Precedence: explicit `binning_tree` > per-tau-lambda > shared-flags; the
+        # shared-flags conversion is the old tree_from_flags inlined (flagged groups subdivide along
+        # lambda, the rest span the window). The .dat filename still reflects the original mode (pt vs
+        # tree vs sl) because the untouched `binning_tree`/`lambda_edges_per_tau`/`flags` params are
+        # what _kappa_dat_name dispatches on below.
+        tree = binning_tree
+        if tree is None:
+            if lambda_edges_per_tau is not None:
+                tree = qrad_optimize.tree_from_lpt(list(tau_edges), [list(x) for x in lambda_edges_per_tau])
+            else:
+                lpt = [
+                    list(lambda_edges) if bool(f) else [float(lambda_edges[0]), float(lambda_edges[-1])] for f in flags
+                ]
+                tree = qrad_optimize.tree_from_lpt(list(tau_edges), lpt)
+            clamped = list(tau_edges)
+            clamped[0] = clamped_top
 
-    tw, lw, root = tree["window_tau"], tree["window_lam"], tree["root"]
-    band_index = ts.assign_tree(inv["tau_at_lam1"], inv["wl_centers"], root, tw, lw)
-    group_tau_edges, _gl = ts.build_group_specs_tree(root, [clamped_top, float(tw[1])], lw)
-    n_groups = int(group_tau_edges.shape[0])
+        tw, lw, root = tree["window_tau"], tree["window_lam"], tree["root"]
+        band_index = ts.assign_tree(inv["tau_at_lam1"], inv["wl_centers"], root, tw, lw)
+        group_tau_edges, _gl = ts.build_group_specs_tree(root, [clamped_top, float(tw[1])], lw)
+        n_groups = int(group_tau_edges.shape[0])
 
     sorted_per_bin = ts.sort_weighted_opacity_per_tau_bin(
         atm=atm,
@@ -503,6 +534,7 @@ def save_kappa_dat(
         band_index=band_index,
         group_tau_edges=group_tau_edges,
         wavelength_grid_subbins_centers=inv["wl_centers"],
+        member_span=member_span,
         write_debug_json=False,
         verbose=False,
     )
@@ -523,7 +555,15 @@ def save_kappa_dat(
 
     comparison = ts.build_kappa_band_comparison(res, odf)
     name = _kappa_dat_name(
-        tau_edges, lambda_edges, flags, lambda_edges_per_tau, clamped, n_bands, n_splits, binning_tree=binning_tree
+        tau_edges,
+        lambda_edges,
+        flags,
+        lambda_edges_per_tau,
+        clamped,
+        n_bands,
+        n_splits,
+        binning_tree=binning_tree,
+        bins=bins,
     )
     written = str(path) if path is not None else name
     ts.write_kappa_4_band_comparison(written, comparison)
