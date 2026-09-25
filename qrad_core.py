@@ -19,6 +19,7 @@ both `webapp/server.py` and `qrad_optimize.py` can call it without an HTTP layer
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -46,6 +47,10 @@ WINDOW = (-1.0, 2.0)  # log10(tau_ross) window for the rms metric (photosphere f
 SKIP = 1440  # first N (far-UV) sub-bins skipped in the binning-diagram scatter
 
 MODELS_DIR = _REPO / "models"  # 1D atmospheres live here (ASCII: z rho p T, one row per depth)
+# Large runtime inputs (the ODF, the continuum opacities, and the data/ reference tables). They
+# ship outside the repo/image, so TAUSORT_DATA_DIR relocates them; unset -> the repo root, i.e.
+# the in-tree layout (what tausort.py main and the local dev server use).
+DATA_DIR = Path(os.environ.get("TAUSORT_DATA_DIR") or _REPO)
 DEFAULT_MODEL = "G2_1D.dat"  # the model used when a caller doesn't pick one
 
 # Per-model caches. Each model's edge-independent invariants (INV) and reference Q_rad
@@ -196,7 +201,7 @@ def reference(model=None):
         z, rho, _pre, _tem = _atm_rt(inv)
 
         # gray reference -> tau axis
-        g = read_kappa_4_band_comparison(str(_REPO / "data" / "kappa_grey.dat"))
+        g = read_kappa_4_band_comparison(str(DATA_DIR / "data" / "kappa_grey.dat"))
         q_gray, k_gray, _ = _qrad_from_table(
             inv,
             np.asarray(g.kap_mean),
@@ -208,7 +213,7 @@ def reference(model=None):
         ltau = np.log10(tau_ref)
 
         # full-ODF reference (the residual baseline)
-        f = read_kappa_4_band_comparison(str(_REPO / "data" / "kappa_fullodf.dat"))
+        f = read_kappa_4_band_comparison(str(DATA_DIR / "data" / "kappa_fullodf.dat"))
         q_full, _, _ = _qrad_from_table(
             inv,
             np.asarray(f.kap_mean),
@@ -219,7 +224,7 @@ def reference(model=None):
 
         # optional "golden standard" reference table, plotted when data/kappa_goldenS.dat is present.
         q_golden = None
-        golden_path = _REPO / "data" / "kappa_goldenS.dat"
+        golden_path = DATA_DIR / "data" / "kappa_goldenS.dat"
         if golden_path.exists():
             gd = read_kappa_4_band_comparison(str(golden_path))
             q_golden, _, _ = _qrad_from_table(
@@ -257,9 +262,9 @@ def precompute(model=None) -> dict:
             return _INV_CACHE[name]
         t0 = time.perf_counter()
         atm = ts.read_atmospheric_model(MODELS_DIR / name)
-        npy = _REPO / "ODF_format.npy"
-        odf = ts.read_odf_npy(npy) if npy.exists() else ts.read_odf_netcdf(_REPO / "ODF_nc_format.nc")
-        cont = ts.read_continuum_data(_REPO / "continuumabs.dat", odf.nbins, odf.nt, odf.np)
+        npy = DATA_DIR / "ODF_format.npy"
+        odf = ts.read_odf_npy(npy) if npy.exists() else ts.read_odf_netcdf(DATA_DIR / "ODF_nc_format.nc")
+        cont = ts.read_continuum_data(DATA_DIR / "continuumabs.dat", odf.nbins, odf.nt, odf.np)
         # Upcast to float64 (only ~16 MB) so the tau integration / Rosseland-mean reference /
         # RTE path stays float64 even when the ODF+continuum are stored as float32 — cumulative
         # sums there are precision-sensitive. The big float32 win is in the band-averaging path
@@ -437,7 +442,7 @@ def score_binning(
         "group_lam_edges": group_lam_edges,
         "poly_verts_concat": poly_verts_concat,
         "n_verts_per_group": n_verts_per_group,
-        "n_splits": int(n_splits),
+        "q_per_band": q_per_band,
     }
 
 

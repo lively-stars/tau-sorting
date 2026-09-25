@@ -103,7 +103,16 @@
     <label>&lambda; cuts per &tau;-group &nbsp;<span class="hint">(log₁₀ &lambda;/Å; outer window fixed at 3–5)</span></label>
     <div id="pg_host"></div>
     <div class="hint">Each &tau; group carries its own wavelength cut(s). <b>+</b> adds a cut, <b>&times;</b> removes one; a group with no cuts is unsplit. Edits recompute.</div>
-
+    <div class="hint">Polygon bins (non-rectangular groups) below override the &tau;/&lambda; editors when applied.</div>
+    <label>Polygon bins (non-rectangular groups)</label> (non-rectangular groups)</label>
+    <textarea id="polyjson" rows="6" spellcheck="false" style="width:100%; font-family:monospace; font-size:11px"></textarea>
+    <div class="opt-row">
+      <button id="polyapply" class="secondary">Apply polygons</button>
+      <button id="polyclear" class="secondary">Clear</button>
+      <button id="polyexample" class="secondary">Example</button>
+      <label class="secondary" style="cursor:pointer">Load file…<input type="file" id="polyfile" accept=".json,application/json" style="display:none"></label>
+    </div>
+    <div id="polystatus" class="hint">Paste a {"bins": [...]} spec or load a JSON file, then Apply.</div>
     <label>Min opacity split &nbsp;<span class="hint">(&Delta; ratio per &tau;-&lambda; group)</span></label>
     <div class="opt-row">
       <span class="opt-n">split a group into low/mid/high only if max/min &kappa; &ge;
@@ -193,6 +202,8 @@ let LAM_WINDOW = [3, 5];      // shared outer λ window [lmin, lmax] (log₁₀ 
 let DEFAULT_CUTS = [3.8];     // interior λ cuts seeded into every new τ group (from /api/init)
 let PG_LAMBDA = null;   // per-tau-group λ edges; ALWAYS length == τ-group count (always-on editor)
 let BINNING_TREE = null;  // active general 2D guillotine tree (non-null = tree-mode overlay)
+let POLYGON_BINS = null;  // raw polygon-bin spec object {"bins":[...]} (non-null = polygon overlay)
+const isPolygonMode = () => !!POLYGON_BINS;
 let _editTimer = null;  // debounce for auto-recompute after editing the τ edges
 const edgesValid = a => a.length >= 2 && a.every(Number.isFinite) && a.every((v,i)=>i===0 || v>a[i-1]);
 
@@ -279,13 +290,48 @@ function adaptPgToTauCount(nTau) {
 // mode by editing the τ box. Produced by the optimizer; read-only.
 function setTree(tree) {
   BINNING_TREE = tree;
+  POLYGON_BINS = null;
   $('pg_host').innerHTML = `<div class="hint" style="margin-top:4px"><b>general 2D binning active</b> — `
     + `${_countLeaves(tree.root)} leaf groups (edit the &tau; box to exit).</div>`;
+}
+// Enter polygon overlay: raw spec drives compute/download; per-group editor replaced by a note.
+function setPolygons(spec) {
+  POLYGON_BINS = spec;
+  BINNING_TREE = null;
+  $('pg_host').innerHTML = `<div class="hint" style="margin-top:4px"><b>polygon bins active</b> — `
+    + `${spec.bins.length} bins (Clear to exit).</div>`;
 }
 function clearTree() {
   if (!BINNING_TREE) return;
   BINNING_TREE = null;
   renderPgGrid();   // restore the always-on per-group editor
+}
+function clearPolygons() {
+  if (!POLYGON_BINS) return;
+  POLYGON_BINS = null;
+  renderPgGrid();
+}
+// Polygon editor: Apply parses the textarea JSON (no POST), requires a non-empty bins array,
+// then enters polygon mode + computes. Example fills a 3-bin L-spec; file input loads text.
+const POLY_EXAMPLE = JSON.stringify({bins: [
+  {vertices: [{tau:3.8,lam:3},{tau:7,lam:3},{tau:7,lam:5},{tau:3.8,lam:5}]},
+  {vertices: [{tau:3.8,lam:3},{tau:3.8,lam:3.8},{tau:2.885,lam:3.8},{tau:2.885,lam:4.1},{tau:-0.63,lam:4.1},{tau:-0.63,lam:3}]},
+  {vertices: [{tau:2.885,lam:3.8},{tau:3.8,lam:3.8},{tau:3.8,lam:5},{tau:-0.63,lam:5},{tau:-0.63,lam:4.1},{tau:2.885,lam:4.1}]}
+]}, null, 1);
+function setPolyStatus(msg, err=false){ const e=$('polystatus'); e.textContent=msg; e.style.color = err ? 'var(--bad)' : ''; }
+function polyApply() {
+  let obj;
+  try { obj = JSON.parse($('polyjson').value); }
+  catch(e){ return setPolyStatus('invalid JSON: ' + e.message, true); }
+  if (!obj || !Array.isArray(obj.bins) || !obj.bins.length) return setPolyStatus('spec needs a non-empty "bins" array', true);
+  setPolygons(obj);
+  setPolyStatus(`${obj.bins.length} polygon bins active`);
+  compute();
+}
+function polyClear() {
+  clearPolygons();
+  setPolyStatus('polygon bins cleared');
+  compute();
 }
 function _countLeaves(node) {
   return (node.leaf || !node.axis) ? 1 : _countLeaves(node.lo) + _countLeaves(node.hi);
@@ -354,7 +400,8 @@ async function compute() {
   const body = {tau_edges:tau, lambda_edges:LAM_WINDOW.slice(), model:$('model').value,
                 window_lo:+$('win_lo').value, window_hi:+$('win_hi').value,
                 min_opacity_delta: parseFloat($('min_opacity_delta').value) || 1};
-  if (BINNING_TREE) body.binning_tree = BINNING_TREE;
+  if (POLYGON_BINS) body.bins = POLYGON_BINS;
+  else if (BINNING_TREE) body.binning_tree = BINNING_TREE;
   else body.lambda_edges_per_tau = PG_LAMBDA;
   $('go').disabled = true; setStatus('computing… (binning + radiative transfer)');
   try {
@@ -390,6 +437,7 @@ function stopQBar(){
 }
 
 async function qoptStart() {
+  if (POLYGON_BINS) { setQStatus('clear polygon bins before optimizing', true); return; }
   let tau;
   try { tau = parseEdges($('tau').value); }
   catch(e){ return setQStatus('could not parse edges', true); }
@@ -464,7 +512,8 @@ async function downloadKappa() {
   adaptPgToTauCount(tau.length - 1);
   const body = {tau_edges:tau, lambda_edges:LAM_WINDOW.slice(), model:$('model').value,
                 min_opacity_delta: parseFloat($('min_opacity_delta').value) || 1};
-  if (BINNING_TREE) body.binning_tree = BINNING_TREE;
+  if (POLYGON_BINS) body.bins = POLYGON_BINS;
+  else if (BINNING_TREE) body.binning_tree = BINNING_TREE;
   else body.lambda_edges_per_tau = PG_LAMBDA;
   $('dl').disabled = true; setStatus('building kappa table…');
   try {
@@ -508,6 +557,19 @@ const groupRgba = (g, a) => {
   const h = PAL[g>=0 ? g % PAL.length : 0].replace('#','');
   return `rgba(${parseInt(h.slice(0,2),16)},${parseInt(h.slice(2,4),16)},${parseInt(h.slice(4,6),16)},${a})`;
 };
+// One Plotly path shape per polygon bin: concat rows are [tau, lam], so x=lam (col 1), y=tau (col 0).
+function polyShapes(concat, counts) {
+  const shapes = [];
+  let off = 0;
+  counts.forEach((n, g) => {
+    const verts = concat.slice(off, off + n); off += n;
+    if (!verts.length) return;
+    const path = 'M ' + verts.map(p => `${p[1]},${p[0]}`).join(' L ') + ' Z';
+    shapes.push({type:'path', xref:'x', yref:'y', path,
+      line:{color:groupColor(g), width:2}, fillcolor:groupColor(g)+'22', layer:'above'});
+  });
+  return shapes;
+}
 
 let QLASTDIAG = null;   // rms of the last live-drawn optimizer diagram (skip redundant redraws)
 // Live-update ONLY the top binning diagram (sub-bin colors + group boxes + range) from the
@@ -539,13 +601,13 @@ function render(d){
     marker:{size:3, color:ptColor, opacity:0.8}, hoverinfo:'skip', showlegend:false,
     xaxis:'x', yaxis:'y',
   };
-  const shapes = d.group_tau_edges.map((te,g)=>{
+  const shapes = (d.poly_verts_concat && d.n_verts_per_group) ? polyShapes(d.poly_verts_concat, d.n_verts_per_group) : d.group_tau_edges.map((te,g)=>{
     const le = d.group_lam_edges[g];
     return {type:'rect', xref:'x', yref:'y', x0:le[0], x1:le[1], y0:te[0], y1:te[1],
             line:{color:'rgba(240,244,250,0.7)', width:1}, fillcolor:'rgba(0,0,0,0)', layer:'above'};
   });
   // auto-scale the binning diagram so every sub-bin AND every group box is visible (x=log λ, y=−log τ)
-  const _allx = d.bin_x.concat(d.group_lam_edges.flat()), _ally = d.bin_y.concat(d.group_tau_edges.flat());
+  const _allx = (d.poly_verts_concat && d.n_verts_per_group) ? d.bin_x.concat(d.poly_verts_concat.map(p=>p[1])) : d.bin_x.concat(d.group_lam_edges.flat()), _ally = (d.poly_verts_concat && d.n_verts_per_group) ? d.bin_y.concat(d.poly_verts_concat.map(p=>p[0])) : d.bin_y.concat(d.group_tau_edges.flat());
   const _xlo = Math.min(..._allx), _xhi = Math.max(..._allx), _ylo = Math.min(..._ally), _yhi = Math.max(..._ally);
   const _xpad = ((_xhi - _xlo) || 1) * 0.02, _ypad = ((_yhi - _ylo) || 1) * 0.03;
   // shade the scoring window (where rms/max are measured) on the Q/ρ and residual panels
@@ -686,6 +748,7 @@ function switchTab(tab){
 // re-render the per-group editor only when the count actually changed (keeps focus while typing).
 const onEdgeEdit = () => {
   clearTree();
+  clearPolygons();
   const tauArr = parseEdges($('tau').value);
   if (tauArr.length >= 2 && adaptPgToTauCount(tauArr.length - 1)) renderPgGrid();
   // auto-recompute once edits settle and are valid (debounced; compute is ~1.5-3s)
@@ -707,6 +770,17 @@ document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () =>
 $('qopt').addEventListener('click', qoptStart);
 $('qcancel').addEventListener('click', qoptCancel);
 $('dl').addEventListener('click', downloadKappa);
+$('polyapply').addEventListener('click', polyApply);
+$('polyclear').addEventListener('click', polyClear);
+$('polyexample').addEventListener('click', () => { $('polyjson').value = POLY_EXAMPLE; polyApply(); });
+$('polyfile').addEventListener('change', e => {
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+  const rd = new FileReader();
+  rd.onload = () => { $('polyjson').value = String(rd.result || ''); polyApply(); };
+  rd.readAsText(f);
+  e.target.value = '';
+});
 $('tau').addEventListener('keydown', e=>{ if(e.key==='Enter') compute(); });
 
 // Draggable splitter: resize the controls column (persisted). Reflows the active chart on release.
