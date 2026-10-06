@@ -33,7 +33,6 @@ sys.path.insert(0, str(_REPO))
 
 import qrad_core as qc  # noqa: E402
 import qrad_optimize as qopt  # noqa: E402
-import tausort as ts  # noqa: E402
 
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8771"))
@@ -120,36 +119,66 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
             }
         )
 
+    columns = bool(opt.get("columns", False))
+    common = dict(
+        model=model,
+        metric=opt["metric"],
+        max_seconds=opt["max_seconds"],
+        max_evals=opt["max_evals"],
+        max_groups=opt["max_groups"],
+        min_gap_tau=opt["min_gap_tau"],
+        min_gap_lam=opt["min_gap_lam"],
+        grow_tol_rel=opt["grow_tol_rel"],
+        window=opt["window"],
+        target_rms=opt["target_rms"],
+        plateau_evals=opt["plateau_evals"],
+        plateau_rel=opt["plateau_rel"],
+        min_opacity_delta=opt["min_opacity_delta"],
+        on_eval=on_eval,
+        on_progress=on_progress,
+        should_stop=lambda: _QOPT["cancel"],
+    )
     try:
-        _QOPT["result"] = qopt.optimize_qrad(
-            tau_edges,
-            lambda_edges,
-            flags=flags,
-            model=model,
-            opt_tau=opt["opt_tau"],
-            opt_lambda=opt["opt_lambda"],
-            opt_flags=opt["opt_flags"],
-            grow=opt["grow"],
-            metric=opt["metric"],
-            beam_width=opt["beam_width"],
-            max_seconds=opt["max_seconds"],
-            max_evals=opt["max_evals"],
-            max_groups=opt["max_groups"],
-            min_gap_tau=opt["min_gap_tau"],
-            min_gap_lam=opt["min_gap_lam"],
-            grow_tol_rel=opt["grow_tol_rel"],
-            window=opt["window"],
-            target_rms=opt["target_rms"],
-            plateau_evals=opt["plateau_evals"],
-            plateau_rel=opt["plateau_rel"],
-            lambda_edges_per_tau=opt["lambda_edges_per_tau"],
-            tree=opt["tree"],
-            binning_tree=opt["binning_tree"],
-            min_opacity_delta=opt["min_opacity_delta"],
-            on_eval=on_eval,
-            on_progress=on_progress,
-            should_stop=lambda: _QOPT["cancel"],
-        )
+        if columns:
+            n_cols = len(lambda_edges) - 1
+            tpl = opt.get("tau_per_lambda")
+            cols_seed = [list(map(float, c)) for c in tpl] if tpl else [list(map(float, tau_edges))] * n_cols
+            _QOPT["result"] = qopt.optimize_columns(
+                lambda_edges,
+                cols_seed,
+                grow=opt["grow"],
+                **common,
+            )
+        else:
+            _QOPT["result"] = qopt.optimize_qrad(
+                tau_edges,
+                lambda_edges,
+                flags=flags,
+                model=model,
+                opt_tau=opt["opt_tau"],
+                opt_lambda=opt["opt_lambda"],
+                opt_flags=opt["opt_flags"],
+                grow=opt["grow"],
+                metric=opt["metric"],
+                beam_width=opt["beam_width"],
+                max_seconds=opt["max_seconds"],
+                max_evals=opt["max_evals"],
+                max_groups=opt["max_groups"],
+                min_gap_tau=opt["min_gap_tau"],
+                min_gap_lam=opt["min_gap_lam"],
+                grow_tol_rel=opt["grow_tol_rel"],
+                window=opt["window"],
+                target_rms=opt["target_rms"],
+                plateau_evals=opt["plateau_evals"],
+                plateau_rel=opt["plateau_rel"],
+                lambda_edges_per_tau=opt["lambda_edges_per_tau"],
+                tau_per_lambda=opt.get("tau_per_lambda"),
+                tree=opt["tree"],
+                min_opacity_delta=opt["min_opacity_delta"],
+                on_eval=on_eval,
+                on_progress=on_progress,
+                should_stop=lambda: _QOPT["cancel"],
+            )
     except Exception as e:
         traceback.print_exc()
         _QOPT["error"] = f"{type(e).__name__}: {e}"
@@ -163,8 +192,8 @@ def compute(
     split_lambda,
     model,
     lambda_edges_per_tau=None,
+    tau_per_lambda=None,
     binning_tree=None,
-    bins=None,
     window=None,
     min_opacity_delta=1.0,
 ):
@@ -172,16 +201,24 @@ def compute(
 
     `model` selects the atmosphere the binning + RTE run on (validated file under models/).
     `window` (log10 tau_Ross (lo,hi)) narrows the rms/max_abs scoring range (None -> default).
-    Grouping (highest priority first): `bins` (polygon bins), then `binning_tree`
-    (general 2D guillotine), then `lambda_edges_per_tau` (per-tau-group lambda), else the
-    shared-lambda + split-flag model.
+    Grouping (highest priority first): `binning_tree` (general 2D guillotine),
+    then `tau_per_lambda` (per-column tau), then `lambda_edges_per_tau` (per-tau-group lambda),
+    else the shared-lambda + split-flag model.
     """
     with _LOCK:
-        if bins is not None:
-            r = qc.score_binning(None, None, None, model, bins=bins, window=window, min_opacity_delta=min_opacity_delta)
-        elif binning_tree is not None:
+        if binning_tree is not None:
             r = qc.score_binning(
                 None, None, None, model, binning_tree=binning_tree, window=window, min_opacity_delta=min_opacity_delta
+            )
+        elif tau_per_lambda is not None:
+            r = qc.score_binning(
+                None,
+                lambda_edges,
+                None,
+                model,
+                tau_per_lambda=tau_per_lambda,
+                window=window,
+                min_opacity_delta=min_opacity_delta,
             )
         elif lambda_edges_per_tau is not None:
             r = qc.score_binning(
@@ -236,12 +273,6 @@ def compute(
             "bin_group": bg.astype(int).tolist(),
             "group_tau_edges": r["group_tau_edges"].tolist(),
             "group_lam_edges": r["group_lam_edges"].tolist(),
-            "poly_verts_concat": (
-                None if r["poly_verts_concat"] is None else np.asarray(r["poly_verts_concat"]).tolist()
-            ),
-            "n_verts_per_group": (
-                None if r["n_verts_per_group"] is None else np.asarray(r["n_verts_per_group"]).tolist()
-            ),
             # per-band Q/ρ (signed) over the displayed depth slice — drives the 4th panel's
             # stacked-area decomposition; the band axis aligns 1:1 with (group, split) via n_splits.
             "q_per_band": (r["q_per_band"][:, idx] / rho[idx]).tolist(),
@@ -354,27 +385,18 @@ class Handler(BaseHTTPRequestHandler):
         try:
             n = int(self.headers.get("Content-Length", 0))
             req = json.loads(self.rfile.read(n) or b"{}")
-            bins_spec = req.get("bins") or None
-            bins = ts.parse_bins_json(json.dumps(bins_spec)) if bins_spec is not None else None
-            if bins is not None:
-                tau_edges = [float(x) for x in req.get("tau_edges", [])]
-                lambda_edges = [float(x) for x in req.get("lambda_edges", [])]
-            else:
-                tau_edges = [float(x) for x in req["tau_edges"]]
-                lambda_edges = [float(x) for x in req["lambda_edges"]]
-            if bins is None:
-                if len(tau_edges) < 2:
-                    raise ValueError("need at least 2 tau edges")
-                if len(lambda_edges) < 2:
-                    raise ValueError("need at least 2 lambda edges")
-                if any(tau_edges[i] >= tau_edges[i + 1] for i in range(len(tau_edges) - 1)):
-                    raise ValueError("tau edges must be strictly increasing")
-                if any(lambda_edges[i] >= lambda_edges[i + 1] for i in range(len(lambda_edges) - 1)):
-                    raise ValueError("lambda edges must be strictly increasing")
+            tau_edges = [float(x) for x in req["tau_edges"]]
+            lambda_edges = [float(x) for x in req["lambda_edges"]]
+            if len(tau_edges) < 2:
+                raise ValueError("need at least 2 tau edges")
+            if len(lambda_edges) < 2:
+                raise ValueError("need at least 2 lambda edges")
+            if any(tau_edges[i] >= tau_edges[i + 1] for i in range(len(tau_edges) - 1)):
+                raise ValueError("tau edges must be strictly increasing")
+            if any(lambda_edges[i] >= lambda_edges[i + 1] for i in range(len(lambda_edges) - 1)):
+                raise ValueError("lambda edges must be strictly increasing")
             model = _resolve_model(req)
             t0 = time.perf_counter()
-            if self.path == "/api/optimize_qrad" and req.get("bins"):
-                raise ValueError("polygon bins cannot be optimized; clear them first")
             if self.path == "/api/optimize_qrad":
                 with _QOPT_LOCK:
                     if _QOPT["running"]:
@@ -405,8 +427,12 @@ class Handler(BaseHTTPRequestHandler):
                         "opt_lambda": bool(req.get("opt_lambda", True)),
                         "opt_flags": bool(req.get("opt_flags", True)),
                         "grow": bool(req.get("grow", True)),
-                        # per-group-lambda warm start (re-running keeps refining the current cuts)
+                        # per-column-tau warm start (re-running keeps refining the current cuts)
+                        "tau_per_lambda": req.get("tau_per_lambda") or None,
+                        # per-group-lambda warm start (legacy)
                         "lambda_edges_per_tau": req.get("lambda_edges_per_tau") or None,
+                        # columns-constrained mode (own grow/polish path, stays in the column family)
+                        "columns": bool(req.get("columns", False)),
                         # general 2D guillotine mode + warm start (a {window_tau, window_lam, root} tree)
                         "tree": bool(req.get("tree", False)),
                         "binning_tree": req.get("binning_tree") or None,
@@ -435,6 +461,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/kappa_dat":
                 # Build the current binning's kappa table and stream it back as a download.
+                tcols = req.get("tau_per_lambda") or None
                 lpt = req.get("lambda_edges_per_tau") or None
                 btree = req.get("binning_tree") or None
                 min_od = float(req.get("min_opacity_delta", 1.0) or 1.0)
@@ -442,13 +469,19 @@ class Handler(BaseHTTPRequestHandler):
                 os.close(fd)
                 try:
                     with _LOCK:
-                        if bins is not None:
-                            _w, name = qc.save_kappa_dat(
-                                None, None, None, model, bins=bins, path=tmp, min_opacity_delta=min_od
-                            )
-                        elif btree is not None:
+                        if btree is not None:
                             _w, name = qc.save_kappa_dat(
                                 None, None, None, model, binning_tree=btree, path=tmp, min_opacity_delta=min_od
+                            )
+                        elif tcols is not None:
+                            _w, name = qc.save_kappa_dat(
+                                None,
+                                lambda_edges,
+                                None,
+                                model,
+                                tau_per_lambda=tcols,
+                                path=tmp,
+                                min_opacity_delta=min_od,
                             )
                         elif lpt is not None:
                             _w, name = qc.save_kappa_dat(
@@ -474,6 +507,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_download(data, name)
                 return
             split_lambda = req.get("split_lambda") or None
+            tcols = req.get("tau_per_lambda") or None
             lpt = req.get("lambda_edges_per_tau") or None
             btree = req.get("binning_tree") or None
             out = compute(
@@ -482,8 +516,8 @@ class Handler(BaseHTTPRequestHandler):
                 split_lambda,
                 model,
                 lambda_edges_per_tau=lpt,
+                tau_per_lambda=tcols,
                 binning_tree=btree,
-                bins=bins,
                 window=_window(req),
                 min_opacity_delta=float(req.get("min_opacity_delta", 1.0) or 1.0),
             )

@@ -50,25 +50,20 @@ class TestKappaDatExport(unittest.TestCase):
         self.assertTrue(fn.startswith("kappa_15band_lm2_sl101_sp3_tau_"))
         self.assertIn("_lam_3_3.8_5.dat", fn)
 
-    def test_polygon_filename_encoding(self):
-        # Polygon mode: bin count + hash of the rounded spec; stable per spec,
-        # different when a cut moves.
-        from tausort import parse_bins_json
-
-        def _rect(t0, t1, x0, x1):
-            return [(t0, x0), (t0, x1), (t1, x1), (t1, x0)]
-
-        import json
-
-        def _spec(*bins):
-            return json.dumps({"bins": [{"vertices": [{"tau": t, "lam": x} for t, x in v]} for v in bins]})
-
-        bins = parse_bins_json(_spec(_rect(0.0, 1.0, 3.0, 4.0), _rect(1.0, 2.0, 3.0, 4.0), _rect(0.0, 2.0, 4.0, 5.0)))
-        fn1 = build_kappa_dat_filename(nbands=9, n_splits=3, bins=bins)
-        self.assertEqual(fn1, build_kappa_dat_filename(nbands=9, n_splits=3, bins=bins))
-        self.assertRegex(fn1, r"^kappa_9band_poly3_sp3_[0-9a-f]{8}\.dat$")
-        moved = parse_bins_json(_spec(_rect(0.0, 1.0, 3.0, 4.1), _rect(1.0, 2.0, 3.0, 4.1), _rect(0.0, 2.0, 4.1, 5.0)))
-        self.assertNotEqual(fn1, build_kappa_dat_filename(nbands=9, n_splits=3, bins=moved))
+    def test_columns_filename_encoding(self):
+        # Columns mode: shared lambda edges + each column's interior tau cuts.
+        tcols = [[-0.63, 0.1, 1.0, 3.2, 7.0], [-0.63, 0.8, 1.6, 2.5, 7.0]]
+        fn1 = build_kappa_dat_filename(nbands=21, n_splits=3, lambda_bin_edges=[3.0, 3.8, 5.0], tau_per_lambda=tcols)
+        self.assertEqual(
+            fn1,
+            build_kappa_dat_filename(nbands=21, n_splits=3, lambda_bin_edges=[3.0, 3.8, 5.0], tau_per_lambda=tcols),
+        )
+        self.assertRegex(fn1, r"^kappa_21band_col_sp3_lam_3_3\.8_5_taus_0\.1\+1\+3\.2-0\.8\+1\.6\+2\.5\.dat$")
+        moved = [[-0.63, 0.2, 1.0, 3.2, 7.0], [-0.63, 0.8, 1.6, 2.5, 7.0]]
+        self.assertNotEqual(
+            fn1,
+            build_kappa_dat_filename(nbands=21, n_splits=3, lambda_bin_edges=[3.0, 3.8, 5.0], tau_per_lambda=moved),
+        )
 
     def test_pack_shapes_logs_axes(self):
         nt, npr, nb = 5, 4, 6

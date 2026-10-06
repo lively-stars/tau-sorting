@@ -53,28 +53,25 @@ uv run python tausort.py main \
     --tau-bin-edges=-0.63 --tau-bin-edges=0.3488 --tau-bin-edges=1.2275 --tau-bin-edges=2.885 --tau-bin-edges=7 \
     --lambda-per-tau=3,3.82,5 --lambda-per-tau=3,3.65,5 --lambda-per-tau=3,5 --lambda-per-tau=3,3.8,5
 
-# Polygon bins (non-rectangular groups): each bin is exactly one simple rectilinear polygon in
-# the (−log10 τ, log10 λ) plane — the λ cut may differ between adjacent τ layers (L-/staircase
-# bins). Mutually exclusive with --split-lambda/--lambda-per-tau; --tau-bin-edges/--lambda-bin-edges
-# are ignored in this mode.
-# Schema (same object for --bins-file and --bins): {"bins": [{"vertices": [{"tau": y, "lam": x}, ...]}]}
-# with vertices along the boundary (CW or CCW, closing edge implicit, first vertex not repeated).
-# Validation: non-empty bins; ≥4 vertices per bin; exactly keys tau/lam, finite floats; every edge
-# rectilinear (exactly one coordinate changes) and non-zero-length; simple region (slab area equals
-# |shoelace|); pairwise bin overlap rejected. Points outside every polygon are unassigned (-1).
-# The .npy gains poly_verts_concat (n_verts_total, 2) + n_verts_per_group (n_bins,); the .dat is
-# named kappa_<nBands>band_poly<n_bins>_sp<n_splits>_<8hex>.dat (hash of the rounded spec).
-uv run python tausort.py main --bins-file bins.json
-uv run python tausort.py main --bins '{"bins": [{"vertices": [{"tau": 3.8, "lam": 3.0}, {"tau": 7.0, "lam": 3.0}, {"tau": 7.0, "lam": 5.0}, {"tau": 3.8, "lam": 5.0}]}]}'
+# Per-lambda-column tau (columns mode): first set the λ split, then give each λ column its
+# OWN τ stack (independent counts allowed; all columns share the outer τ window) — repeat
+# --tau-per-lambda once per λ column. Here 2 columns cut at 3.8; left column has 4 τ groups,
+# right has 3 (T-junctions where the stacks disagree are fine — every bin stays a rectangle).
+# Mutually exclusive with --split-lambda/--lambda-per-tau.
+uv run python tausort.py main \
+    --lambda-bin-edges 3 --lambda-bin-edges 3.8 --lambda-bin-edges 5 \
+    --tau-per-lambda=-0.63,0.1,1.0,3.2,7 --tau-per-lambda=-0.63,0.8,2.5,7
 ```
 
 Key flags: `--tau-bin-edges` (repeat once per edge), `--lambda-bin-edges` (log10 Å; ≥3 edges
 turns on the wavelength dimension), `--split-lambda` (a 0/1 string, one digit per tau-group;
-selects the split-flag mode; mutually exclusive with `--lambda-per-tau`), `--lambda-per-tau`
-(repeat once per tau-group, each a comma-separated edge list — per-group wavelength splits;
-mutually exclusive with `--split-lambda`), and `--refine-mid/--no-refine-mid`. The three modes
-all seed the same guillotine-tree grouping (see CLAUDE.md → "Outputs"); see [Sorted-opacity
-segmentation flags](#sorted-opacity-segmentation-flags) below for `--refine-mid`.
+selects the split-flag mode; mutually exclusive with `--lambda-per-tau`/`--tau-per-lambda`),
+`--lambda-per-tau` (repeat once per tau-group, each a comma-separated edge list — per-group
+wavelength splits; mutually exclusive with `--split-lambda`/`--tau-per-lambda`),
+`--tau-per-lambda` (repeat once per λ column, each a comma-separated τ edge list — per-column
+τ stacks with independent counts; mutually exclusive with `--split-lambda`/`--lambda-per-tau`),
+and `--refine-mid/--no-refine-mid`. All modes seed the same guillotine-tree grouping
+(see CLAUDE.md → "Outputs"); see [Sorted-opacity segmentation flags](#sorted-opacity-segmentation-flags) below for `--refine-mid`.
 
 ### 2. Validate tables — `compare_Qrad_from_kappa.py`
 
@@ -183,6 +180,13 @@ uv run python qrad_optimize.py \
 uv run python qrad_optimize.py \
     --tau-bin-edges=-0.63 --tau-bin-edges=0.35 --tau-bin-edges=1.23 --tau-bin-edges=2.885 --tau-bin-edges=7 \
     --lambda-bin-edges 3 --lambda-bin-edges 5 --per-group-lambda --max-seconds 300
+
+# columns-constrained (--columns): λ-cut count fixed, each λ column keeps its own τ stack.
+# Optimizes cut positions + per-column grow/prune without ever leaving the column family:
+uv run python qrad_optimize.py --columns \
+    --lambda-bin-edges 3 --lambda-bin-edges 3.8 --lambda-bin-edges 5 \
+    --tau-per-lambda=-0.63,0.1,1.0,3.2,7 --tau-per-lambda=-0.63,0.8,1.6,2.5,7 \
+    --max-seconds 1800 --save-dat
 ```
 
 The optimizer first seeds a tree from the inputs, then **grows** it — as a non-greedy

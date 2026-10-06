@@ -656,7 +656,7 @@ class TestMainGroupingDispatch(unittest.TestCase):
 
     def test_single_cell_uniform(self):
         tau = [-0.63, 0.15, 1.5, 3.8, 7.0]
-        gi = ts._resolve_grouping_inputs(tau, [3.0, 5.0], None, [])
+        gi = ts._resolve_grouping_inputs(tau, [3.0, 5.0], None, [], [])
         self.assertEqual(gi["mode"], "uniform")
         self.assertIsNone(gi["split_flags"])
         self.assertIsNone(gi["lambda_edges_per_tau"])
@@ -666,7 +666,7 @@ class TestMainGroupingDispatch(unittest.TestCase):
 
     def test_split_flag(self):
         tau = [-0.63, 0.35, 1.23, 2.89, 7.0]  # n_tau = 4
-        gi = ts._resolve_grouping_inputs(tau, [3.0, 3.8, 5.0], "1010", [])
+        gi = ts._resolve_grouping_inputs(tau, [3.0, 3.8, 5.0], "1010", [], [])
         self.assertEqual(gi["mode"], "split-lambda")
         self.assertEqual(gi["split_flags"], [True, False, True, False])
         # flagged groups subdivide into the lambda cells; unsplit groups span [3, 5]
@@ -680,7 +680,7 @@ class TestMainGroupingDispatch(unittest.TestCase):
     def test_per_tau_lambda(self):
         tau = [-0.63, 0.3488, 1.2275, 2.885, 7.0]  # n_tau = 4
         specs = ["3,3.82,5", "3,3.65,5", "3,5", "3,3.8,5"]
-        gi = ts._resolve_grouping_inputs(tau, [3.0, 5.0], None, specs)
+        gi = ts._resolve_grouping_inputs(tau, [3.0, 5.0], None, specs, [])
         self.assertEqual(gi["mode"], "per-tau-lambda")
         self.assertIsNone(gi["split_flags"])
         self.assertEqual(gi["lambda_bin_edges"], [3.0, 5.0])  # outer window
@@ -691,6 +691,35 @@ class TestMainGroupingDispatch(unittest.TestCase):
         )
         n_groups = self._verify(gi, tau, seed=3)
         self.assertEqual(n_groups, 2 + 2 + 1 + 2)  # (len(edges_k) - 1) per group
+
+    def test_columns(self):
+        lam = [3.0, 3.8, 5.0]
+        specs = ["-0.63,0.1,1.0,3.2,7", "-0.63,0.8,1.6,2.5,7"]
+        gi = ts._resolve_grouping_inputs([-0.63, 7.0], lam, None, [], specs)
+        self.assertEqual(gi["mode"], "columns")
+        self.assertEqual(gi["tree_kind"], "columns")
+        self.assertIsNone(gi["split_flags"])
+        self.assertIsNone(gi["lambda_edges_per_tau"])
+        self.assertEqual(
+            gi["tau_per_lambda"],
+            [[-0.63, 0.1, 1.0, 3.2, 7.0], [-0.63, 0.8, 1.6, 2.5, 7.0]],
+        )
+        # columns path: tree_from_columns -> assign_tree + build_group_specs_tree.
+        tree = qo.tree_from_columns(list(lam), gi["tau_per_lambda"])
+        tw, lw = tree["window_tau"], tree["window_lam"]
+        rng = np.random.default_rng(4)
+        n = 6000
+        tv, wl = self._subbins(rng, n, tw[0], tw[1], lw[0], lw[1])
+        bi = ts.assign_tree(tv, wl, tree["root"], tw, lw)
+        gte, gle = ts.build_group_specs_tree(tree["root"], [tw[0], tw[1]], lw)
+        self.assertGreater((bi >= 0).sum(), n * 0.9)
+        xs = np.log10(wl * 1e8)
+        ys = -np.log10(np.clip(tv, 1e-300, None))
+        for i in np.flatnonzero(bi >= 0):
+            te, le = gte[bi[i]], gle[bi[i]]
+            self.assertTrue(te[0] <= ys[i] < te[1], (i, te.tolist(), ys[i]))
+            self.assertTrue(le[0] <= xs[i] < le[1], (i, le.tolist(), xs[i]))
+        self.assertEqual(gte.shape[0], 4 + 4)  # (len(edges_k) - 1) per column
 
 
 class TestFlatParamShim(unittest.TestCase):

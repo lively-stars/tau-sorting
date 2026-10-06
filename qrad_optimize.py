@@ -51,6 +51,7 @@ def _rss_mb() -> float:
     except Exception:
         pass
     import resource
+
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
 
 
@@ -58,6 +59,7 @@ def _deep_size_mb(obj, _seen=None) -> float:
     """Approximate deep memory (MB) of a structure of dicts/lists/tuples/sets/scalars/ndarrays.
     Shares (same sub-node referenced by many parents) are counted once via id-dedup."""
     import sys as _sys
+
     if _seen is None:
         _seen = set()
     oid = id(obj)
@@ -74,6 +76,7 @@ def _deep_size_mb(obj, _seen=None) -> float:
         for v in obj:
             s += _deep_size_mb(v, _seen)
     return s / 1e6
+
 
 # --- defaults -------------------------------------------------------------------
 MIN_GAP_TAU = 0.15  # min spacing between tau edges [-log10 tau], keeps groups from collapsing
@@ -311,6 +314,43 @@ def _lam_chain(lam_edges):
     for c in reversed([float(v) for v in lam_edges[1:-1]]):
         node = {"axis": "lam", "at": c, "lo": {"leaf": True}, "hi": node}
     return node
+
+
+def _tau_chain(tau_edges):
+    """Right-leaning tau chain over interior cuts; a bare leaf when there is no split."""
+    node = {"leaf": True}
+    for c in reversed([float(v) for v in tau_edges[1:-1]]):
+        node = {"axis": "tau", "at": c, "lo": {"leaf": True}, "hi": node}
+    return node
+
+
+def tree_from_columns(lambda_edges, tau_edges_per_lambda) -> dict:
+    """Convert a lambda-column binning to a guillotine tree (lambda cuts at the root,
+    a tau chain per column). Each column carries its OWN tau edges (independent counts
+    allowed); all columns share the outer [tlo, thi] tau window. Leaves enumerate in
+    lambda-major DFS order (column 0's tau stack first)."""
+    lam = [float(e) for e in lambda_edges]
+    if len(lam) < 2:
+        raise ValueError(f"need >= 2 lambda edges, got {lam}")
+    cols = [[float(v) for v in e] for e in tau_edges_per_lambda]
+    if len(cols) != len(lam) - 1:
+        raise ValueError(f"{len(cols)} tau columns for {len(lam) - 1} lambda cells")
+    tlo = cols[0][0]
+    thi = cols[0][-1]
+    for k, e in enumerate(cols):
+        if len(e) < 2:
+            raise ValueError(f"column {k}: need >= 2 tau edges, got {e}")
+        if any(e[i] >= e[i + 1] for i in range(len(e) - 1)):
+            raise ValueError(f"column {k}: tau edges must be strictly increasing, got {e}")
+        if e[0] != tlo or e[-1] != thi:
+            raise ValueError(f"column {k}: outer tau window {e[0], e[-1]} must match column 0 {[tlo, thi]}")
+    if any(lam[i] >= lam[i + 1] for i in range(len(lam) - 1)):
+        raise ValueError(f"lambda edges must be strictly increasing, got {lam}")
+    chains = [_tau_chain(e) for e in cols]
+    node = chains[-1]
+    for k in range(len(lam) - 2, 0, -1):  # interior lambda cuts only; lam[0]/lam[-1] are the window
+        node = {"axis": "lam", "at": lam[k], "lo": chains[k - 1], "hi": node}
+    return {"window_tau": [tlo, thi], "window_lam": [lam[0], lam[-1]], "root": node}
 
 
 def tree_from_lpt(tau_edges, lambda_edges_per_tau) -> dict:
@@ -679,9 +719,9 @@ def optimize_qrad(
     plateau_rel=0.005,  # plateau "improvement" threshold (fraction of the reference rms)
     per_group_lambda=False,
     lambda_edges_per_tau=None,  # per-group-lambda warm start (one lambda-edge list per tau group)
+    tau_per_lambda=None,  # columns warm start (one tau-edge list per lambda column)
     tree=False,  # general 2D guillotine mode (both tau and lambda locally free)
     binning_tree=None,  # guillotine-tree warm start {window_tau, window_lam, root}
-    # beam-search knobs (non-greedy tree-topology search; used when beam_width >= 2):
     beam_width=3,  # rival tree topologies kept in parallel each round
     beam_positions=(0.35, 0.5, 0.65),  # split-position fractions tried per (leaf, axis)
     beam_leaves=4,  # widest leaves considered for splitting, per beam tree
@@ -776,6 +816,8 @@ def optimize_qrad(
     # was passed; every result is a {"tree": True, "binning_tree": ...} dict.
     if binning_tree is not None:
         btree = copy.deepcopy(binning_tree)
+    elif tau_per_lambda is not None:
+        btree = tree_from_columns(list(lambda_edges), [list(x) for x in tau_per_lambda])
     elif lambda_edges_per_tau is not None:
         btree = tree_from_lpt(tau_edges, [list(x) for x in lambda_edges_per_tau])
         if grow and _n_leaves(btree) >= max_groups:
@@ -793,7 +835,6 @@ def optimize_qrad(
     else:
         lmin, lmax = float(lambda_edges[0]), float(lambda_edges[-1])
         btree = tree_from_lpt(tau_edges, [list(lambda_edges) if bool(f) else [lmin, lmax] for f in flags])
-
     _best_cost = float("inf")
 
     def cost_tree(t):
@@ -895,6 +936,279 @@ def optimize_qrad(
         "n_empty": int(final_r.get("n_empty", 0)),
         "n_leaves": _n_leaves(btree),
         "n_bands_total": int(final_r.get("n_groups", 0)),
+        "n_evals": state["n_evals"],
+        "elapsed": round(time.perf_counter() - t0, 2),
+        "stop_reason": budget.stop_reason or "converged",
+        "window": list(final_r.get("window", [])),
+        "history": history,
+    }
+
+
+# --- columns-constrained search --------------------------------------------------
+def optimize_columns(
+    lambda_edges,
+    tau_per_lambda,
+    *,
+    model=None,  # atmosphere to optimize on (validated file under models/; None -> DEFAULT_MODEL)
+    metric="rms",
+    min_gap_tau=MIN_GAP_TAU,
+    min_gap_lam=MIN_GAP_LAM,
+    empty_penalty=EMPTY_PENALTY,
+    adjust_steps=ADJUST_STEPS,
+    max_groups=8,  # total-leaf cap: sum over columns of (len(edges) - 1)
+    max_evals=400,
+    max_seconds=1800.0,
+    grow=True,  # per-column grow/prune (count changes); False = cut positions only
+    grow_tol=None,  # absolute penalized-cost improvement to accept a split; None -> grow_tol_rel * best rms
+    grow_tol_rel=0.01,
+    window=None,  # log10 tau_Ross (lo, hi) to score rms/max_abs over (None -> qrad_core.WINDOW)
+    target_rms=None,  # early stop once the best raw rms <= this
+    plateau_evals=0,  # early stop if best rms hasn't improved over this many evals (0 = off)
+    plateau_rel=0.005,
+    min_opacity_delta=None,  # forwarded to the scorer (None -> score default)
+    score_fn=None,
+    on_progress=None,
+    on_eval=None,
+    on_improve=None,
+    should_stop=None,
+) -> dict:
+    """Minimize the Q_rad residual while staying inside the column family.
+
+    Decision variables: the interior lambda-cut positions (count fixed) plus each column's
+    interior tau-cut positions AND count (grown/pruned per column under the `max_groups`
+    total-leaf cap). The search is coordinate descent: alternate (a) a lambda-cut position
+    sweep with (b) a per-column tau-stack refine (positions, then local grow by midpoint
+    splits, then prune by removals, each accepted on strict penalized-cost improvement),
+    looping to a local optimum or budget end. Every candidate is evaluated via
+    `make_evaluator` on `tree_from_columns(...)` trees, so the empty-band penalty,
+    MIN_GAP feasibility, and the shared outer tau window (column 0's [tlo, thi], endpoints
+    never move) hold exactly as in `optimize_qrad` — whose grow/polish path this never
+    touches (that path may leave the column family).
+
+    Budgets/hooks mirror `optimize_qrad` so callers can swap them: `max_evals`,
+    `max_seconds`, `window`, `target_rms`, `plateau_evals/plateau_rel`, `on_progress` /
+    `on_eval` / `on_improve` / `should_stop`, and an injectable `score_fn` for data-free
+    tests. Returns the same dict shape plus the column parametrization: `lambda_edges`,
+    `tau_per_lambda`, and `binning_tree` (the columns tree, for downstream .dat/plot reuse).
+    """
+    lam = [float(e) for e in lambda_edges]
+    cols = [[float(v) for v in c] for c in tau_per_lambda]
+    if len(lam) < 2:
+        raise ValueError(f"need >= 2 lambda edges, got {lam}")
+    if not cols:
+        raise ValueError("need >= 1 tau column, got none")
+    _check_feasible(lam, min_gap_lam, "lambda")
+    for k, col in enumerate(cols):
+        _check_feasible(col, min_gap_tau, f"tau column {k}")
+    seed_tree = tree_from_columns(lam, cols)  # raises on column-count / outer-window mismatch
+
+    t0 = time.perf_counter()
+
+    def _record_on_eval(n, cost, r):
+        budget.record(float(r["rms"]), n)  # `budget` bound below; evaluate() only runs afterward
+        if on_eval is not None:
+            on_eval(n, cost, r)
+
+    evaluate, state = make_evaluator(
+        model,
+        metric=metric,
+        empty_penalty=empty_penalty,
+        score_fn=score_fn,
+        on_eval=_record_on_eval,
+        window=window,
+        min_opacity_delta=min_opacity_delta,
+    )
+    budget = _Budget(
+        max_evals=max_evals,
+        max_seconds=max_seconds,
+        state=state,
+        t0=t0,
+        should_stop=should_stop,
+        target_rms=target_rms,
+        plateau_evals=plateau_evals,
+        plateau_rel=plateau_rel,
+    )
+    cfg = _Cfg(min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam, adjust_steps=tuple(adjust_steps))
+
+    history: list[dict] = []
+    _last_r: list = [None]  # raw dict of the latest evaluation (checkpoint reads it, no re-eval)
+
+    def checkpoint(tag):
+        r = _last_r[0]
+        history.append(
+            {
+                "tag": tag,
+                "n_evals": state["n_evals"],
+                "rms": float(r["rms"]),
+                "n_empty": int(r.get("n_empty", 0)),
+                "groups": int(r.get("n_groups", 0)),
+            }
+        )
+        if on_progress:
+            on_progress(tag, float(r["rms"]), int(r.get("n_groups", 0)), state["n_evals"])
+
+    def on_step(tag, cost, groups):
+        if on_progress:
+            on_progress(tag, float(cost), int(groups), state["n_evals"])
+
+    _hook_best = float("inf")
+
+    def cost_current():
+        # Evaluate the CURRENT (lam, cols) — the only evaluation entry point, so every
+        # candidate routes through tree_from_columns + the penalized evaluator.
+        nonlocal _hook_best
+        t = tree_from_columns(lam, cols)
+        c, r = evaluate(binning_tree=t)
+        _last_r[0] = r
+        if on_improve is not None and c < _hook_best - 1e-12:
+            _hook_best = c
+            on_improve(copy.deepcopy(t), r, state["n_evals"])
+        return c
+
+    def n_leaves_now():
+        return sum(len(c) - 1 for c in cols)
+
+    def _polish_index(edges, j, mg, cur):
+        """Try +-adjust_steps around edges[j] (visit-start-relative, like _tree_position_search);
+        commit the best strict improvement in place; return its cost. Endpoints never move."""
+        old = edges[j]
+        best_at, best_c = old, cur
+        for step in cfg.adjust_steps:
+            for d in (-1.0, +1.0):
+                if budget.exhausted():
+                    edges[j] = best_at
+                    return best_c
+                edges[j] = old + d * step
+                if not (_valid_monotone(edges) and _min_gap_ok(edges, mg)):
+                    continue
+                c = cost_current()
+                if c < best_c - 1e-12:
+                    best_c, best_at = c, edges[j]
+        edges[j] = best_at
+        return best_c
+
+    def _sweep(edges, mg):
+        """Gauss-Seidel position sweep over one edge list's interior cuts. Returns True if
+        anything improved. Maintains the invariant best == cost of the current state."""
+        nonlocal best
+        if len(edges) <= 2:
+            return False
+        any_imp = False
+        for _ in range(cfg.max_sweeps):
+            if budget.exhausted():
+                return any_imp
+            improved = False
+            for j in range(1, len(edges) - 1):
+                c = _polish_index(edges, j, mg, best)
+                if c < best - 1e-12:
+                    best, improved, any_imp = c, True, True
+            if not improved:
+                break
+        return any_imp
+
+    def _grow_column(k):
+        """Local grow: try a midpoint split of every interval of column k (light-polished),
+        commit the best one past the grow threshold; repeat until none qualifies or the
+        total-leaf cap / budget binds. Returns True if the column grew."""
+        nonlocal best
+        if not grow:
+            return False
+        grew = False
+        while n_leaves_now() < max_groups and not budget.exhausted():
+            col = cols[k]
+            ref = budget.best_rms if budget.best_rms != float("inf") else best
+            gtol = grow_tol if grow_tol is not None else grow_tol_rel * ref
+            best_trial, best_tc = None, best
+            for i in range(len(col) - 1):
+                if budget.exhausted():
+                    break
+                if (col[i + 1] - col[i]) < 2 * min_gap_tau - 1e-12:
+                    continue
+                trial = col[: i + 1] + [0.5 * (col[i] + col[i + 1])] + col[i + 1 :]
+                cols[k] = trial
+                c = _polish_index(trial, i + 1, min_gap_tau, cost_current())
+                cols[k] = col  # revert; only the round winner below is committed
+                if c < best_tc - 1e-12:
+                    best_tc, best_trial = c, list(trial)
+            if best_trial is not None and (best - best_tc) > gtol:
+                cols[k] = best_trial
+                best = best_tc
+                budget.reset_plateau(state["n_evals"])
+                grew = True
+            else:
+                break
+        return grew
+
+    def _prune_column(k):
+        """Local prune: try removing each interior cut of column k, commit the best strict
+        improvement; repeat until none improves. Returns True if the column shrank."""
+        nonlocal best
+        if not grow:
+            return False
+        pruned = False
+        while not budget.exhausted():
+            col = cols[k]
+            if len(col) <= 2:
+                return pruned
+            best_trial, best_tc = None, best
+            for j in range(1, len(col) - 1):
+                if budget.exhausted():
+                    break
+                trial = col[:j] + col[j + 1 :]
+                cols[k] = trial
+                c = cost_current()
+                cols[k] = col  # revert; only the round winner below is committed
+                if c < best_tc - 1e-12:
+                    best_tc, best_trial = c, trial
+            if best_trial is not None:
+                cols[k] = best_trial
+                best = best_tc
+                budget.reset_plateau(state["n_evals"])
+                pruned = True
+            else:
+                break
+        return pruned
+
+    rms0 = float(evaluate(binning_tree=seed_tree)[1]["rms"])  # rms of the user's seed binning
+    best = cost_current()
+    checkpoint("start")
+    for _ in range(cfg.max_block_rounds):
+        if budget.exhausted():
+            break
+        start = best
+        _sweep(lam, min_gap_lam)  # (a) lambda-cut positions; count fixed
+        on_step("lambda", best, n_leaves_now())
+        if budget.exhausted():
+            break
+        for k in range(len(cols)):  # (b) per-column tau stacks: positions + grow/prune
+            if budget.exhausted():
+                break
+            _sweep(cols[k], min_gap_tau)
+            _grow_column(k)
+            _prune_column(k)
+            _sweep(cols[k], min_gap_tau)  # re-seat positions after any structural change
+        on_step("columns", best, n_leaves_now())
+        checkpoint("round")
+        if budget.exhausted() or (start - best) <= cfg.block_tol * max(abs(start), 1.0):
+            break
+
+    lam_out = [round(float(v), 4) for v in lam]
+    cols_out = [[round(float(v), 4) for v in c] for c in cols]
+    final_tree = tree_from_columns(lam_out, cols_out)
+    final_r = evaluate(binning_tree=final_tree)[1]
+    n_leaves = sum(len(c) - 1 for c in cols_out)
+    return {
+        "binning_tree": _round_tree(final_tree),
+        "tree": True,
+        "columns": True,
+        "rms": float(final_r["rms"]),
+        "rms0": rms0,
+        "n_empty": int(final_r.get("n_empty", 0)),
+        "n_leaves": n_leaves,
+        "n_groups": n_leaves,
+        "n_bands_total": int(final_r.get("n_groups", 0)),
+        "lambda_edges": lam_out,
+        "tau_per_lambda": cols_out,
         "n_evals": state["n_evals"],
         "elapsed": round(time.perf_counter() - t0, 2),
         "stop_reason": budget.stop_reason or "converged",
@@ -1023,9 +1337,12 @@ def _reconstruct_guillotine(leaves, tau_pts, lam_pts):
         lo = {r for r in leaves if r[1] <= c}
         hi = {r for r in leaves if r[0] >= c}
         if lo and hi and len(lo) + len(hi) == len(leaves):
-            return {"axis": "tau", "at": float(tau_pts[c]),
-                    "lo": _reconstruct_guillotine(lo, tau_pts, lam_pts),
-                    "hi": _reconstruct_guillotine(hi, tau_pts, lam_pts)}
+            return {
+                "axis": "tau",
+                "at": float(tau_pts[c]),
+                "lo": _reconstruct_guillotine(lo, tau_pts, lam_pts),
+                "hi": _reconstruct_guillotine(hi, tau_pts, lam_pts),
+            }
     k0_min = min(r[2] for r in leaves)
     for c in sorted({r[3] for r in leaves}):  # lambda cut: low group's top edge at c
         if c <= k0_min:
@@ -1033,9 +1350,12 @@ def _reconstruct_guillotine(leaves, tau_pts, lam_pts):
         lo = {r for r in leaves if r[3] <= c}
         hi = {r for r in leaves if r[2] >= c}
         if lo and hi and len(lo) + len(hi) == len(leaves):
-            return {"axis": "lam", "at": float(lam_pts[c]),
-                    "lo": _reconstruct_guillotine(lo, tau_pts, lam_pts),
-                    "hi": _reconstruct_guillotine(hi, tau_pts, lam_pts)}
+            return {
+                "axis": "lam",
+                "at": float(lam_pts[c]),
+                "lo": _reconstruct_guillotine(lo, tau_pts, lam_pts),
+                "hi": _reconstruct_guillotine(hi, tau_pts, lam_pts),
+            }
     raise ValueError(f"leaf set is not a guillotine partition: {sorted(leaves)}")
 
 
@@ -1074,19 +1394,25 @@ def grid_search(
     print(f"[grid] tau grid ({dtau}): {len(tau_pts)} pts  lambda grid ({dlam}): {len(lam_pts)} pts")
 
     Q, rect_index = _precompute_grid_q(tau_pts, lam_pts, model, min_opacity_delta)
-    print(f"[mem] after precompute: Q.shape={Q.shape} dtype={str(Q.dtype)} "
-          f"nbytes={Q.nbytes/1e6:.1f}MB mmap={isinstance(Q, np.memmap)} "
-          f"rect_index={len(rect_index)} rect_index_deep={_deep_size_mb(rect_index):.1f}MB "
-          f"RSS={_rss_mb():.0f}MB", flush=True)
+    print(
+        f"[mem] after precompute: Q.shape={Q.shape} dtype={str(Q.dtype)} "
+        f"nbytes={Q.nbytes / 1e6:.1f}MB mmap={isinstance(Q, np.memmap)} "
+        f"rect_index={len(rect_index)} rect_index_deep={_deep_size_mb(rect_index):.1f}MB "
+        f"RSS={_rss_mb():.0f}MB",
+        flush=True,
+    )
     ref = qrad_core.reference(model)
     q_full = np.asarray(ref["q_full"])
     rho = np.asarray(ref["rho"])
     ltau = np.asarray(ref["ltau"])
     win = qrad_core.WINDOW if window is None else (float(window[0]), float(window[1]))
     in_win = (ltau >= min(win)) & (ltau <= max(win))
-    print(f"[mem] ref arrays: q_full={q_full.nbytes/1e6:.2f}MB rho={rho.nbytes/1e6:.2f}MB "
-          f"ltau={ltau.nbytes/1e6:.2f}MB nz={len(ltau)} in_win={int(in_win.sum())} "
-          f"RSS={_rss_mb():.0f}MB", flush=True)
+    print(
+        f"[mem] ref arrays: q_full={q_full.nbytes / 1e6:.2f}MB rho={rho.nbytes / 1e6:.2f}MB "
+        f"ltau={ltau.nbytes / 1e6:.2f}MB nz={len(ltau)} in_win={int(in_win.sum())} "
+        f"RSS={_rss_mb():.0f}MB",
+        flush=True,
+    )
 
     def rms_of(idxs):
         q = Q[np.asarray(idxs)].sum(axis=(0, 1))
@@ -1172,8 +1498,7 @@ def grid_search(
     # loop below would do lazily). INSTRUMENTED: print memo growth + RSS per k so the OOM point
     # is visible -- the memo holds EVERY distinct tiling of EVERY sub-rectangle, so this is the
     # suspected memory blowup.
-    print(f"[mem] === pre-pass: building memo for k=1..{max_groups} (ntau={ntau} nlam={nlam}) ===",
-          flush=True)
+    print(f"[mem] === pre-pass: building memo for k=1..{max_groups} (ntau={ntau} nlam={nlam}) ===", flush=True)
     total_tilings = 0
     for _k in range(1, max_groups + 1):
         _d = pexact(0, ntau - 1, 0, nlam - 1, _k)
@@ -1181,8 +1506,11 @@ def grid_search(
         total_tilings += _n_full
         _n_states = len(memo)
         _n_sigs = sum(len(v) for v in memo.values())
-        print(f"[mem] k={_k}: full_rect_tilings={_n_full} cumulative={total_tilings} "
-              f"memo_states={_n_states} memo_sigs={_n_sigs} RSS={_rss_mb():.0f}MB", flush=True)
+        print(
+            f"[mem] k={_k}: full_rect_tilings={_n_full} cumulative={total_tilings} "
+            f"memo_states={_n_states} memo_sigs={_n_sigs} RSS={_rss_mb():.0f}MB",
+            flush=True,
+        )
     print(f"[grid] scoring {total_tilings} distinct tilings (k=1..{max_groups})", flush=True)
     pbar = tqdm(total=total_tilings, desc="grid tilings", unit="tiling")
     for k in range(1, max_groups + 1):
@@ -1191,8 +1519,10 @@ def grid_search(
             n_tilings += 1
             pbar.update(1)
             if n_tilings % 200000 == 0:
-                print(f"[mem] loop: n_tilings={n_tilings} memo_states={len(memo)} "
-                      f"topk={len(topk)} RSS={_rss_mb():.0f}MB", flush=True)
+                print(
+                    f"[mem] loop: n_tilings={n_tilings} memo_states={len(memo)} topk={len(topk)} RSS={_rss_mb():.0f}MB",
+                    flush=True,
+                )
             if rms < worst_kept or len(topk) < K:
                 cnt += 1
                 heapq.heappush(topk, (-rms, cnt, sig))
@@ -1205,8 +1535,11 @@ def grid_search(
                         on_progress("best", n_tilings, rms, k)
                     if on_improve is not None:
                         on_improve(
-                            {"window_tau": list(win_tau), "window_lam": list(win_lam),
-                             "root": copy.deepcopy(tree_from_sig(sig))},
+                            {
+                                "window_tau": list(win_tau),
+                                "window_lam": list(win_lam),
+                                "root": copy.deepcopy(tree_from_sig(sig)),
+                            },
                             {"rms": rms, "n_groups": k},
                             n_tilings,
                         )
@@ -1219,8 +1552,7 @@ def grid_search(
     best = None
     ranked = sorted(topk, key=lambda x: -x[0])  # ascending memoized rms
     for _neg, _c, sig in tqdm(ranked, total=len(ranked), desc="refine top-K", unit="eval"):
-        tree_i = {"window_tau": list(win_tau), "window_lam": list(win_lam),
-                  "root": copy.deepcopy(tree_from_sig(sig))}
+        tree_i = {"window_tau": list(win_tau), "window_lam": list(win_lam), "root": copy.deepcopy(tree_from_sig(sig))}
         r_i = qrad_core.score_binning(
             None, None, None, model, binning_tree=tree_i, min_opacity_delta=min_opacity_delta, window=window
         )
@@ -1308,6 +1640,19 @@ def main(
     beam_positions: list[float] = typer.Option(
         [0.35, 0.5, 0.65], "--beam-positions", help="Split-position fractions tried per (leaf, axis) (beam_width >= 2)."
     ),
+    columns: bool = typer.Option(
+        False,
+        "--columns/--no-columns",
+        help="Columns-constrained mode: lambda-cut count fixed, each lambda column keeps its own tau "
+        "stack (positions + grow/prune under --max-groups). Replaces the general-guillotine grow/polish path.",
+    ),
+    tau_per_lambda: list[str] = typer.Option(
+        [],
+        "--tau-per-lambda",
+        help="Columns-mode warm start: repeat once per lambda column (in order), each a comma-separated "
+        "increasing tau-edge list sharing the outer window, e.g. --tau-per-lambda=-0.63,0.1,7 "
+        "--tau-per-lambda=-0.63,2.0,7. Defaults to the shared --tau-bin-edges in every column.",
+    ),
     use_grid_search: bool = typer.Option(
         False,
         "--grid-search/--no-grid-search",
@@ -1343,6 +1688,7 @@ def main(
         print(f"[qrad-opt] binning plots -> {plot_dir}")
     _plot_seen: set[tuple] = set()
     _plot_n = [0]
+    _rms_hist: list[tuple[int, float]] = []  # best-so-far (n_evals, rms) for the top strip
 
     def _on_improve(tree, r, n_evals):
         if plot_dir is None:
@@ -1352,6 +1698,7 @@ def main(
             return
         _plot_seen.add(sig)
         _plot_n[0] += 1
+        _rms_hist.append((int(n_evals), float(r["rms"])))
         out = plot_dir / f"step_{n_evals:04d}_rms_{float(r['rms']):.3e}.png"
         _plot_tree_binning(
             tree,
@@ -1362,12 +1709,20 @@ def main(
             n_evals=n_evals,
             seq=_plot_n[0],
             model=model_name,
+            rms_history=list(_rms_hist),
         )
 
+    if use_grid_search and columns:
+        raise typer.BadParameter("--columns is mutually exclusive with --grid-search.")
+    if columns and tree:
+        raise typer.BadParameter("--columns is mutually exclusive with --tree.")
+    if tau_per_lambda and not columns:
+        raise typer.BadParameter("--tau-per-lambda requires --columns.")
     if use_grid_search:
 
         def _grid_progress(tag, a, b, c):
             from tqdm import tqdm
+
             tqdm.write(f"  [grid] {tag}: rms={b:.4e} leaves={c} tilings={a}")
 
         result = grid_search(
@@ -1380,6 +1735,37 @@ def main(
             min_opacity_delta=min_opacity_delta,
             window=(window_lo, window_hi),
             on_progress=_grid_progress,
+            on_improve=_on_improve if plot_dir else None,
+        )
+    elif columns:
+        from tausort import parse_tau_per_lambda
+
+        cols_seed = (
+            parse_tau_per_lambda(tau_per_lambda)
+            if tau_per_lambda
+            else [list(tau_bin_edges)] * (len(lambda_bin_edges) - 1)
+        )
+        if len(cols_seed) != len(lambda_bin_edges) - 1:
+            raise typer.BadParameter(
+                f"--tau-per-lambda has {len(cols_seed)} entries, expected one per lambda column ({len(lambda_bin_edges) - 1})"
+            )
+        result = optimize_columns(
+            lambda_bin_edges,
+            cols_seed,
+            model=model_name,
+            metric=metric,
+            min_gap_tau=min_gap_tau,
+            min_gap_lam=min_gap_lam,
+            max_groups=max_groups,
+            max_evals=max_evals,
+            max_seconds=max_seconds,
+            grow=grow,
+            window=(window_lo, window_hi),
+            target_rms=(target_rms if target_rms > 0 else None),
+            plateau_evals=plateau_evals,
+            grow_tol_rel=grow_tol_rel,
+            min_opacity_delta=min_opacity_delta,
+            on_progress=_progress,
             on_improve=_on_improve if plot_dir else None,
         )
     else:
@@ -1415,8 +1801,8 @@ def main(
     imp = (result["rms0"] - result["rms"]) / result["rms0"] * 100.0
     print("\n[qrad-opt] DONE")
     print(f"  rms: {result['rms0']:.4e} -> {result['rms']:.4e}  ({imp:+.1f}%)")
-    print(f"  general-2D tree: {result['n_leaves']} leaf bands, n_empty={result['n_empty']}")
-    print("    " + _tree_bands_str(result["binning_tree"]))
+    _mode = "columns" if columns else "general-2D tree"
+    print(f"  {_mode}: {result['n_leaves']} leaf bands, n_empty={result['n_empty']}")
     print(f"  {result['n_evals']} evals in {result['elapsed']}s")
     if plot_dir:
         print(f"  binning plots -> {plot_dir} ({_plot_n[0]} improved binnings)")
@@ -1431,14 +1817,23 @@ def main(
             groups=result["n_leaves"],
             n_evals=result["n_evals"],
             model=model_name,
+            rms_history=list(_rms_hist),
         )
         print(f"  final binning -> {final_plot}")
 
     if save_plot:
-        seed_tree = tree_from_lpt(
-            tau_bin_edges,
-            [[lambda_bin_edges[0], lambda_bin_edges[-1]] for _ in range(len(tau_bin_edges) - 1)],
-        )
+        if columns:
+            from tausort import parse_tau_per_lambda as _parse_tpl
+
+            _seed_cols = (
+                _parse_tpl(tau_per_lambda) if tau_per_lambda else [list(tau_bin_edges)] * (len(lambda_bin_edges) - 1)
+            )
+            seed_tree = tree_from_columns(lambda_bin_edges, _seed_cols)
+        else:
+            seed_tree = tree_from_lpt(
+                tau_bin_edges,
+                [[lambda_bin_edges[0], lambda_bin_edges[-1]] for _ in range(len(tau_bin_edges) - 1)],
+            )
         _plot_before_after(
             seed_tree,
             result["binning_tree"],
@@ -1505,8 +1900,23 @@ def _plot_before_after(before_tree, after_tree, path, model=None, min_opacity_de
     plt.close(fig)
 
 
-def _plot_tree_binning(tree, path, *, rms=None, n_empty=None, groups=None, n_evals=None, seq=None, model=None):
-    """Render a binning tree's tau-lambda leaf rectangles to `path` (one patch per group)."""
+def _plot_tree_binning(
+    tree,
+    path,
+    *,
+    rms=None,
+    n_empty=None,
+    groups=None,
+    n_evals=None,
+    seq=None,
+    model=None,
+    rms_history=None,
+):
+    """Render a binning tree's tau-lambda leaf rectangles to `path` (one patch per group).
+
+    With ``rms_history`` (list of (n_evals, rms) best-so-far points), a small rms-vs-evals
+    strip spans the top showing the full trajectory with the current point marked.
+    """
     import matplotlib
 
     matplotlib.use("Agg")
@@ -1517,7 +1927,24 @@ def _plot_tree_binning(tree, path, *, rms=None, n_empty=None, groups=None, n_eva
     wt, wl = tree["window_tau"], tree["window_lam"]
     cmap = plt.get_cmap("tab20")
 
-    fig, ax = plt.subplots(figsize=(7.5, 6))
+    if rms_history:
+        fig, (ax_top, ax) = plt.subplots(
+            2, 1, figsize=(7.5, 6.8), gridspec_kw={"height_ratios": [1, 4], "hspace": 0.35}
+        )
+        xs = [p[0] for p in rms_history]
+        ys = [p[1] for p in rms_history]
+        ax_top.plot(xs, ys, color="#1f5fa8", lw=1.6, marker="o", ms=3)
+        ax_top.set_yscale("log")
+        ax_top.set_ylabel("rms", fontsize=9)
+        ax_top.tick_params(labelsize=8)
+        ax_top.grid(True, color="#ddd", lw=0.5, which="both")
+        if n_evals is not None and rms is not None:
+            ax_top.plot([n_evals], [rms], marker="o", ms=7, color="red", zorder=5)
+        if len(xs) > 1:
+            ax_top.set_xlim(0, max(xs) * 1.05)
+    else:
+        fig, ax = plt.subplots(figsize=(7.5, 6))
+        ax_top = None
     for i, (tlo, thi, llo, lhi) in enumerate(rects):
         ax.add_patch(
             Rectangle((llo, tlo), lhi - llo, thi - tlo, facecolor=cmap(i % 20), edgecolor="black", lw=1.4, alpha=0.5)
