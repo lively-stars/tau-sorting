@@ -24,8 +24,10 @@ wheels/
 *.jpeg
 *.png
 *.pdf
+*.gif
 !plots/*.jpg
 !plots/*.png
+!plots/*.gif
 
 # Data
 *.dat
@@ -44,7 +46,6 @@ debug_tau_bin_*.json
 *.log
 *.txt
 *.mp4
-*.gif
 
 # Q_rad explorer server runtime (make start/stop)
 .webapp.pid
