@@ -28,12 +28,12 @@ PIDFILE := .webapp.pid
 LOG     := webapp.log
 PORT    := 8771
 
-.PHONY: venv start stop restart status
+.PHONY: venv start stop restart status data
 
 venv:
 	uv sync
 
-start:
+start: data
 	@if [ -f $(PIDFILE) ] && kill -0 `cat $(PIDFILE)` 2>/dev/null; then \
 		echo "already running (pid `cat $(PIDFILE)`) at http://localhost:$(PORT)"; \
 	elif [ ! -x $(PY) ]; then \
@@ -43,6 +43,11 @@ start:
 		echo "started (pid `cat $(PIDFILE)`) -> http://localhost:$(PORT); logging to $(LOG)"; \
 		echo "(first start reads the ODF, ~10-30s, before it serves)"; \
 	fi
+
+# Fresh clone? Pull the gitignored data files (ODF, continuum, reference
+# tables) from the data-v1 GitHub release — only what's missing is downloaded.
+data:
+	@./scripts/fetch_data.sh
 
 stop:
 	@if [ -f $(PIDFILE) ] && kill -0 `cat $(PIDFILE)` 2>/dev/null; then \
