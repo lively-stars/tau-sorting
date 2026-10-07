@@ -57,8 +57,8 @@ make status             # running?    (PID in .webapp.pid, logs in webapp.log)
 make stop               # stop it
 make restart            # stop + start
 
-# Lint + format (manual pre-commit; see "Pre-commit" section below)
-./scripts/precommit.sh            # auto-fix + format the tree
+# Lint + format (pre-commit hook runs these on `git commit`; see "Pre-commit" below)
+./scripts/precommit.sh            # auto-fix + format the tree (same as the hook)
 ./scripts/precommit.sh --check    # report-only, exit non-zero if changes needed
 uv run ruff check .               # lint only
 uv run ruff format .              # format only
@@ -66,32 +66,19 @@ uv run ruff format .              # format only
 
 ## Pre-commit
 
-This repo uses Jujutsu (`jj`) without a colocated git checkout, so the standard
-`pre-commit` framework cannot install a real hook (it would target
-`.git/hooks/`, which does not exist). Instead, run the checks manually before
-`jj commit` / `jj describe`:
+Native git workflow: `uv run pre-commit install` wires `.pre-commit-config.yaml`
+into `.git/hooks/pre-commit` (already installed in this checkout). Hooks are scoped
+to Python files (`ruff-check --fix`, `ruff-format`, trailing whitespace, end-of-file
+fixer) plus repo-wide `check-yaml` / `check-added-large-files` / `check-merge-conflict` —
+C sources, model atmospheres, and paper vendor files are excluded (mixed line endings).
 
 ```bash
-./scripts/precommit.sh            # ruff format + ruff check --fix + whitespace/EOF
+./scripts/precommit.sh            # same checks without the framework
 ```
-
-The script lives at `scripts/precommit.sh` and mirrors what `.pre-commit-config.yaml`
-would do (`ruff-check --fix`, `ruff-format`, trailing whitespace, end-of-file
-fixer). The YAML file is kept for reference and for the day you decide to
-colocate jj with git via `jj git init --colocate`; after that,
-`uv run pre-commit install` will wire it up.
 
 Ruff is configured in `pyproject.toml` under `[tool.ruff]` — line length 120,
 target `py312`, rules `E,F,W,I,UP` with a small ignore list (`E501`, `E741`,
 `UP007`).
-
-A handy jj alias to run the script before describing/committing:
-
-```toml
-# in ~/.config/jj/config.toml
-[aliases]
-precommit = ["util", "exec", "--", "bash", "-c", "./scripts/precommit.sh"]
-```
 
 ## Architecture
 

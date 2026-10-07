@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
 # scripts/precommit.sh
 #
-# Manual pre-commit runner for this repo.
-#
-# Why this exists: this project uses Jujutsu (jj) without a colocated git
-# checkout, so the `pre-commit` framework (which installs into .git/hooks/)
-# has no place to attach. Run this script yourself before `jj commit` /
-# `jj describe`, or wire it into a jj alias / shell prompt as you like.
+# Manual pre-commit runner (mirrors .pre-commit-config.yaml without the framework).
+# The native git hook (`uv run pre-commit install` -> .git/hooks/pre-commit) runs
+# the same tools, scoped to Python files; run this script for a whole-tree pass.
 #
 # What it does:
 #   1. ruff format       — auto-format Python sources
