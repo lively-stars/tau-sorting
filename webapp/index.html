@@ -66,8 +66,15 @@
   .metrics .big { font-size:16px; }
   #status { margin-top:10px; font-size:12.5px; color:var(--muted); min-height:1.2em; }
   #status.err { color:var(--bad); }
-  #chart { width:100%; height:1320px; }
-  #atmchart { width:100%; height:860px; }
+  #chart { width:100%; height:2000px; }
+  #atmchart { width:100%; height:1200px; }
+  details#sizes { margin:0 0 10px; }
+  details#sizes > summary { color:var(--muted); font-size:12px; cursor:pointer; font-weight:600; margin-bottom:6px; }
+  .sizerow { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; font-size:12px; color:var(--muted); margin:4px 0; }
+  .sizerow b { color:var(--ink); }
+  .sizerow input[type=number] { width:64px; padding:4px 6px; background:#0e1420; color:var(--ink); border:1px solid var(--line); border-radius:7px; font:inherit; font-size:12px; }
+  .sizerow input.qw, .sizerow input.aw { width:44px; }
+  .sizerow button { width:auto; margin:0; padding:4px 10px; font-size:12px; }
   .tabs { display:flex; gap:6px; margin-bottom:12px; border-bottom:1px solid var(--line); }
   .tab { margin-top:0; width:auto; flex:0 0 auto; padding:8px 16px; font-weight:600; color:var(--muted);
          background:#0e1420; border:1px solid var(--line); border-bottom:none; border-radius:8px 8px 0 0;
@@ -183,6 +190,22 @@
       <button class="tab active" data-tab="qrad">Q<sub>rad</sub></button>
       <button class="tab" data-tab="atm">Atmosphere</button>
     </div>
+    <details id="sizes">
+      <summary>Plot sizes</summary>
+      <div class="sizerow" id="qsize"><b>Q<sub>rad</sub></b> height <input type="number" id="q_total" min="600" max="5000" step="50" value="2000" title="total Q_rad chart height in px">px
+        · bin <input type="number" class="qw" data-i="0" min="0.2" max="4" step="0.1" value="1.3" title="binning diagram relative height">
+        · Q/ρ <input type="number" class="qw" data-i="1" min="0.2" max="4" step="0.1" value="1" title="Q/ρ relative height">
+        · resid <input type="number" class="qw" data-i="2" min="0.2" max="4" step="0.1" value="0.8" title="residual relative height">
+        · band <input type="number" class="qw" data-i="3" min="0.2" max="4" step="0.1" value="1" title="per-band Q/ρ relative height">
+        · rel <input type="number" class="qw" data-i="4" min="0.2" max="4" step="0.1" value="0.8" title="relative contribution relative height">
+      </div>
+      <div class="sizerow" id="asize"><b>Atm</b> height <input type="number" id="a_total" min="400" max="4000" step="50" value="1200" title="total atmosphere chart height in px">px
+        · T <input type="number" class="aw" data-i="0" min="0.2" max="4" step="0.1" value="1" title="T relative height">
+        · ρ <input type="number" class="aw" data-i="1" min="0.2" max="4" step="0.1" value="1" title="log ρ relative height">
+        · P <input type="number" class="aw" data-i="2" min="0.2" max="4" step="0.1" value="1" title="log P relative height">
+        <button type="button" class="secondary" id="size_reset" title="restore default plot sizes">reset</button>
+      </div>
+    </details>
     <div id="chart"></div>
     <div id="atmchart" style="display:none"></div>
   </div>
@@ -531,6 +554,51 @@ function liveBinning(diag){
   Plotly.restyle('chart', {'marker.color':[colors]}, [0]);
   Plotly.relayout('chart', {shapes, 'xaxis.range':[xlo-xpad, xhi+xpad], 'yaxis.range':[ylo-ypad, yhi+ypad]});
 }
+// --- Plot sizes: total chart heights + per-panel relative weights (persisted in localStorage) ---
+const SIZE_DEFAULTS = {qTotal:2000, qw:[1.3,1,0.8,1,0.8], aTotal:1200, aw:[1,1,1]};
+function readSizes(){
+  const num = (id, fb) => { const v = parseFloat($(id).value); return (Number.isFinite(v) && v > 0) ? v : fb; };
+  const wts = (cls, fb) => [...document.querySelectorAll('.'+cls)].map((el,i) => {
+    const v = parseFloat(el.value); return (Number.isFinite(v) && v > 0) ? v : fb[i];
+  });
+  return {qTotal:num('q_total',SIZE_DEFAULTS.qTotal), qw:wts('qw',SIZE_DEFAULTS.qw),
+          aTotal:num('a_total',SIZE_DEFAULTS.aTotal), aw:wts('aw',SIZE_DEFAULTS.aw)};
+}
+function saveSizes(){
+  try { localStorage.setItem('plotSizes', JSON.stringify(readSizes())); } catch(_){}
+}
+function restoreSizes(){
+  let s = null;
+  try { s = JSON.parse(localStorage.getItem('plotSizes')); } catch(_){}
+  if (!s) return;
+  if (Number.isFinite(s.qTotal)) $('q_total').value = s.qTotal;
+  if (Number.isFinite(s.aTotal)) $('a_total').value = s.aTotal;
+  if (Array.isArray(s.qw)) document.querySelectorAll('.qw').forEach(el => {
+    const v = s.qw[+el.dataset.i]; if (Number.isFinite(v) && v > 0) el.value = v; });
+  if (Array.isArray(s.aw)) document.querySelectorAll('.aw').forEach(el => {
+    const v = s.aw[+el.dataset.i]; if (Number.isFinite(v) && v > 0) el.value = v; });
+}
+// Split the [0,1] vertical space into per-panel [lo,hi] domains (top→bottom order),
+// proportional to `w`, with a fixed gap between panels and a top pad for the legend.
+function paneDomains(w, gap=0.035, topPad=0.01){
+  const ws = w.map(v => (Number.isFinite(v) && v > 0) ? v : 1);
+  const usable = Math.max(0.1, 1 - topPad - gap * (ws.length - 1));
+  const sum = ws.reduce((a,b)=>a+b,0) || 1;
+  const out = new Array(ws.length);
+  let cur = 0;
+  for (let i = ws.length - 1; i >= 0; i--) { const h = usable * ws[i] / sum; out[i] = [cur, cur + h]; cur += h + gap; }
+  return out;
+}
+// Re-render the visible chart(s) with the current size settings (cheap: no recompute).
+function applySizes(){
+  saveSizes();
+  const sz = readSizes();
+  $('chart').style.height = sz.qTotal + 'px';
+  $('atmchart').style.height = sz.aTotal + 'px';
+  if (LAST) render(LAST, true);
+  if (ATM) renderAtm(ATM, true);
+  else { try { Plotly.Plots.resize(ACTIVE_TAB === 'atm' ? 'atmchart' : 'chart'); } catch(_){} }
+}
 
 function render(d){
   const grayResid = d.q_gray_over_rho.map((g,i)=>g - d.q_full_over_rho[i]);
@@ -603,28 +671,35 @@ function render(d){
     });
   });
   const font={color:'#cdd6e5'}; const grid='#2b3547';
+  const sz = readSizes();
+  const dom = paneDomains(sz.qw);
+  $('chart').style.height = sz.qTotal + 'px';
   const layout = {
-    paper_bgcolor:'#1a2130', plot_bgcolor:'#121826', font, shapes,
-    margin:{l:70,r:16,t:22,b:46}, showlegend:true,
-    legend:{orientation:'h', y:1.06, x:0, yanchor:'bottom', font:{size:11}},
+    paper_bgcolor:'#1a2130', plot_bgcolor:'#121826', font, shapes, height:sz.qTotal,
+    margin:{l:70,r:16,t:12,b:46}, showlegend:true,
+    // inside the Q/ρ panel's dead top-right corner (high atmosphere: all curves flat):
+    // an out-of-paper legend (y>1) makes Plotly push every panel down, leaving a dead
+    // band atop the figure — so the legend must live inside the paper.
+    legend:{orientation:'v', x:0.995, xanchor:'right', y:dom[1][1]-0.005, yanchor:'top',
+            font:{size:11}, bgcolor:'rgba(18,24,38,0.75)', bordercolor:'#2b3547', borderwidth:1},
     // top: binning diagram (its own λ x-axis)
     xaxis:{title:'log₁₀ λ [Å]', range:[_xlo-_xpad, _xhi+_xpad], gridcolor:grid, zeroline:false, domain:[0,1], anchor:'y'},
-    yaxis:{title:'−log₁₀ τ_Ros(τ_λ=1)', range:[_ylo-_ypad, _yhi+_ypad], gridcolor:grid, zeroline:false, domain:[0.85,0.99]},
+    yaxis:{title:'−log₁₀ τ_Ros(τ_λ=1)', range:[_ylo-_ypad, _yhi+_ypad], gridcolor:grid, zeroline:false, domain:dom[0]},
     // Q/ρ (τ x-axis, shared down through all depth panels)
     xaxis2:{range:[4,-5], gridcolor:grid, zeroline:false, domain:[0,1], anchor:'y2',
             matches:'x3', showticklabels:false},
-    yaxis2:{title:'Q/ρ [erg/g/s]', gridcolor:grid, zeroline:true, zerolinecolor:'#40506a', domain:[0.62,0.79]},
+    yaxis2:{title:'Q/ρ [erg/g/s]', gridcolor:grid, zeroline:true, zerolinecolor:'#40506a', domain:dom[1]},
     // residual
     xaxis3:{range:[4,-5], gridcolor:grid, zeroline:false, domain:[0,1], anchor:'y3', showticklabels:false},
-    yaxis3:{title:'(Q − Q_full)/ρ', gridcolor:grid, zeroline:true, zerolinecolor:'#40506a', domain:[0.42,0.59]},
+    yaxis3:{title:'(Q − Q_full)/ρ', gridcolor:grid, zeroline:true, zerolinecolor:'#40506a', domain:dom[2]},
     // per-band Q/ρ (signed; heating stacks up, cooling down)
     xaxis4:{range:[4,-5], gridcolor:grid, zeroline:false, domain:[0,1], anchor:'y4',
             matches:'x3', showticklabels:false},
-    yaxis4:{title:'per-band Q/ρ [erg/g/s]', gridcolor:grid, zeroline:true, zerolinecolor:'#40506a', domain:[0.22,0.39]},
+    yaxis4:{title:'per-band Q/ρ [erg/g/s]', gridcolor:grid, zeroline:true, zerolinecolor:'#40506a', domain:dom[3]},
     // bottom: per-band relative contribution (stacked to 100% per depth)
     xaxis5:{title:'log₁₀ τ_Ros', range:[4,-5], gridcolor:grid, zeroline:false, domain:[0,1], anchor:'y5',
             matches:'x3'},
-    yaxis5:{title:'relative Q contribution [%]', range:[0,100], gridcolor:grid, zeroline:false, zerolinecolor:'#40506a', domain:[0.0,0.19]},
+    yaxis5:{title:'relative Q contribution [%]', range:[0,100], gridcolor:grid, zeroline:false, zerolinecolor:'#40506a', domain:dom[4]},
   };
   Plotly.react('chart', data, layout, {responsive:true, displayModeBar:true, displaylogo:false, modeBarButtonsToRemove:['lasso2d','select2d']});
   LAST = d;
@@ -663,15 +738,18 @@ function renderAtm(d){
     {...base, y:lp,   name:'log₁₀ P', line:{color:C.p,  width:2.5}, xaxis:'x3', yaxis:'y3'},
   ];
   const xax = {gridcolor:grid, zeroline:false, matches:'x3'};
+  const asz = readSizes();
+  const adom = paneDomains(asz.aw, 0.05);
+  $('atmchart').style.height = asz.aTotal + 'px';
   const layout = {
-    paper_bgcolor:'#1a2130', plot_bgcolor:'#121826', font,
+    paper_bgcolor:'#1a2130', plot_bgcolor:'#121826', font, height:asz.aTotal,
     margin:{l:78,r:16,t:22,b:46}, showlegend:false,
     xaxis:{...xax, domain:[0,1], anchor:'y',  showticklabels:false},
-    yaxis:{title:'T [K]', gridcolor:grid, zeroline:false, domain:[0.70,0.99]},
+    yaxis:{title:'T [K]', gridcolor:grid, zeroline:false, domain:adom[0]},
     xaxis2:{...xax, domain:[0,1], anchor:'y2', showticklabels:false},
-    yaxis2:{title:'log₁₀ ρ [g/cm³]', gridcolor:grid, zeroline:false, domain:[0.37,0.62]},
+    yaxis2:{title:'log₁₀ ρ [g/cm³]', gridcolor:grid, zeroline:false, domain:adom[1]},
     xaxis3:{...xax, title:'depth from top [Mm]', domain:[0,1], anchor:'y3'},
-    yaxis3:{title:'log₁₀ P [dyn/cm²]', gridcolor:grid, zeroline:false, domain:[0,0.28]},
+    yaxis3:{title:'log₁₀ P [dyn/cm²]', gridcolor:grid, zeroline:false, domain:adom[2]},
   };
   Plotly.react('atmchart', data, layout, {responsive:true, displayModeBar:true, displaylogo:false, modeBarButtonsToRemove:['lasso2d','select2d']});
 }
@@ -713,6 +791,18 @@ $('qoptcols').addEventListener('click', () => qoptStart(true));
 $('qcancel').addEventListener('click', qoptCancel);
 $('dl').addEventListener('click', downloadKappa);
 $('lam').addEventListener('keydown', e=>{ if(e.key==='Enter') compute(); });
+// Plot sizes: total heights + per-panel relative weights; debounce, then re-render (no recompute).
+let _sizeTimer = null;
+document.querySelectorAll('#q_total, #a_total, .qw, .aw').forEach(el => el.addEventListener('input', () => {
+  clearTimeout(_sizeTimer); _sizeTimer = setTimeout(applySizes, 350);
+}));
+$('size_reset').addEventListener('click', () => {
+  $('q_total').value = SIZE_DEFAULTS.qTotal; $('a_total').value = SIZE_DEFAULTS.aTotal;
+  document.querySelectorAll('.qw').forEach(el => { el.value = SIZE_DEFAULTS.qw[+el.dataset.i]; });
+  document.querySelectorAll('.aw').forEach(el => { el.value = SIZE_DEFAULTS.aw[+el.dataset.i]; });
+  applySizes();
+});
+restoreSizes();
 
 // Draggable splitter: resize the controls column (persisted). Reflows the active chart on release.
 (function(){
