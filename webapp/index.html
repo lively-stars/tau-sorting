@@ -35,21 +35,15 @@
   #qprogbar { height:100%; width:0%; background:var(--accent); transition:width .2s linear; }
   #qvars { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
   #qcancel { display:none; margin-left:8px; color:var(--accent); font-weight:600; }
-  #pg_host { margin-top:6px; min-height:1.2em; }
-  .pggrid { display:flex; flex-direction:column; gap:5px; margin-top:6px; }
-  .pgrow { display:flex; flex-wrap:wrap; align-items:center; gap:4px; font-weight:500; font-size:12px; color:var(--ink); }
-  .pglab { min-width:20px; }
-  .pgcutwrap { display:inline-flex; align-items:center; gap:1px; }
-  .pgcut { width:56px; padding:4px 6px; background:#0e1420; color:var(--ink); border:1px solid var(--line); border-radius:7px; font:inherit; font-size:12px; }
-  .pgcut:focus { outline:none; border-color:var(--accent); }
-  .pgadd, .pgdel { width:auto; margin:0; padding:3px 7px; font:inherit; font-size:13px; font-weight:700; line-height:1; border-radius:6px; cursor:pointer; }
-  .pgadd { color:var(--accent); background:#0e1420; border:1px solid var(--line); }
-  .pgadd:hover { border-color:var(--accent); }
-  .pgdel { color:var(--muted); background:transparent; border:none; padding:3px 5px; }
-  .pgdel:hover { color:var(--bad); }
-  .flag { display:inline-flex; align-items:center; gap:5px; margin:0; background:#0e1420; border:1px solid var(--line);
-          border-radius:7px; padding:5px 8px; font-size:12px; cursor:pointer; user-select:none; }
   .flag input { accent-color:var(--accent); }
+  #splits_host { margin-top:6px; min-height:1.2em; }
+  .sprow { display:flex; align-items:center; gap:6px; font-size:12px; margin-top:4px; }
+  .spbadge { font-weight:700; padding:2px 7px; border-radius:6px; background:#0e1420; border:1px solid var(--line); white-space:nowrap; }
+  .spbadge.tau { color:var(--accent); }
+  .spbadge.lam { color:var(--full); }
+  .spcoord { flex:1; white-space:nowrap; }
+  .spdel { color:var(--muted); background:transparent; border:none; padding:3px 5px; cursor:pointer; font-size:13px; margin-left:auto; }
+  #addtau.armed, #addlam.armed { border-color:var(--accent); color:var(--accent); }
   button { margin-top:16px; width:100%; padding:11px; font:inherit; font-weight:650; color:#0e1420;
            background:var(--accent); border:none; border-radius:9px; cursor:pointer; }
   button:disabled { opacity:.55; cursor:default; }
@@ -103,12 +97,21 @@
     </div>
     <div id="modelreport" class="hint" style="margin:4px 0 10px"></div>
 
-    <label>&lambda; cuts &nbsp;<span class="hint">(log₁₀ &lambda;/Å, increasing; defines the columns)</span></label>
-    <input type="text" id="lam" />
-    <div class="hint">N edges → N&minus;1 &lambda; columns. e.g. <code>3, 3.8, 5</code></div>
+    <label>&tau; window &nbsp;<span class="hint">(&minus;log₁₀&tau;<sub>Ros</sub>; outer box)</span></label>
+    <input type="text" id="tauwin" value="-0.63, 7" />
+    <div class="hint">2 edges, e.g. <code>-0.63, 7</code></div>
 
-    <label>&tau; edges per &lambda;-column &nbsp;<span class="hint">(&minus;log₁₀&tau;<sub>Ros</sub>; outer window shared)</span></label>
-    <div id="pg_host"></div>
+    <label>&lambda; window &nbsp;<span class="hint">(log₁₀ &lambda;/Å; outer box)</span></label>
+    <input type="text" id="lam" />
+    <div class="hint">2 edges, e.g. <code>3, 5</code></div>
+
+    <label>Splits &nbsp;<span class="hint">(ordered; click the plot to place)</span></label>
+    <div class="opt-row">
+      <button id="addtau" class="secondary" style="flex:1">+ &tau; split</button>
+      <button id="addlam" class="secondary" style="flex:1">+ &lambda; split</button>
+    </div>
+    <div class="hint" id="splitmode_hint">Pick a split kind above, then click a bin on the top plot.</div>
+    <div id="splits_host"></div>
     <label>Min opacity split &nbsp;<span class="hint">(&Delta; ratio per &tau;-&lambda; group)</span></label>
     <div class="opt-row">
       <span class="opt-n">split a group into low/mid/high only if max/min &kappa; &ge;
@@ -212,100 +215,62 @@
 const $ = id => document.getElementById(id);
 const parseEdges = s => s.split(/[,\s]+/).map(t=>t.trim()).filter(Boolean).map(Number);
 let LAST = null;
-let TAU_WINDOW = [-0.63, 7.0];  // shared outer τ window [tlo, thi] (−log₁₀τ) — fixed, from /api/init
-let DEFAULT_TAU = [0.3488, 1.2275, 2.885];  // interior τ cuts seeded into every new λ column (from /api/init)
-let TAU_COLS = null;   // per-lambda-column τ edges; ALWAYS length == λ-column count (always-on editor)
-let BINNING_TREE = null;  // active general 2D guillotine tree (non-null = tree-mode overlay)
-let _editTimer = null;  // debounce for auto-recompute after editing the λ edges
-const edgesValid = a => a.length >= 2 && a.every(Number.isFinite) && a.every((v,i)=>i===0 || v>a[i-1]);
+let SPLITS = [];   // ordered [{axis:'tau'|'lam', tau, lam}]; a cut spans the one bin holding its point
+let SPLIT_MODE = null;  // 'tau'|'lam' while armed: the next top-plot click places that split
+let BINNING_TREE = null;  // optimizer-result overlay (explicit tree); any box/split edit exits it
+let _editTimer = null;  // debounce for auto-recompute after editing the windows
+const edgesValid = a => a.length === 2 && a.every(Number.isFinite) && a[0] < a[1];
 
-// (Re)build the always-on per-column-τ editor into #pg_host from TAU_COLS. Each λ column renders
-// ALL its interior cuts (as many as it has), each with a "×" to remove it, plus a "+" to add one.
-// The outer window edges [tlo, thi] = TAU_WINDOW are fixed; only the interior cuts are editable.
-function renderPgGrid() {
-  const tlo = TAU_WINDOW[0], thi = TAU_WINDOW[1];
-  const rows = TAU_COLS.map((l, k) => {
-    const inputs = l.slice(1, -1).map(c =>   // interior τ cuts for this λ column
-      `<span class="pgcutwrap">
-         <input type="number" class="pgcut" data-k="${k}" step="0.05" value="${(+c).toFixed(2)}"
-                min="${tlo}" max="${thi}" title="−log₁₀τ cut for λ${k}">
-         <button type="button" class="pgdel" data-k="${k}" title="remove this cut">&times;</button>
-       </span>`).join('');
-    return `<div class="pgrow" data-k="${k}">
-              <span class="pglab">λ${k}</span>${inputs}
-              <button type="button" class="pgadd" data-k="${k}" title="add a τ cut for λ${k}">+</button>
-            </div>`;
+// Render the ordered split list (left panel mirrors the plot clicks).
+function renderSplits() {
+  const host = $('splits_host');
+  if (!SPLITS.length) { host.innerHTML = `<div class="hint">no splits yet — the box is one group.</div>`; return; }
+  host.innerHTML = SPLITS.map((s, i) => {
+    const pos = s.axis === 'tau' ? +s.tau : +s.lam;
+    const at = s.axis === 'tau' ? `τ=${pos.toFixed(3)} @ λ=${(+s.lam).toFixed(3)}` : `λ=${pos.toFixed(3)} @ τ=${(+s.tau).toFixed(3)}`;
+    return `<div class="sprow" data-i="${i}"><span class="spbadge ${s.axis}">#${i + 1} ${s.axis}</span>`
+      + `<span class="spcoord">${at}</span><button type="button" class="spdel" data-i="${i}" title="remove this split">×</button></div>`;
   }).join('');
-  const host = $('pg_host');
-  host.innerHTML = `<div class="pggrid">${rows}</div>`;
-  host.querySelectorAll('.pgcut').forEach(inp => inp.addEventListener('input', onPgCutEdit));
-  host.querySelectorAll('.pgadd').forEach(b => b.addEventListener('click', () => onPgAddCut(+b.dataset.k)));
-  host.querySelectorAll('.pgdel').forEach(b => b.addEventListener('click', () => onPgDelCut(+b.dataset.k, b.closest('.pgcutwrap'))));
+  host.querySelectorAll('.spdel').forEach(b => b.addEventListener('click', () => {
+    clearTree();
+    SPLITS.splice(+b.dataset.i, 1);
+    renderSplits();
+    compute();
+  }));
 }
-
-// Rebuild TAU_COLS from the editor's cut inputs: per column, collect all finite in-window values,
-// then sort + dedupe (so crossing/duplicate cuts silently normalize). [tlo, thi] is re-pinned.
-function rebuildPgFromInputs() {
-  const tlo = TAU_WINDOW[0], thi = TAU_WINDOW[1];
-  $('pg_host').querySelectorAll('.pgrow').forEach(row => {
-    const k = +row.dataset.k;
-    const vals = [...row.querySelectorAll('.pgcut')].map(inp => parseFloat(inp.value))
-      .filter(v => Number.isFinite(v) && v > tlo && v < thi).map(v => +v.toFixed(4));
-    vals.sort((a, b) => a - b);
-    const cuts = vals.filter((v, i) => i === 0 || v - vals[i - 1] > 1e-4);
-    TAU_COLS[k] = [tlo, ...cuts, thi];
-  });
+// Arm the click-to-place mode for one axis (toggle off on second click).
+function armSplit(axis) {
+  SPLIT_MODE = (SPLIT_MODE === axis) ? null : axis;
+  $('addtau').classList.toggle('armed', SPLIT_MODE === 'tau');
+  $('addlam').classList.toggle('armed', SPLIT_MODE === 'lam');
+  $('splitmode_hint').textContent = SPLIT_MODE
+    ? `placing ${SPLIT_MODE === 'tau' ? 'τ' : 'λ'} split — click a bin on the top plot (Esc cancels).`
+    : 'Pick a split kind above, then click a bin on the top plot.';
+  try { $('chart').style.cursor = SPLIT_MODE ? 'crosshair' : ''; } catch(_) {}
 }
-// Typing in a cut box: normalize into TAU_COLS and recompute (debounced). DOM untouched (focus kept).
-function onPgCutEdit() {
-  rebuildPgFromInputs();
-  clearTimeout(_editTimer);
-  _editTimer = setTimeout(() => compute(), 500);
-}
-// "+" button: place a new cut at the midpoint of the current widest sub-interval for λk.
-function onPgAddCut(k) {
-  rebuildPgFromInputs();  // fold in any pending typed edits before extending
-  const edges = TAU_COLS[k].slice();
-  let bi = 0, bw = -1;
-  for (let i = 0; i < edges.length - 1; i++) { const w = edges[i + 1] - edges[i]; if (w > bw) { bw = w; bi = i; } }
-  TAU_COLS[k].splice(bi + 1, 0, +((edges[bi] + edges[bi + 1]) / 2).toFixed(2));
-  renderPgGrid();
-  compute();
-}
-// "×" button: drop that cut's input, normalize, recompute (debounced).
-function onPgDelCut(k, wrap) {
-  wrap.remove();
-  rebuildPgFromInputs();
-  clearTimeout(_editTimer);
-  _editTimer = setTimeout(() => compute(), 300);
-}
-// Resize TAU_COLS to match nCol λ-columns, preserving each column's cuts BY INDEX (column k stays
-// column k); columns beyond the old count are seeded with DEFAULT_TAU. Returns whether the count
-// changed, so callers re-render the editor only then (keeps λ-box focus while typing).
-function adaptPgToTauCount(nCol) {
-  const prev = TAU_COLS || [];
-  const deflt = [TAU_WINDOW[0], ...DEFAULT_TAU, TAU_WINDOW[1]];
-  TAU_COLS = Array.from({length: nCol}, (_, k) => k < prev.length ? prev[k].slice() : deflt.slice());
-  return prev.length !== nCol;
-}
-
-// Enter general 2D (guillotine) overlay: a whole binning tree drives the plot, so the per-column
-// editor is replaced by a read-only note. TAU_COLS is left intact for when the user exits tree
-// mode by editing the λ box. Produced by the optimizer; read-only.
+// Optimizer-result overlay: an explicit tree drives compute until a box/split edit exits it.
 function setTree(tree) {
   BINNING_TREE = tree;
-  $('pg_host').innerHTML = `<div class="hint" style="margin-top:4px"><b>general 2D binning active</b> — `
-    + `${_countLeaves(tree.root)} leaf groups (edit the &lambda; box to exit).</div>`;
+  renderSplitsNote();
 }
 function clearTree() {
   if (!BINNING_TREE) return;
   BINNING_TREE = null;
-  renderPgGrid();   // restore the always-on per-column editor
+  renderSplitsNote();
 }
 function _countLeaves(node) {
   return (node.leaf || !node.axis) ? 1 : _countLeaves(node.lo) + _countLeaves(node.hi);
 }
-
+function renderSplitsNote() {
+  if (!BINNING_TREE) return;
+  const host = $('splits_host');
+  const note = document.createElement('div');
+  note.className = 'hint';
+  note.style.marginTop = '4px';
+  note.innerHTML = `<b>optimizer tree active</b> — ${_countLeaves(BINNING_TREE.root)} leaf groups `
+    + `(edit the box or splits to exit).`;
+  host.prepend(note);
+}
 // Populate the model dropdown (valid models only) and the per-file validation report.
 function renderModels(d) {
   const sel = $('model'); const cur = sel.value;
@@ -336,17 +301,13 @@ async function refreshModels() {
 
 async function init() {
   const r = await fetch('/api/init'); const d = await r.json();
-  $('lam').value = d.default_lambda_edges.join(', ');
-  // fixed outer τ window + default interior cuts, both derived from the server's default τ edges
   const te = d.default_tau_edges;
-  TAU_WINDOW = [te[0], te[te.length - 1]];
-  DEFAULT_TAU = te.slice(1, -1);
+  $('tauwin').value = [te[0], te[te.length - 1]].join(', ');
+  $('lam').value = [d.default_lambda_edges[0], d.default_lambda_edges[d.default_lambda_edges.length - 1]].join(', ');
   if (Array.isArray(d.default_window)) { $('win_lo').value = d.default_window[0]; $('win_hi').value = d.default_window[1]; }
   if (d.max_groups_ceiling) { $('qv_maxgroups').max = d.max_groups_ceiling; $('qv_maxgroups').value = Math.min(+$('qv_maxgroups').value, d.max_groups_ceiling); }
   renderModels(d);
-  // seed the always-on per-column editor: every λ column starts with the default cut(s)
-  adaptPgToTauCount(parseEdges($('lam').value).length - 1);
-  renderPgGrid();
+  renderSplits();
   // resume a Q_rad optimization that's already running (e.g. after a page reload)
   try {
     const s = await (await fetch('/api/optimize_qrad_status')).json();
@@ -361,16 +322,15 @@ function setQStatus(msg, err=false){ const e=$('qstatus'); e.textContent=msg; e.
 
 async function compute() {
   clearTimeout(_editTimer);  // cancel any pending debounced auto-compute
-  let lam;
-  try { lam = parseEdges($('lam').value); }
+  let tauwin, lam;
+  try { tauwin = parseEdges($('tauwin').value); lam = parseEdges($('lam').value); }
   catch(e){ return setStatus('could not parse edges', true); }
-  if (lam.length<2) return setStatus('need ≥2 lambda edges', true);
-  adaptPgToTauCount(lam.length - 1);  // defensive: keep TAU_COLS length-matched to the λ columns
-  const body = {tau_edges:TAU_WINDOW.slice(), lambda_edges:lam, model:$('model').value,
+  if (!edgesValid(tauwin)) return setStatus('τ window needs exactly 2 increasing edges', true);
+  if (!edgesValid(lam)) return setStatus('λ window needs exactly 2 increasing edges', true);
+  const body = {tau_edges:tauwin, lambda_edges:lam, splits:SPLITS, model:$('model').value,
                 window_lo:+$('win_lo').value, window_hi:+$('win_hi').value,
                 min_opacity_delta: parseFloat($('min_opacity_delta').value) || 1};
   if (BINNING_TREE) body.binning_tree = BINNING_TREE;
-  else body.tau_per_lambda = TAU_COLS;
   $('go').disabled = true; setStatus('computing… (binning + radiative transfer)');
   try {
     const r = await fetch('/api/compute', {method:'POST', headers:{'Content-Type':'application/json'},
@@ -405,13 +365,13 @@ function stopQBar(){
 }
 
 async function qoptStart(columnsMode=false) {
-  let lam;
-  try { lam = parseEdges($('lam').value); }
+  let tauwin, lam;
+  try { tauwin = parseEdges($('tauwin').value); lam = parseEdges($('lam').value); }
   catch(e){ return setQStatus('could not parse edges', true); }
-  if (lam.length<2) return setQStatus('need ≥2 λ edges', true);
-  adaptPgToTauCount(lam.length - 1);  // keep TAU_COLS matched to the λ columns before warm-starting
+  if (!edgesValid(tauwin)) return setQStatus('τ window needs exactly 2 increasing edges', true);
+  if (!edgesValid(lam)) return setQStatus('λ window needs exactly 2 increasing edges', true);
   const body = {
-    tau_edges: TAU_WINDOW.slice(), lambda_edges: lam, model: $('model').value,
+    tau_edges: tauwin, lambda_edges: lam, splits: SPLITS, model: $('model').value,
     opt_tau: $('qv_tau').checked, opt_lambda: $('qv_lam').checked,
     grow: $('qv_grow').checked,
     tree: true,
@@ -428,22 +388,20 @@ async function qoptStart(columnsMode=false) {
     min_gap_lam: parseFloat($('qv_gaplam').value) || undefined,
     min_opacity_delta: parseFloat($('min_opacity_delta').value) || 1,
   };
-  // warm-start a re-run from the current binning so it keeps refining (not resetting to the box).
-  // Columns mode always refines the TAU_COLS editor state (never a tree overlay); the general
-  // path seeds from the explicit tree, else per-column tau.
+  // warm-start a re-run from the manual split list (never a tree overlay); the optimizer
+  // result below loads as an explicit tree, kept until the next box/split edit.
   if (columnsMode) {
-    clearTree();
     body.columns = true;
     body.tree = false;
-    body.tau_per_lambda = TAU_COLS;
+    body.tau_per_lambda = null;
+    body.splits = SPLITS;
   }
   else if (BINNING_TREE) body.binning_tree = BINNING_TREE;
-  else body.tau_per_lambda = TAU_COLS;
+  else body.splits = SPLITS;
   qoptBusy(true); setQStatus(columnsMode ? 'starting columns optimization…' : 'starting Q_rad optimization…'); QLASTDIAG = null;
   try {
     const r = await fetch('/api/optimize_qrad', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
     const d = await r.json();
-    if (!r.ok) throw new Error(d.error||'could not start');
     $('qcancel').style.display = 'inline';
     startQBar(body.max_seconds);
     QPOLL = setInterval(qoptPoll, 1500);
@@ -470,8 +428,8 @@ function qoptFinish(result) {
   $('qcancel').style.display = 'none';
   qoptBusy(false);
   if (!result) return;
-  // The whole tree drives the plot; tau/lambda boxes are stale (exit = edit them). Columns results
-  // are column-family trees, so the same overlay + recompute path applies.
+  // The optimizer returns a free-form tree: keep the manual split list intact and show the
+  // result as an overlay (any box/split edit exits it via onEdgeEdit).
   setTree(result.binning_tree);
   const imp = (100*(result.rms0-result.rms)/result.rms0).toFixed(1);
   const why = result.stop_reason ? ` · stopped: ${result.stop_reason}` : '';
@@ -481,15 +439,14 @@ function qoptFinish(result) {
 }
 
 async function downloadKappa() {
-  let lam;
-  try { lam = parseEdges($('lam').value); }
+  let tauwin, lam;
+  try { tauwin = parseEdges($('tauwin').value); lam = parseEdges($('lam').value); }
   catch(e){ return setStatus('could not parse edges', true); }
-  if (lam.length<2) return setStatus('need ≥2 λ edges', true);
-  adaptPgToTauCount(lam.length - 1);
-  const body = {tau_edges:TAU_WINDOW.slice(), lambda_edges:lam, model:$('model').value,
+  if (!edgesValid(tauwin)) return setStatus('τ window needs exactly 2 increasing edges', true);
+  if (!edgesValid(lam)) return setStatus('λ window needs exactly 2 increasing edges', true);
+  const body = {tau_edges:tauwin, lambda_edges:lam, splits:SPLITS, model:$('model').value,
                 min_opacity_delta: parseFloat($('min_opacity_delta').value) || 1};
   if (BINNING_TREE) body.binning_tree = BINNING_TREE;
-  else body.tau_per_lambda = TAU_COLS;
   $('dl').disabled = true; setStatus('building kappa table…');
   try {
     const r = await fetch('/api/kappa_dat', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
@@ -701,6 +658,110 @@ function render(d){
   Plotly.react('chart', data, layout, {responsive:true, displayModeBar:true, displaylogo:false, modeBarButtonsToRemove:['lasso2d','select2d']});
   LAST = d;
 }
+// Click-to-place: while a split kind is armed, a click anywhere on the top binning
+// diagram appends that split. `plotly_click` only fires on markers (and misses empty
+// bin space), so read the click's data coordinates off the x/y axes instead.
+function placeSplitAt(lam, tau) {
+  if (!SPLIT_MODE) return;
+  lam = +lam;
+  tau = +tau;
+  if (!Number.isFinite(lam) || !Number.isFinite(tau)) return;
+  // Dry-run the ordered split list locally (same guillotine rule as the backend):
+  // reject a click that falls outside the box or within min-gap of its bin edge,
+  // so a redundant click explains itself instead of failing the recompute.
+  const err = splitError(SPLIT_MODE, tau, lam);
+  if (err) {
+    setStatus(err, true);
+    return;  // stay armed: fix the aim and click again (Esc cancels)
+  }
+  clearTree();
+  SPLITS.push({axis: SPLIT_MODE, tau: +tau.toFixed(4), lam: +lam.toFixed(4)});
+  renderSplits();
+  compute();  // stay armed for the next click of the same kind
+}
+// Mirror of qrad_optimize.tree_from_splits validation for the pending split list:
+// returns an error string, or null when the split at (tau, lam) is legal.
+function splitError(axis, tau, lam) {
+  const tw = parseEdges($('tauwin').value), lw = parseEdges($('lam').value);
+  if (!edgesValid(tw) || !edgesValid(lw)) return 'τ/λ windows need exactly 2 increasing edges each';
+  const MG_TAU = 0.15, MG_LAM = 0.10;  // must match qrad_optimize MIN_GAP_TAU/LAM
+  if (!(tw[0] <= tau && tau <= tw[1] && lw[0] <= lam && lam <= lw[1])) return 'click falls outside the box — ignored';
+  // Walk the existing splits to the bin holding the point (cut points land hi-side).
+  let t0 = tw[0], t1 = tw[1], l0 = lw[0], l1 = lw[1];
+  const rects = [[t0, t1, l0, l1]];
+  const at = (s) => (s.axis === 'tau' ? +s.tau : +s.lam);
+  for (const s of SPLITS) {
+    const idx = rects.findIndex(
+      ([a, b, c, d]) => a <= s.tau && s.tau <= b && c <= s.lam && s.lam <= d
+    );
+    if (idx < 0) return 'existing splits are inconsistent — remove the last one';
+    const [a, b, c, d] = rects.splice(idx, 1)[0];
+    if (s.axis === 'tau') rects.push([a, at(s), c, d], [at(s), b, c, d]);
+    else rects.push([a, b, c, at(s)], [a, b, at(s), d]);
+  }
+  const bin = rects.find(([a, b, c, d]) => a <= tau && tau <= b && c <= lam && lam <= d);
+  if (!bin) return 'click falls outside the box — ignored';
+  const pos = axis === 'tau' ? tau : lam;
+  const [lo, hi] = axis === 'tau' ? [bin[0], bin[1]] : [bin[2], bin[3]];
+  const mg = axis === 'tau' ? MG_TAU : MG_LAM;
+  if (pos - lo < mg || hi - pos < mg)
+    return `too close to the existing ${axis === 'tau' ? 'τ' : 'λ'} cut (min gap ${mg}) — split ignored`;
+  return null;
+}
+function onChartClick(ev) {
+  if (!SPLIT_MODE || !ev || !ev.points || !ev.points.length) return;
+  const p = ev.points[0];
+  if (p.xaxis !== undefined && p.xaxis._id !== 'x') return;  // top binning panel only
+  placeSplitAt(p.x, p.y);
+}
+document.getElementById('chart').addEventListener('mousemove', chartHoverCoords);
+function chartHoverCoords(e) {
+  if (!SPLIT_MODE || !LAST) return;
+  try {
+    const g = document.getElementById('chart');
+    const r = g.getBoundingClientRect();
+    const xa = g._fullLayout.xaxis;
+    const ya = g._fullLayout.yaxis;
+    const px = e.clientX - r.x - xa._offset, py = e.clientY - r.y - ya._offset;
+    const xLen = (xa.range[1] - xa.range[0]) * Math.abs(xa._m);
+    const yLen = (ya.range[1] - ya.range[0]) * Math.abs(ya._m);
+    if (px < 0 || px > xLen || py < 0 || py > yLen) return;
+    const lam = xa.range[0] + px / xa._m;
+    const tau = Math.max(ya.range[0], ya.range[1]) + py / ya._m;
+    if (!Number.isFinite(lam) || !Number.isFinite(tau)) return;
+    $('splitmode_hint').textContent =
+      `placing ${SPLIT_MODE === 'tau' ? 'τ' : 'λ'} split @ ${SPLIT_MODE === 'tau' ? 'τ=' + tau.toFixed(3) : 'λ=' + lam.toFixed(3)} — click to place (Esc cancels).`;
+  } catch (_) {
+    // ignore
+  }
+}
+document.getElementById('chart').addEventListener('click', chartDomClick);
+function chartDomClick(e) {
+  if (!SPLIT_MODE || !LAST) return;
+  let lam, tau;
+  try {
+    const g = document.getElementById('chart');
+    const r = g.getBoundingClientRect();
+    const xa = g._fullLayout.xaxis;
+    const ya = g._fullLayout.yaxis;
+    // The axes' pixel space starts at the plot area, not the chart div (margins
+    // shift it; the div rect alone skews τ under DPR-2/zoom). Anchor via the axes:
+    // px = clientX - rectX - offset, then data = range-base + px / slope. The y axis
+    // runs top-down (negative slope), so its base is the range max.
+    const px = e.clientX - r.x - xa._offset, py = e.clientY - r.y - ya._offset;
+    // Reject clicks outside the top binning panel (below it live the Q panels, whose
+    // y pixels would map to a bogus tau).
+    const xLen = (xa.range[1] - xa.range[0]) * Math.abs(xa._m);
+    const yLen = (ya.range[1] - ya.range[0]) * Math.abs(ya._m);
+    if (px < 0 || px > xLen || py < 0 || py > yLen) return;
+    lam = xa.range[0] + px / xa._m;
+    tau = Math.max(ya.range[0], ya.range[1]) + py / ya._m;
+  } catch (_) {
+    return;
+  }
+  if (!Number.isFinite(lam) || !Number.isFinite(tau)) return;
+  placeSplitAt(lam, tau);
+}
 
 // --- Atmosphere tab: plot the selected model's structure vs log10 tau_Ros ---
 let ACTIVE_TAB = 'qrad';
@@ -761,19 +822,20 @@ function switchTab(tab){
   else Plotly.Plots.resize('chart');  // resize the (was-hidden) Q_rad chart
 }
 
-// a manual λ-edge edit may change the λ-column count, so sync TAU_COLS (and exit any tree overlay);
-// re-render the per-column editor only when the count actually changed (keeps focus while typing).
+// A box/split edit exits any optimizer-tree overlay; recompute once edits settle (debounced).
 const onEdgeEdit = () => {
   clearTree();
-  const lamArr = parseEdges($('lam').value);
-  if (lamArr.length >= 2 && adaptPgToTauCount(lamArr.length - 1)) renderPgGrid();
-  // auto-recompute once edits settle and are valid (debounced; compute is ~1.5-3s)
+  renderSplits();
   clearTimeout(_editTimer);
   _editTimer = setTimeout(() => {
-    if (edgesValid(parseEdges($('lam').value))) compute();
+    if (edgesValid(parseEdges($('tauwin').value)) && edgesValid(parseEdges($('lam').value))) compute();
   }, 600);
 };
+$('tauwin').addEventListener('input', onEdgeEdit);
 $('lam').addEventListener('input', onEdgeEdit);
+$('addtau').addEventListener('click', () => armSplit('tau'));
+$('addlam').addEventListener('click', () => armSplit('lam'));
+window.addEventListener('keydown', e => { if (e.key === 'Escape' && SPLIT_MODE) armSplit(SPLIT_MODE); });
 $('go').addEventListener('click', compute);
 $('refresh').addEventListener('click', refreshModels);
 $('model').addEventListener('change', () => {
@@ -782,12 +844,6 @@ $('model').addEventListener('change', () => {
   if (ACTIVE_TAB === 'atm') loadAtmosphere(true);
   compute();  // keep the Q_rad view (+ metrics) in sync for when the tab is next shown
 });
-document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.tab)));
-$('qopt').addEventListener('click', () => qoptStart(false));
-$('qoptcols').addEventListener('click', () => qoptStart(true));
-$('qcancel').addEventListener('click', qoptCancel);
-$('dl').addEventListener('click', downloadKappa);
-$('lam').addEventListener('keydown', e=>{ if(e.key==='Enter') compute(); });
 // Plot sizes: total heights + per-panel relative weights; debounce, then re-render (no recompute).
 let _sizeTimer = null;
 document.querySelectorAll('#q_total, #a_total, .qw, .aw').forEach(el => el.addEventListener('input', () => {

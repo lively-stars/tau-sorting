@@ -353,6 +353,7 @@ def score_binning(
     n_splits=3,
     lambda_edges_per_tau=None,
     tau_per_lambda=None,
+    splits=None,
     binning_tree=None,
     window=None,
     min_opacity_delta=1.0,
@@ -363,6 +364,9 @@ def score_binning(
     None -> DEFAULT_MODEL). It is precomputed on first use. Grouping modes (highest priority first):
       - general 2D guillotine: pass `binning_tree` (a {window_tau, window_lam, root} tree); the
         other edge args are ignored. Any rectangular tiling (see `build_group_specs_tree`).
+      - split list: pass `splits` (ordered [{axis, tau, lam}]) plus the `tau_edges`/
+        `lambda_edges` outer windows (each exactly 2 edges); built via
+        `qrad_optimize.tree_from_splits`.
       - columns: pass `tau_per_lambda` (one tau-edge list per lambda column; independent
         counts allowed, shared outer tau window).
       - per-tau-group lambda: pass `lambda_edges_per_tau` (one lambda-edge list per tau group).
@@ -377,10 +381,14 @@ def score_binning(
     clamped_top = float(-np.log10(inv["tau_ross"][inv["max_height_idx"]] + 0.2))
 
     # Normalize every input mode into a guillotine tree so the tree path is the single grouping
-    # implementation. Precedence: explicit `binning_tree` > columns > per-tau-lambda > shared-flags.
+    # implementation. Precedence: explicit `binning_tree` > splits > columns > per-tau-lambda > shared-flags.
     tree = binning_tree
     if tree is None:
-        if tau_per_lambda is not None:
+        if splits is not None:
+            tw2 = [float(tau_edges[0]), float(tau_edges[1])]
+            lw2 = [float(lambda_edges[0]), float(lambda_edges[1])]
+            tree = qrad_optimize.tree_from_splits(tw2, lw2, splits)
+        elif tau_per_lambda is not None:
             tree = qrad_optimize.tree_from_columns(list(lambda_edges), [list(x) for x in tau_per_lambda])
         elif lambda_edges_per_tau is not None:
             tree = qrad_optimize.tree_from_lpt(list(tau_edges), [list(x) for x in lambda_edges_per_tau])
@@ -511,6 +519,7 @@ def save_kappa_dat(
     *,
     lambda_edges_per_tau=None,
     tau_per_lambda=None,
+    splits=None,
     binning_tree=None,
     n_splits=3,
     path=None,
@@ -524,7 +533,7 @@ def save_kappa_dat(
     (`kap_mean = ln(mixed)` in `[nBands, NT, Np]`). `flags` may be None in per-tau mode. `path`
     overrides the output path; otherwise a self-describing name is used (in the CWD). `model`
     selects the atmosphere the binning runs on (bare filename under models/; None -> default).
-    Grouping precedence: `binning_tree` > `tau_per_lambda` > `lambda_edges_per_tau` > flags.
+    Grouping precedence: `binning_tree` > `splits` > `tau_per_lambda` > `lambda_edges_per_tau` > flags.
     """
     inv = inv_for(model)
     odf, cont, atm = inv["odf"], inv["cont"], inv["atm"]
@@ -532,13 +541,17 @@ def save_kappa_dat(
     clamped = None
 
     # Normalize every input mode into a guillotine tree so the tree path is the single grouping
-    # implementation. Precedence: explicit `binning_tree` > columns > per-tau-lambda > shared-flags.
+    # implementation. Precedence: explicit `binning_tree` > splits > columns > per-tau-lambda > shared-flags.
     # The .dat filename still reflects the original mode (col vs pt vs tree vs sl) because the
     # untouched `binning_tree`/`tau_per_lambda`/`lambda_edges_per_tau`/`flags` params are
     # what _kappa_dat_name dispatches on below.
     tree = binning_tree
     if tree is None:
-        if tau_per_lambda is not None:
+        if splits is not None:
+            tw2 = [float(tau_edges[0]), float(tau_edges[1])]
+            lw2 = [float(lambda_edges[0]), float(lambda_edges[1])]
+            tree = qrad_optimize.tree_from_splits(tw2, lw2, splits)
+        elif tau_per_lambda is not None:
             tree = qrad_optimize.tree_from_columns(list(lambda_edges), [list(x) for x in tau_per_lambda])
         elif lambda_edges_per_tau is not None:
             tree = qrad_optimize.tree_from_lpt(list(tau_edges), [list(x) for x in lambda_edges_per_tau])

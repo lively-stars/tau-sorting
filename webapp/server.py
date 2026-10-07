@@ -175,6 +175,7 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
                 plateau_rel=opt["plateau_rel"],
                 lambda_edges_per_tau=opt["lambda_edges_per_tau"],
                 tau_per_lambda=opt.get("tau_per_lambda"),
+                splits=opt.get("splits"),
                 tree=opt["tree"],
                 min_opacity_delta=opt["min_opacity_delta"],
                 on_eval=on_eval,
@@ -195,6 +196,7 @@ def compute(
     model,
     lambda_edges_per_tau=None,
     tau_per_lambda=None,
+    splits=None,
     binning_tree=None,
     window=None,
     min_opacity_delta=1.0,
@@ -204,6 +206,7 @@ def compute(
     `model` selects the atmosphere the binning + RTE run on (validated file under models/).
     `window` (log10 tau_Ross (lo,hi)) narrows the rms/max_abs scoring range (None -> default).
     Grouping (highest priority first): `binning_tree` (general 2D guillotine),
+    then `splits` (ordered [{axis, tau, lam}] over the tau/lambda window pair),
     then `tau_per_lambda` (per-column tau), then `lambda_edges_per_tau` (per-tau-group lambda),
     else the shared-lambda + split-flag model.
     """
@@ -211,6 +214,16 @@ def compute(
         if binning_tree is not None:
             r = qc.score_binning(
                 None, None, None, model, binning_tree=binning_tree, window=window, min_opacity_delta=min_opacity_delta
+            )
+        elif splits is not None:
+            r = qc.score_binning(
+                tau_edges,
+                lambda_edges,
+                None,
+                model,
+                splits=splits,
+                window=window,
+                min_opacity_delta=min_opacity_delta,
             )
         elif tau_per_lambda is not None:
             r = qc.score_binning(
@@ -389,14 +402,16 @@ class Handler(BaseHTTPRequestHandler):
             req = json.loads(self.rfile.read(n) or b"{}")
             tau_edges = [float(x) for x in req["tau_edges"]]
             lambda_edges = [float(x) for x in req["lambda_edges"]]
-            if len(tau_edges) < 2:
-                raise ValueError("need at least 2 tau edges")
-            if len(lambda_edges) < 2:
-                raise ValueError("need at least 2 lambda edges")
-            if any(tau_edges[i] >= tau_edges[i + 1] for i in range(len(tau_edges) - 1)):
-                raise ValueError("tau edges must be strictly increasing")
-            if any(lambda_edges[i] >= lambda_edges[i + 1] for i in range(len(lambda_edges) - 1)):
-                raise ValueError("lambda edges must be strictly increasing")
+            splits_req = req.get("splits") or None
+            if self.path in ("/api/compute", "/api/kappa_dat") and splits_req is not None:
+                # Split-list mode: tau/lambda carry the outer windows (exactly 2 edges each).
+                if len(tau_edges) != 2 or len(lambda_edges) != 2:
+                    raise ValueError("splits mode needs exactly 2 tau edges + 2 lambda edges (the outer windows)")
+            else:
+                if len(tau_edges) < 2:
+                    raise ValueError("need at least 2 tau edges")
+                if len(lambda_edges) < 2:
+                    raise ValueError("need at least 2 lambda edges")
             model = _resolve_model(req)
             t0 = time.perf_counter()
             if self.path == "/api/optimize_qrad":
@@ -429,6 +444,8 @@ class Handler(BaseHTTPRequestHandler):
                         "opt_lambda": bool(req.get("opt_lambda", True)),
                         "opt_flags": bool(req.get("opt_flags", True)),
                         "grow": bool(req.get("grow", True)),
+                        # manual split-list warm start (box + ordered splits seed the tree)
+                        "splits": req.get("splits") or None,
                         # per-column-tau warm start (re-running keeps refining the current cuts)
                         "tau_per_lambda": req.get("tau_per_lambda") or None,
                         # per-group-lambda warm start (legacy)
@@ -475,6 +492,16 @@ class Handler(BaseHTTPRequestHandler):
                             _w, name = qc.save_kappa_dat(
                                 None, None, None, model, binning_tree=btree, path=tmp, min_opacity_delta=min_od
                             )
+                        elif splits_req is not None:
+                            _w, name = qc.save_kappa_dat(
+                                tau_edges,
+                                lambda_edges,
+                                None,
+                                model,
+                                splits=splits_req,
+                                path=tmp,
+                                min_opacity_delta=min_od,
+                            )
                         elif tcols is not None:
                             _w, name = qc.save_kappa_dat(
                                 None,
@@ -519,6 +546,7 @@ class Handler(BaseHTTPRequestHandler):
                 model,
                 lambda_edges_per_tau=lpt,
                 tau_per_lambda=tcols,
+                splits=splits_req,
                 binning_tree=btree,
                 window=_window(req),
                 min_opacity_delta=float(req.get("min_opacity_delta", 1.0) or 1.0),

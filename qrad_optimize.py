@@ -324,6 +324,68 @@ def _tau_chain(tau_edges):
     return node
 
 
+def tree_from_splits(tau_window, lam_window, splits, *, min_gap_tau=MIN_GAP_TAU, min_gap_lam=MIN_GAP_LAM) -> dict:
+    """Build a guillotine tree from an ordered split list over a bounding box.
+
+    `tau_window`/`lam_window` are the outer [lo, hi] edges (-log10 tau / log10 lambda).
+    Each split is {"axis": "tau"|"lam", "tau": float, "lam": float}: the cut runs at the
+    point's coordinate on `axis` and spans the single existing leaf (bin) containing the
+    point — i.e. it stops at the box or at an earlier cross-axis cut. Splits apply in
+    order, so deleting an early split reshapes every later one. Example: box tau [-1, 7]
+    x lam [3, 5], tau splits at 0 and 2 (full-height), then {"axis": "lam", "tau": 1.0,
+    "lam": 3.5} cuts only the tau-[0, 2] bin at lam 3.5.
+
+    Raises ValueError when a window is degenerate, a point falls outside the box, or a
+    cut lands within min-gap of its leaf's border on the cut axis.
+    """
+    try:
+        tlo, thi = (float(tau_window[0]), float(tau_window[1]))
+        llo, lhi = (float(lam_window[0]), float(lam_window[1]))
+    except (TypeError, IndexError, ValueError):
+        raise ValueError(f"tau/lambda windows must each hold 2 edges, got {tau_window!r} / {lam_window!r}")
+    if not (tlo < thi):
+        raise ValueError(f"tau window must be increasing, got {[tlo, thi]}")
+    if not (llo < lhi):
+        raise ValueError(f"lambda window must be increasing, got {[llo, lhi]}")
+
+    root: dict = {"leaf": True}
+
+    def _leaf_at(node, rect, tau, lam):
+        # Walk to the leaf containing (tau, lam); cut points land in the hi child
+        # (the digitize(right=False) convention assign_tree uses).
+        while not _is_leaf(node):
+            t0, t1, l0, l1 = rect
+            at = float(node["at"])
+            if node["axis"] == "tau":
+                node, rect = (node["lo"], (t0, at, l0, l1)) if tau < at else (node["hi"], (at, t1, l0, l1))
+            elif node["axis"] == "lam":
+                node, rect = (node["lo"], (t0, t1, l0, at)) if lam < at else (node["hi"], (t0, t1, at, l1))
+            else:
+                raise ValueError(f"unknown tree axis {node['axis']!r}; expected 'tau' or 'lam'")
+        return node, rect
+
+    for i, s in enumerate(splits or []):
+        try:
+            axis, tau, lam = s["axis"], float(s["tau"]), float(s["lam"])
+        except (TypeError, KeyError, ValueError):
+            raise ValueError(f"split {i}: need {{axis, tau, lam}}, got {s!r}")
+        if axis not in ("tau", "lam"):
+            raise ValueError(f"split {i}: axis must be 'tau' or 'lam', got {axis!r}")
+        if not (tlo <= tau <= thi and llo <= lam <= lhi):
+            raise ValueError(f"split {i}: point (tau={tau}, lam={lam}) falls outside the box")
+        leaf, (t0, t1, l0, l1) = _leaf_at(root, (tlo, thi, llo, lhi), tau, lam)
+        if axis == "tau":
+            pos, lo, hi, mg = tau, t0, t1, min_gap_tau
+        else:
+            pos, lo, hi, mg = lam, l0, l1, min_gap_lam
+        if pos - lo < mg - 1e-12 or hi - pos < mg - 1e-12:
+            raise ValueError(f"split {i}: {axis} cut at {pos} is within min_gap ({mg}) of its bin edge [{lo}, {hi}]")
+        leaf.clear()
+        leaf.update({"axis": axis, "at": pos, "lo": {"leaf": True}, "hi": {"leaf": True}})
+
+    return {"window_tau": [tlo, thi], "window_lam": [llo, lhi], "root": root}
+
+
 def _resnap(cols, min_gap):
     """Re-seat rounded per-column edges to min-gap in place (endpoints pinned).
 
@@ -817,6 +879,7 @@ def optimize_qrad(
     per_group_lambda=False,
     lambda_edges_per_tau=None,  # per-group-lambda warm start (one lambda-edge list per tau group)
     tau_per_lambda=None,  # columns warm start (one tau-edge list per lambda column)
+    splits=None,  # split-list warm start (ordered [{axis, tau, lam}] over the 2-edge windows)
     tree=False,  # general 2D guillotine mode (both tau and lambda locally free)
     binning_tree=None,  # guillotine-tree warm start {window_tau, window_lam, root}
     beam_width=3,  # rival tree topologies kept in parallel each round
@@ -881,15 +944,18 @@ def optimize_qrad(
     )
 
     # The general-2D optimizer is tree-only: every grouping (explicit guillotine tree,
-    # per-tau-group lambda, or shared tau + split flags) is normalized to a guillotine tree and
-    # refined via a single seed/grow/polish path. (Columns inputs take the separate
-    # optimize_columns coordinate-descent path.) The shim below seeds the working tree from
-    # whichever input was passed; every result is a {"tree": True, "binning_tree": ...} dict.
+    # split list, per-tau-group lambda, or shared tau + split flags) is normalized to a
+    # guillotine tree and refined via a single seed/grow/polish path. (Columns inputs take
+    # the separate optimize_columns coordinate-descent path.) The shim below seeds the
+    # working tree from whichever input was passed; every result is a {"tree": True,
+    # "binning_tree": ...} dict.
 
     if binning_tree is not None:
         btree = copy.deepcopy(binning_tree)
-    elif tau_per_lambda is not None:
-        btree = tree_from_columns(list(lambda_edges), [list(x) for x in tau_per_lambda])
+    elif splits is not None:
+        if len(tau_edges) != 2 or len(lambda_edges) != 2:
+            raise ValueError("splits mode needs exactly 2 tau edges + 2 lambda edges (the outer windows)")
+        btree = tree_from_splits(tau_edges, lambda_edges, splits)
     elif lambda_edges_per_tau is not None:
         btree = tree_from_lpt(tau_edges, [list(x) for x in lambda_edges_per_tau])
         if grow and _n_leaves(btree) >= max_groups:
