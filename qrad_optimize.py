@@ -1325,6 +1325,7 @@ def optimize_columns(
                 best = best_tc
                 budget.reset_plateau(state["n_evals"])
                 grew = True
+                on_step(f"tau-split-col{k}", best, n_leaves_now())
             else:
                 break
         return grew
@@ -1355,6 +1356,7 @@ def optimize_columns(
                 best = best_tc
                 budget.reset_plateau(state["n_evals"])
                 pruned = True
+                on_step(f"tau-merge-col{k}", best, n_leaves_now())
             else:
                 break
         return pruned
@@ -1367,7 +1369,7 @@ def optimize_columns(
             break
         start = best
         _sweep(lam, min_gap_lam)  # (a) lambda-cut positions; count fixed
-        on_step("lambda", best, n_leaves_now())
+        on_step("lambda-wiggle", best, n_leaves_now())
         if budget.exhausted():
             break
         for k in range(len(cols)):  # (b) per-column tau stacks: positions + grow/prune
@@ -1377,7 +1379,8 @@ def optimize_columns(
             _grow_column(k)
             _prune_column(k)
             _sweep(cols[k], min_gap_tau)  # re-seat positions after any structural change
-        on_step("columns", best, n_leaves_now())
+            on_step(f"tau-col{k}", best, n_leaves_now())
+        on_step("joint-wiggle", best, n_leaves_now())
         checkpoint("round", _last_r[0])
         if budget.exhausted() or (start - best) <= cfg.block_tol * max(abs(start), 1.0):
             break

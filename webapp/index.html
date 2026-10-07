@@ -33,6 +33,14 @@
   .qprog { display:none; height:6px; margin-top:8px; background:#0e1420; border:1px solid var(--line); border-radius:4px; overflow:hidden; }
   .qprog.on { display:block; }
   #qprogbar { height:100%; width:0%; background:var(--accent); transition:width .2s linear; }
+  .qsteps { display:none; list-style:none; margin:8px 0 0; padding:0; font-size:12.5px; }
+  .qsteps.on { display:block; }
+  .qsteps li { padding:3px 0 3px 22px; position:relative; color:var(--muted); }
+  .qsteps li::before { content:'○'; position:absolute; left:4px; color:var(--muted); }
+  .qsteps li.done { color:var(--ink); }
+  .qsteps li.done::before { content:'●'; color:var(--full); }
+  .qsteps li.active { color:var(--ink); font-weight:600; }
+  .qsteps li.active::before { content:'◐'; color:var(--accent); }
   #qvars { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
   #qcancel { display:none; margin-left:8px; color:var(--accent); font-weight:600; }
   .flag input { accent-color:var(--accent); }
@@ -143,6 +151,7 @@
     </div>
     <div id="qprog" class="qprog" title="elapsed / time budget"><div id="qprogbar"></div></div>
     <div id="qstatus" class="hint" style="margin-top:6px; min-height:1.2em"></div>
+    <ul id="qsteps" class="qsteps"></ul>
     <details id="qadv">
       <summary>Advanced optimizer settings &amp; stopping conditions</summary>
       <div class="adv-grid">
@@ -403,6 +412,7 @@ async function qoptStart(columnsMode=false) {
   else if (BINNING_TREE) body.binning_tree = BINNING_TREE;
   else body.splits = SPLITS;
   qoptBusy(true); setQStatus(columnsMode ? 'starting columns optimization…' : 'starting Q_rad optimization…'); QLASTDIAG = null;
+  renderSteps([], false);
   try {
     const r = await fetch('/api/optimize_qrad', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
     const d = await r.json();
@@ -410,6 +420,45 @@ async function qoptStart(columnsMode=false) {
     startQBar(body.max_seconds);
     QPOLL = setInterval(qoptPoll, 1500);
   } catch(e){ setQStatus(e.message, true); qoptBusy(false); stopQBar(); }
+}
+// Staged step list: maps optimizer on_progress tags to human bullets. Latest tag = active,
+// earlier ones done. Columns path: tau groups (per-column grow) -> lambda wiggle -> joint wiggle.
+// General path: staged seed tau -> staged lambda -> grow -> polish -> topology.
+const QSTEP_LABELS = {
+  'start': 'seed binning scored',
+  'staged-tau': 'tau groups placed + positioned',
+  'staged-lambda': 'bottom-two groups lambda-split + positioned',
+  'lambda': 'lambda cuts positioned',
+  'lambda-wiggle': 'lambda cuts wiggled',
+  'columns': 'column tau stacks refined',
+  'joint-wiggle': 'tau + lambda jointly wiggled',
+  'round': 'refinement round done',
+  'grow': 'grew a tau group',
+  'beam': 'beam grow round done',
+  'blocks': 'position polish done',
+  'topo': 'topology search done',
+  'tree': 'tree positions refined',
+};
+function qstepLabel(tag) {
+  if (QSTEP_LABELS[tag]) return QSTEP_LABELS[tag];
+  let m = tag.match(/^tau-split-col(\d+)$/);
+  if (m) return `tau group added (column ${+m[1] + 1})`;
+  m = tag.match(/^tau-merge-col(\d+)$/);
+  if (m) return `tau groups merged (column ${+m[1] + 1})`;
+  m = tag.match(/^tau-col(\d+)$/);
+  if (m) return `column ${+m[1] + 1} tau stack grown + wiggled`;
+  return tag;
+}
+function renderSteps(history, running) {
+  const host = $('qsteps');
+  // collapse repeats: keep first occurrence order, latest entry decides the active step
+  const seen = [];
+  for (const h of history) if (!seen.includes(h.tag)) seen.push(h.tag);
+  if (!seen.length) { host.classList.remove('on'); host.innerHTML = ''; return; }
+  host.classList.add('on');
+  const active = running ? seen[seen.length - 1] : null;
+  host.innerHTML = seen.map(t =>
+    `<li class="${t === active ? 'active' : 'done'}">${qstepLabel(t)}</li>`).join('');
 }
 
 async function qoptPoll() {
@@ -424,6 +473,7 @@ async function qoptPoll() {
   const imp = (d.rms0 && d.best) ? ` (−${(100*(d.rms0-d.best)/d.rms0).toFixed(1)}%)` : '';
   const best = d.best ? d.best.toExponential(2) : '…';
   setQStatus(`optimizing Q_rad… ${d.n_evals} evals · rms ${best}${imp} · ${d.groups} groups · ${Math.round(d.elapsed)}s`);
+  renderSteps(d.history || [], d.running);
 }
 
 function qoptFinish(result) {
@@ -431,7 +481,7 @@ function qoptFinish(result) {
   stopQBar();
   $('qcancel').style.display = 'none';
   qoptBusy(false);
-  if (!result) return;
+  if (result && result.history) renderSteps(result.history, false);
   // The optimizer returns a free-form tree: keep the manual split list intact and show the
   // result as an overlay (any box/split edit exits it via onEdgeEdit).
   setTree(result.binning_tree);
