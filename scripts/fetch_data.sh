@@ -37,6 +37,12 @@ for dest in ODF_format.npy continuumabs.dat data/kappa_grey.dat data/kappa_fullo
   asset="$(wants "$dest" | cut -d' ' -f1)"
   mkdir -p "$HERE/$(dirname "$dest")"
   echo "fetching $dest <- release $TAG/$asset ..."
+  if command -v gh >/dev/null 2>&1; then
+    gh release download "$TAG" --repo "$REPO" --pattern "$asset" --dir "$HERE/$(dirname "$dest")" --clobber
+  else
+    url="https://github.com/$REPO/releases/download/$TAG/$asset"
+    curl -fL -o "$HERE/$dest" "$url"
+  fi
 done
 
 if [ "$missing" = 0 ]; then echo "all data files present"; fi
