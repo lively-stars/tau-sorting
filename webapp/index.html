@@ -36,13 +36,14 @@
   #qvars { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
   #qcancel { display:none; margin-left:8px; color:var(--accent); font-weight:600; }
   .flag input { accent-color:var(--accent); }
-  #splits_host { margin-top:6px; min-height:1.2em; }
-  .sprow { display:flex; align-items:center; gap:6px; font-size:12px; margin-top:4px; }
-  .spbadge { font-weight:700; padding:2px 7px; border-radius:6px; background:#0e1420; border:1px solid var(--line); white-space:nowrap; }
+  #splits_host { margin-top:6px; min-height:1.2em; display:grid; grid-template-columns:78px max-content 24px; column-gap:8px; row-gap:6px; justify-content:start; align-items:center; }
+  #splits_host .hint { grid-column:1 / -1; }
+  .sprow { display:contents; }
+  .spbadge { font-weight:700; padding:2px 7px; border-radius:6px; background:#0e1420; border:1px solid var(--line); white-space:nowrap; text-align:center; box-sizing:border-box; }
   .spbadge.tau { color:var(--accent); }
   .spbadge.lam { color:var(--full); }
-  .spcoord { flex:1; white-space:nowrap; }
-  .spdel { color:var(--muted); background:transparent; border:none; padding:3px 5px; cursor:pointer; font-size:13px; margin-left:auto; }
+  .spcoord { white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .spdel { color:var(--muted); background:transparent; border:none; padding:3px 0; cursor:pointer; font-size:13px; width:24px; text-align:center; }
   #addtau.armed, #addlam.armed { border-color:var(--accent); color:var(--accent); }
   button { margin-top:16px; width:100%; padding:11px; font:inherit; font-weight:650; color:#0e1420;
            background:var(--accent); border:none; border-radius:9px; cursor:pointer; }
