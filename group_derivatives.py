@@ -218,10 +218,7 @@ def refine_middle_segment(x, y, seg_info, mid_step_frac=0.02, min_mid_sub_frac=0
 
     b1 = seg_info["b1"]
     b2 = seg_info["b2"]
-    low_len = seg_info["low_len"]
-    high_len = seg_info["high_len"]
     mid_len = seg_info["mid_len"]
-    sse_3seg = seg_info["sse_3seg"]
 
     # if middle is too small, nothing to do
     if mid_len < 3:
@@ -328,8 +325,6 @@ def sse_4seg(x, y, b1, b_mid, b2):
     """
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
-    n = len(y)
-
     sse = 0.0
 
     # segment 1: low tail [0..b1]
@@ -562,8 +557,6 @@ def iterative_refine_breaks(
     seg = seg_initial.copy()
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
-    n = len(y)
-
     for it in range(n_iter):
         # 1) (re)compute middle split
         seg = refine_middle_segment(x, y, seg, mid_step_frac=mid_step_frac, min_mid_sub_frac=min_mid_sub_frac)

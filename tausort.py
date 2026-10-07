@@ -609,13 +609,6 @@ def plot_planck_and_derivatives(output_file: str = "planck_verification.pdf") ->
         # Calculate derivative dB/dT at this point
         dB_dT = planck_derivative_analytic(np.array([wl_cm]), T_tangent)[0]
 
-        # Create temperature range for tangent line (linear approximation)
-        # We'll show the tangent in "temperature space" around T_tangent
-        dT_range = np.linspace(-500, 500, 100)  # ±500 K range
-
-        # Tangent line: B(T) ≈ B(T0) + dB/dT * (T - T0)
-        tangent_line = B_val + dB_dT * dT_range
-
         # For x-axis, we keep wavelength constant but need to show the line
         # Actually, we want wavelength on x-axis, so we create a small wavelength range
         wl_tangent_range = np.linspace(wl_nm - 100, wl_nm + 100, 100)
@@ -861,7 +854,6 @@ def calculate_reference_opacities(odf: ODFData, cont: ContinuumData, kind: str =
         # console.print(f"  Wavelength grid values: {wavelength_grid_bin_edges[:10]}")
 
         wavelength_grid_subbin_weights = odf.subbin
-        wavelength_grid_subbins_center = np.zeros_like(kappa_values)
         # console.print(f"odf.subbin shape: {odf.subbin.shape}")
         number_of_subbins: int = odf.subbin.shape[1]
         wavelength_grid_subbins_edges_shape = odf.subbin.shape[0] * (number_of_subbins) + 1
@@ -1072,9 +1064,6 @@ def calculate_reference_opacities_from_custom_tp_grid(
     for atmosphere_depth_idx, (temperature, pressure) in tqdm(
         enumerate(temperature_pressure_grid), total=temperature_pressure_grid.shape[0]
     ):
-        t_idx = np.where(atmo.T == temperature)[0][0]
-        p_idx = np.where(atmo.p == pressure)[0][0]
-
         kappa_values = total_kappa[atmosphere_depth_idx, ...].flatten()  # shape: [nbins * nsubbins]
         # verify kappa_values length matches expected
         expected_length = nbins * nsubbins
@@ -1089,7 +1078,6 @@ def calculate_reference_opacities_from_custom_tp_grid(
         wavelength_grid_bin_size = np.diff(wavelength_grid_bin_edges)
 
         wavelength_grid_subbin_weights = subbin
-        wavelength_grid_subbins_center = np.zeros_like(kappa_values)
         number_of_subbins: int = subbin.shape[1]
         wavelength_grid_subbins_edges_shape = subbin.shape[0] * (number_of_subbins) + 1
         wavelength_grid_subbins_edges = np.zeros(wavelength_grid_subbins_edges_shape, dtype=np.float64)
@@ -1398,7 +1386,7 @@ def plot_height_at_tau_values(
     bins = np.arange(0, 900, 10)
     for i, tau_val in enumerate(tau_values):
         color = cmap(i / max(1, n_tau - 1))
-        hist = ax3.hist(
+        ax3.hist(
             height_at_tau[:, i],
             bins=bins,
             alpha=0.6,
@@ -1423,7 +1411,7 @@ def plot_height_at_tau_values(
     bins = np.arange(0, 310, 10)
     if n_tau == 2:
         ax4 = axes[3]
-        hist = ax4.hist(
+        ax4.hist(
             height_at_tau[:, 1] - height_at_tau[:, 0],
             bins=bins,
             alpha=0.6,

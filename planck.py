@@ -44,8 +44,6 @@ def planck_derivative(wavelength: NDArray[np.float64], temperature: NDArray[np.f
     Returns:
         Derivative of the Planck function dB/dT [erg/s/cm²/ster/cm/K]
     """
-    # Calculate the Planck function B_lambda(T)
-    B = planck_function(wavelength, temperature)
 
     # Calculate the derivative dB/dT using numerical differentiation
     dT = 1e-5 * temperature
