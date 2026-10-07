@@ -112,7 +112,7 @@
       <button id="addtau" class="secondary" style="flex:1">+ &tau; split</button>
       <button id="addlam" class="secondary" style="flex:1">+ &lambda; split</button>
     </div>
-    <div class="hint" id="splitmode_hint">Pick a split kind above, then click a bin on the top plot.</div>
+    <div class="hint" id="splitmode_hint"></div>
     <div id="splits_host"></div>
     <label>Min opacity split &nbsp;<span class="hint">(&Delta; ratio per &tau;-&lambda; group)</span></label>
     <div class="opt-row">
@@ -226,7 +226,7 @@ const edgesValid = a => a.length === 2 && a.every(Number.isFinite) && a[0] < a[1
 // Render the ordered split list (left panel mirrors the plot clicks).
 function renderSplits() {
   const host = $('splits_host');
-  if (!SPLITS.length) { host.innerHTML = `<div class="hint">no splits yet — the box is one group.</div>`; return; }
+  if (!SPLITS.length) { host.innerHTML = ''; return; }
   host.innerHTML = SPLITS.map((s, i) => {
     const pos = s.axis === 'tau' ? +s.tau : +s.lam;
     const at = s.axis === 'tau' ? `τ=${pos.toFixed(3)} @ λ=${(+s.lam).toFixed(3)}` : `λ=${pos.toFixed(3)} @ τ=${(+s.tau).toFixed(3)}`;
@@ -247,7 +247,7 @@ function armSplit(axis) {
   $('addlam').classList.toggle('armed', SPLIT_MODE === 'lam');
   $('splitmode_hint').textContent = SPLIT_MODE
     ? `placing ${SPLIT_MODE === 'tau' ? 'τ' : 'λ'} split — click a bin on the top plot (Esc cancels).`
-    : 'Pick a split kind above, then click a bin on the top plot.';
+    : '';
   try { $('chart').style.cursor = SPLIT_MODE ? 'crosshair' : ''; } catch(_) {}
 }
 // Optimizer-result overlay: an explicit tree drives compute until a box/split edit exits it.
