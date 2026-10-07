@@ -51,19 +51,33 @@ class TestKappaDatExport(unittest.TestCase):
         self.assertIn("_lam_3_3.8_5.dat", fn)
 
     def test_columns_filename_encoding(self):
-        # Columns mode: shared lambda edges + each column's interior tau cuts.
+        # Columns mode: shared lambda edges + outer tau window + each column's interior cuts.
         tcols = [[-0.63, 0.1, 1.0, 3.2, 7.0], [-0.63, 0.8, 1.6, 2.5, 7.0]]
         fn1 = build_kappa_dat_filename(nbands=21, n_splits=3, lambda_bin_edges=[3.0, 3.8, 5.0], tau_per_lambda=tcols)
         self.assertEqual(
             fn1,
             build_kappa_dat_filename(nbands=21, n_splits=3, lambda_bin_edges=[3.0, 3.8, 5.0], tau_per_lambda=tcols),
         )
-        self.assertRegex(fn1, r"^kappa_21band_col_sp3_lam_3_3\.8_5_taus_0\.1\+1\+3\.2-0\.8\+1\.6\+2\.5\.dat$")
+        self.assertRegex(
+            fn1, r"^kappa_21band_col_sp3_lam_3_3\.8_5_tau_-0\.63_7_taus_0\.1\+1\+3\.2-0\.8\+1\.6\+2\.5\.dat$"
+        )
         moved = [[-0.63, 0.2, 1.0, 3.2, 7.0], [-0.63, 0.8, 1.6, 2.5, 7.0]]
         self.assertNotEqual(
             fn1,
             build_kappa_dat_filename(nbands=21, n_splits=3, lambda_bin_edges=[3.0, 3.8, 5.0], tau_per_lambda=moved),
         )
+
+    def test_columns_filename_unsplit(self):
+        # Unsplit columns encode as x (no empty segments / bare separators); the outer
+        # window still disambiguates configs with identical interiors.
+        fn = build_kappa_dat_filename(
+            nbands=9, n_splits=3, lambda_bin_edges=[3.0, 3.8, 5.0], tau_per_lambda=[[-0.63, 7.0], [-0.63, 1.0, 7.0]]
+        )
+        self.assertRegex(fn, r"^kappa_9band_col_sp3_lam_3_3\.8_5_tau_-0\.63_7_taus_x-1\.dat$")
+        other = build_kappa_dat_filename(
+            nbands=9, n_splits=3, lambda_bin_edges=[3.0, 3.8, 5.0], tau_per_lambda=[[-0.5, 7.0], [-0.5, 1.0, 7.0]]
+        )
+        self.assertNotEqual(fn, other)
 
     def test_pack_shapes_logs_axes(self):
         nt, npr, nb = 5, 4, 6

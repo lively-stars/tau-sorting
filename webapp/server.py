@@ -142,7 +142,9 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
         if columns:
             n_cols = len(lambda_edges) - 1
             tpl = opt.get("tau_per_lambda")
-            cols_seed = [list(map(float, c)) for c in tpl] if tpl else [list(map(float, tau_edges))] * n_cols
+            cols_seed = (
+                [list(map(float, c)) for c in tpl] if tpl else [list(map(float, tau_edges)) for _ in range(n_cols)]
+            )
             _QOPT["result"] = qopt.optimize_columns(
                 lambda_edges,
                 cols_seed,

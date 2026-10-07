@@ -2624,8 +2624,13 @@ def build_kappa_dat_filename(
         return f"kappa_{nbands}band_tree{n_leaves}_sp{n_splits}_{sig}.dat"
 
     if tau_per_lambda is not None and lambda_bin_edges is not None:
-        cuts = "-".join("+".join(f"{round(float(v), 4):g}" for v in e[1:-1]) for e in tau_per_lambda)
-        return f"kappa_{nbands}band_col_sp{n_splits}_lam_{_fmt(lambda_bin_edges)}_taus_{cuts}.dat"
+        tlo, thi = tau_per_lambda[0][0], tau_per_lambda[0][-1]
+        cuts = "-".join(
+            "x" if len(e) <= 2 else "+".join(f"{round(float(v), 4):g}" for v in e[1:-1]) for e in tau_per_lambda
+        )
+        return (
+            f"kappa_{nbands}band_col_sp{n_splits}_lam_{_fmt(lambda_bin_edges)}_tau_{_fmt([tlo, thi])}_taus_{cuts}.dat"
+        )
 
     if lambda_edges_per_tau is not None and tau_bin_edges is not None:
         lmin, lmax = lambda_edges_per_tau[0][0], lambda_edges_per_tau[0][-1]
@@ -2741,7 +2746,7 @@ def main(
             help="Per-tau-group lambda-split flags, one per tau group in order, as a 0/1 "
             "string (e.g. 00111100) or comma/space-separated true/false. Selects which tau "
             "groups subdivide along lambda. Activates the shared-tau split-flag mode; "
-            "mutually exclusive with --lambda-per-tau. Omit to keep the default "
+            "mutually exclusive with --lambda-per-tau/--tau-per-lambda. Omit to keep the default "
             "(uniform split when >1 lambda cell).",
         ),
     ] = None,
@@ -2753,7 +2758,7 @@ def main(
             "comma-separated increasing edge list, e.g. --lambda-per-tau=3,3.82,5 "
             "--lambda-per-tau=3,5 ... . Each tau group gets its OWN wavelength split (2 edges = "
             "no split); all groups must share the same outer [min,max] window. Activates "
-            "per-tau-lambda mode; mutually exclusive with --split-lambda.",
+            "per-tau-lambda mode; mutually exclusive with --split-lambda/--tau-per-lambda.",
         ),
     ] = [],
     tau_per_lambda: Annotated[

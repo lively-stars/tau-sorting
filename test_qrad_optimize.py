@@ -497,6 +497,7 @@ class TestBeamSearch(unittest.TestCase):
             flags=[True],
             tree=True,
             grow=True,
+            grow_tol=0.0,  # isolate topology (midpoint-only) from the grow bar: accept any win
             beam_width=1,
             max_groups=4,
             score_fn=score,

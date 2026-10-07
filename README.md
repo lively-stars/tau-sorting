@@ -84,7 +84,7 @@ uv run python compare_Qrad_from_kappa.py        # writes Qrad_comparison.png
 
 ### 2b. Interactive explorer — `webapp/`
 
-A small local web app to play with the τ / λ bin edges (and per-τ-group λ-split flags) and see the
+A small local web app to play with the λ cuts and per-column τ stacks and see the
 effect on Q_rad live, instead of regenerating tables by hand. It precomputes the expensive,
 edge-independent work once at startup, then each edge change re-runs only the cheap
 binning + RTE (~3 s):
@@ -121,7 +121,7 @@ the dropdown flags every file that *fails* validation and says why — a usable 
 with 4 columns (z, ρ, p, T), ≥2 rows, and a strictly **decreasing** height column z (top of the
 atmosphere first). A model's first use precomputes (~10–30 s, then cached); switching back is instant.
 
-Type τ-edges and λ-edges, toggle which τ-groups split along λ, and the plot updates live. Three
+Type λ-edges, edit each column's τ stack, and the plot updates live. Three
 stacked panels:
 
 - **Binning diagram** (top) — the same view as `tau_rosseland_at_tau_lambda_one.jpg`: every
@@ -133,18 +133,19 @@ stacked panels:
   curve is added too — a fixed "known-good" binning to compare your table against. It's optional:
   when the file is absent it's simply not shown.
 
-**Optimize for Q_rad** runs the direct tree optimizer (§2c) as a background job, warm-started from
+**Optimize for Q_rad** runs the direct optimizer (§2c) as a background job, warm-started from
 the current binning: tick which of τ / λ / grow-N to vary, set a time budget, and watch the rms tick
 down live (with a **cancel** that keeps the best binning found so far). When it finishes it loads the
-optimized binning — a free-form **general-2D guillotine tree** (τ and λ cuts nested arbitrarily) — and
-recomputes. It minimizes the residual *directly* — a full RTE solve per step (~2.5 s). Under
+optimized binning and recomputes. **Optimize columns** runs the columns-constrained variant instead
+(λ-cut count fixed, per-column τ stacks) — same budgets, same result handling. Both minimize the
+residual *directly* — a full RTE solve per step (~2.5 s). Under
 **Advanced** set the **beam width** (`1` = greedy grow, `≥ 2` = non-greedy beam search over
 rival tree topologies — the default), plus `max τ-groups`, the `metric`, and the stopping
 conditions.
 
-The manual binning editor is **per-group λ**: each τ-group has its own row of λ cuts (add/remove
-with the `+` / `×` buttons), so the wavelength split can differ (or be absent) per τ-group. Editing
-the τ box exits any optimizer tree overlay and restores this editor.
+The manual binning editor is **per-column τ**: each λ column has its own row of τ cuts (add/remove
+with the `+` / `×` buttons), so the τ stack can differ (in position and count) per column. Editing
+the λ box exits any optimizer tree overlay and restores this editor.
 
 **Download kappa table (.dat)** writes the *current* binning's C-format kappa table (self-describing
 name, e.g. `kappa_24band_...dat`) — after an optimize run that's the optimized table, tree binning
@@ -158,10 +159,13 @@ Pure stdlib server (no extra dependencies).
 This optimizer **minimizes the Q_rad rms residual directly** — the metric that actually matters —
 by searching over a **guillotine-tree** binning of the (−log₁₀ τ, log₁₀ λ) plane on the chosen
 atmosphere (`models/G2_1D.dat` by default; `--model <file>` picks another validated model). The
-tree's leaves are the (τ, λ) groups; a τ cut and a λ cut can nest arbitrarily, so it can express
+general-2D path below refines one tree via seed → grow → polish: its leaves are the (τ, λ)
+groups, and a τ cut and a λ cut can nest arbitrarily, so it can express
 any rectangular tiling (the "general 2D" the webapp loads after a run). Every input shape —
 shared-tau + `--split-lambda` flags, `--per-group-lambda`, or an explicit tree — is normalized to
-one tree and refined via a single seed → grow → polish path.
+one tree and refined via that single path. The columns-constrained variant (`--columns`,
+`optimize_columns`) is documented after the examples: fixed λ-cut count, per-column τ stacks,
+coordinate descent that never leaves the column family.
 
 ```bash
 # greedy grow (--beam-width 1): seed from 4 τ-groups, grow up to --max-groups leaves

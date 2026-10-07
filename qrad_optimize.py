@@ -324,6 +324,19 @@ def _tau_chain(tau_edges):
     return node
 
 
+def _resnap(cols, min_gap):
+    """Re-seat rounded per-column edges to min-gap in place (endpoints pinned).
+
+    Rounding to 4 decimals can collapse two cuts closer than ~5e-5 apart into a
+    non-increasing pair; push each interior cut up to prev + min_gap so the columns
+    stay strictly increasing without moving the shared outer window.
+    """
+    for col in cols:
+        for j in range(1, len(col) - 1):
+            if col[j] - col[j - 1] < min_gap - 1e-12:
+                col[j] = col[j - 1] + min_gap
+
+
 def tree_from_columns(lambda_edges, tau_edges_per_lambda) -> dict:
     """Convert a lambda-column binning to a guillotine tree (lambda cuts at the root,
     a tau chain per column). Each column carries its OWN tau edges (independent counts
@@ -692,6 +705,90 @@ def _topology_search(tree, cost_tree, *, cfg, budget, max_groups, min_gap_tau, m
     return state["tree"], state["c"]
 
 
+# --- shared search scaffolding (both optimizers) --------------------------------------
+def _new_search_context(
+    *,
+    model,
+    metric,
+    empty_penalty,
+    score_fn,
+    on_eval,
+    window,
+    min_opacity_delta,
+    max_evals,
+    max_seconds,
+    t0,
+    should_stop,
+    target_rms,
+    plateau_evals,
+    plateau_rel,
+    min_gap_tau,
+    min_gap_lam,
+    adjust_steps,
+    on_progress,
+):
+    """Build the shared evaluator + budget + config + history scaffolding.
+
+    Returns (evaluate, state, budget, cfg, history, checkpoint, on_step).
+    ``checkpoint(tag, r)`` records the caller-provided raw result (no re-eval).
+    """
+
+    def _record_on_eval(n, cost, r):
+        # track best rms / plateau for the stopping conditions, then the caller's hook.
+        budget.record(float(r["rms"]), n)  # `budget` bound below; evaluate() only runs afterward
+        if on_eval is not None:
+            on_eval(n, cost, r)
+
+    evaluate, state = make_evaluator(
+        model,
+        metric=metric,
+        empty_penalty=empty_penalty,
+        score_fn=score_fn,
+        on_eval=_record_on_eval,
+        window=window,
+        min_opacity_delta=min_opacity_delta,
+    )
+    budget = _Budget(
+        max_evals=max_evals,
+        max_seconds=max_seconds,
+        state=state,
+        t0=t0,
+        should_stop=should_stop,
+        target_rms=target_rms,
+        plateau_evals=plateau_evals,
+        plateau_rel=plateau_rel,
+    )
+    cfg = _Cfg(min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam, adjust_steps=tuple(adjust_steps))
+
+    history: list[dict] = []
+
+    def checkpoint(tag, r):
+        """Record a checkpoint with the *raw* rms (one extra eval already done by caller)."""
+        history.append(
+            {
+                "tag": tag,
+                "n_evals": state["n_evals"],
+                "rms": float(r["rms"]),
+                "n_empty": int(r.get("n_empty", 0)),
+                "groups": int(r.get("n_groups", 0)),
+            }
+        )
+        if on_progress:
+            on_progress(tag, float(r["rms"]), int(r.get("n_groups", 0)), state["n_evals"])
+
+    def on_step(tag, cost, groups):
+        """Lightweight live line inside a long block (penalized cost, no extra eval)."""
+        if on_progress:
+            on_progress(tag, float(cost), int(groups), state["n_evals"])
+
+    return evaluate, state, budget, cfg, history, checkpoint, on_step
+
+
+def _grow_threshold(grow_tol, grow_tol_rel, ref):
+    """Absolute grow bar: explicit `grow_tol`, else `grow_tol_rel` fraction of `ref` rms."""
+    return grow_tol if grow_tol is not None else grow_tol_rel * ref
+
+
 # --- public API -----------------------------------------------------------------
 def optimize_qrad(
     tau_edges,
@@ -762,58 +859,33 @@ def optimize_qrad(
 
     t0 = time.perf_counter()
 
-    def _record_on_eval(n, cost, r):
-        # track best rms / plateau for the stopping conditions, then the caller's hook.
-        budget.record(float(r["rms"]), n)  # `budget` bound below; evaluate() only runs afterward
-        if on_eval is not None:
-            on_eval(n, cost, r)
-
-    evaluate, state = make_evaluator(
-        model,
+    evaluate, state, budget, cfg, history, checkpoint, on_step = _new_search_context(
+        model=model,
         metric=metric,
         empty_penalty=empty_penalty,
         score_fn=score_fn,
-        on_eval=_record_on_eval,
+        on_eval=on_eval,
         window=window,
         min_opacity_delta=min_opacity_delta,
-    )
-    budget = _Budget(
         max_evals=max_evals,
         max_seconds=max_seconds,
-        state=state,
         t0=t0,
         should_stop=should_stop,
         target_rms=target_rms,
         plateau_evals=plateau_evals,
         plateau_rel=plateau_rel,
+        min_gap_tau=min_gap_tau,
+        min_gap_lam=min_gap_lam,
+        adjust_steps=adjust_steps,
+        on_progress=on_progress,
     )
-    cfg = _Cfg(min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam, adjust_steps=tuple(adjust_steps))
 
-    history: list[dict] = []
+    # The general-2D optimizer is tree-only: every grouping (explicit guillotine tree,
+    # per-tau-group lambda, or shared tau + split flags) is normalized to a guillotine tree and
+    # refined via a single seed/grow/polish path. (Columns inputs take the separate
+    # optimize_columns coordinate-descent path.) The shim below seeds the working tree from
+    # whichever input was passed; every result is a {"tree": True, "binning_tree": ...} dict.
 
-    def checkpoint(tag, r):
-        """Record a checkpoint with the *raw* rms (one extra eval already done by caller)."""
-        history.append(
-            {
-                "tag": tag,
-                "n_evals": state["n_evals"],
-                "rms": float(r["rms"]),
-                "n_empty": int(r.get("n_empty", 0)),
-                "groups": int(r.get("n_groups", 0)),
-            }
-        )
-        if on_progress:
-            on_progress(tag, float(r["rms"]), int(r.get("n_groups", 0)), state["n_evals"])
-
-    def on_step(tag, cost, groups):
-        """Lightweight live line inside a long block (penalized cost, no extra eval)."""
-        if on_progress:
-            on_progress(tag, float(cost), int(groups), state["n_evals"])
-
-    # The optimizer is tree-only: every grouping (explicit guillotine tree, per-tau-group
-    # lambda, or shared tau + split flags) is normalized to a guillotine tree and refined via a
-    # single seed/grow/polish path. The shim below seeds the working tree from whichever input
-    # was passed; every result is a {"tree": True, "binning_tree": ...} dict.
     if binning_tree is not None:
         btree = copy.deepcopy(binning_tree)
     elif tau_per_lambda is not None:
@@ -858,7 +930,8 @@ def optimize_qrad(
         # Grow FIRST so the budget builds structure (each grow cheaply refines only its new cut);
         # a heavy refine of the coarse seed up front would exhaust the budget before a leaf is split.
         if grow:
-            gtol = grow_tol if grow_tol is not None else 0.0
+            ref = budget.best_rms if budget.best_rms != float("inf") else best
+            gtol = _grow_threshold(grow_tol, grow_tol_rel, ref)
             if beam_width >= 2:
                 tree, best = _beam_grow_tree(
                     tree,
@@ -1004,54 +1077,29 @@ def optimize_columns(
 
     t0 = time.perf_counter()
 
-    def _record_on_eval(n, cost, r):
-        budget.record(float(r["rms"]), n)  # `budget` bound below; evaluate() only runs afterward
-        if on_eval is not None:
-            on_eval(n, cost, r)
-
-    evaluate, state = make_evaluator(
-        model,
+    evaluate, state, budget, cfg, history, checkpoint, on_step = _new_search_context(
+        model=model,
         metric=metric,
         empty_penalty=empty_penalty,
         score_fn=score_fn,
-        on_eval=_record_on_eval,
+        on_eval=on_eval,
         window=window,
         min_opacity_delta=min_opacity_delta,
-    )
-    budget = _Budget(
         max_evals=max_evals,
         max_seconds=max_seconds,
-        state=state,
         t0=t0,
         should_stop=should_stop,
         target_rms=target_rms,
         plateau_evals=plateau_evals,
         plateau_rel=plateau_rel,
+        min_gap_tau=min_gap_tau,
+        min_gap_lam=min_gap_lam,
+        adjust_steps=adjust_steps,
+        on_progress=on_progress,
     )
-    cfg = _Cfg(min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam, adjust_steps=tuple(adjust_steps))
-
-    history: list[dict] = []
-    _last_r: list = [None]  # raw dict of the latest evaluation (checkpoint reads it, no re-eval)
-
-    def checkpoint(tag):
-        r = _last_r[0]
-        history.append(
-            {
-                "tag": tag,
-                "n_evals": state["n_evals"],
-                "rms": float(r["rms"]),
-                "n_empty": int(r.get("n_empty", 0)),
-                "groups": int(r.get("n_groups", 0)),
-            }
-        )
-        if on_progress:
-            on_progress(tag, float(r["rms"]), int(r.get("n_groups", 0)), state["n_evals"])
-
-    def on_step(tag, cost, groups):
-        if on_progress:
-            on_progress(tag, float(cost), int(groups), state["n_evals"])
 
     _hook_best = float("inf")
+    _last_r: list = [None]  # raw dict of the latest evaluation (cost_current caches it)
 
     def cost_current():
         # Evaluate the CURRENT (lam, cols) — the only evaluation entry point, so every
@@ -1117,7 +1165,7 @@ def optimize_columns(
         while n_leaves_now() < max_groups and not budget.exhausted():
             col = cols[k]
             ref = budget.best_rms if budget.best_rms != float("inf") else best
-            gtol = grow_tol if grow_tol is not None else grow_tol_rel * ref
+            gtol = _grow_threshold(grow_tol, grow_tol_rel, ref)
             best_trial, best_tc = None, best
             for i in range(len(col) - 1):
                 if budget.exhausted():
@@ -1171,7 +1219,7 @@ def optimize_columns(
 
     rms0 = float(evaluate(binning_tree=seed_tree)[1]["rms"])  # rms of the user's seed binning
     best = cost_current()
-    checkpoint("start")
+    checkpoint("start", _last_r[0])
     for _ in range(cfg.max_block_rounds):
         if budget.exhausted():
             break
@@ -1188,12 +1236,15 @@ def optimize_columns(
             _prune_column(k)
             _sweep(cols[k], min_gap_tau)  # re-seat positions after any structural change
         on_step("columns", best, n_leaves_now())
-        checkpoint("round")
+        checkpoint("round", _last_r[0])
         if budget.exhausted() or (start - best) <= cfg.block_tol * max(abs(start), 1.0):
             break
 
     lam_out = [round(float(v), 4) for v in lam]
     cols_out = [[round(float(v), 4) for v in c] for c in cols]
+    # Rounding can collapse two cuts closer than ~5e-5 apart; re-seat to min-gap
+    # (endpoints pinned) so tree_from_columns never raises after the budget is spent.
+    _resnap(cols_out, min_gap_tau)
     final_tree = tree_from_columns(lam_out, cols_out)
     final_r = evaluate(binning_tree=final_tree)[1]
     n_leaves = sum(len(c) - 1 for c in cols_out)
@@ -1206,7 +1257,7 @@ def optimize_columns(
         "n_empty": int(final_r.get("n_empty", 0)),
         "n_leaves": n_leaves,
         "n_groups": n_leaves,
-        "n_bands_total": int(final_r.get("n_groups", 0)),
+        "n_bands_total": int(final_r.get("n_bands", n_leaves * 3)),
         "lambda_edges": lam_out,
         "tau_per_lambda": cols_out,
         "n_evals": state["n_evals"],
@@ -1743,7 +1794,7 @@ def main(
         cols_seed = (
             parse_tau_per_lambda(tau_per_lambda)
             if tau_per_lambda
-            else [list(tau_bin_edges)] * (len(lambda_bin_edges) - 1)
+            else [list(tau_bin_edges) for _ in range(len(lambda_bin_edges) - 1)]
         )
         if len(cols_seed) != len(lambda_bin_edges) - 1:
             raise typer.BadParameter(
@@ -1826,7 +1877,9 @@ def main(
             from tausort import parse_tau_per_lambda as _parse_tpl
 
             _seed_cols = (
-                _parse_tpl(tau_per_lambda) if tau_per_lambda else [list(tau_bin_edges)] * (len(lambda_bin_edges) - 1)
+                _parse_tpl(tau_per_lambda)
+                if tau_per_lambda
+                else [list(tau_bin_edges) for _ in range(len(lambda_bin_edges) - 1)]
             )
             seed_tree = tree_from_columns(lambda_bin_edges, _seed_cols)
         else:

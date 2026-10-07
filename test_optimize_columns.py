@@ -8,6 +8,7 @@ per-leaf reward), so the suite runs in seconds.
 import unittest
 
 import qrad_optimize as qo
+import tausort as ts
 
 
 def _leaf_rects(tree):
@@ -64,6 +65,10 @@ class TestColumnsStaysInFamily(unittest.TestCase):
         self.assertLess(res["rms"], res["rms0"])  # tilted problem: strict improvement
         expected = qo.tree_from_columns(res["lambda_edges"], res["tau_per_lambda"])
         self.assertEqual(qo._tree_signature(res["binning_tree"]), qo._tree_signature(expected))
+        # lambda-major DFS leaf order (not just the rect set): band order depends on it
+        got_rects = list(ts._iter_leaf_rects(res["binning_tree"]["root"], tuple(qo._root_rect(res["binning_tree"]))))
+        exp_rects = list(ts._iter_leaf_rects(expected["root"], tuple(qo._root_rect(expected))))
+        self.assertEqual(got_rects, exp_rects)
         # shared outer tau window preserved
         tlo, thi = res["tau_per_lambda"][0][0], res["tau_per_lambda"][0][-1]
         for c in res["tau_per_lambda"]:

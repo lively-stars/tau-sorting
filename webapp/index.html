@@ -129,6 +129,9 @@
       <button id="qopt" class="secondary">Optimize Q_rad &rarr;</button>
       <span class="opt-n"><input type="number" id="qbudget" min="20" max="1800" value="180" /> s</span>
     </div>
+    <div class="opt-row">
+      <button id="qoptcols" class="secondary">Optimize columns &rarr;</button>
+    </div>
     <div id="qprog" class="qprog" title="elapsed / time budget"><div id="qprogbar"></div></div>
     <div id="qstatus" class="hint" style="margin-top:6px; min-height:1.2em"></div>
     <details id="qadv">
@@ -150,7 +153,8 @@
     <div class="hint">Minimizes the Q_rad residual <em>directly</em> (full RTE per step, ~2.5&nbsp;s). Warm-starts
        from the current binning and loads the result when done.<a href="#" id="qcancel">cancel</a><br>
        Uncheck <b>&lambda;</b> to keep your manual cuts fixed (the search otherwise reduces each group to 0–1 cut).
-       The result is a free-form guillotine tiling (general 2D).</div>
+       The result is a free-form guillotine tiling (general 2D). <b>Optimize columns</b> instead refines each
+       &lambda; column's &tau; stack (warm-started from the editor above; stays rectangular).</div>
 
     <button id="go">Compute Q_rad</button>
     <div id="status"></div>
@@ -362,7 +366,7 @@ async function compute() {
 // --- Q_rad optimizer: start a background job, poll it, apply the result ---
 let QPOLL = null;
 
-function qoptBusy(on){ $('qopt').disabled=on; $('go').disabled=on; }
+function qoptBusy(on){ $('qopt').disabled=on; $('qoptcols').disabled=on; $('go').disabled=on; }
 
 // Progress bar under the Optimize Q_rad button: fills from 0 to the time budget as the run
 // elapses (smoothly via a client tick, re-synced to the server's elapsed on each poll).
@@ -380,7 +384,7 @@ function stopQBar(){
   setTimeout(() => { if (!QANIM){ $('qprog').classList.remove('on'); $('qprogbar').style.width = '0%'; } }, 500);
 }
 
-async function qoptStart() {
+async function qoptStart(columnsMode=false) {
   let lam;
   try { lam = parseEdges($('lam').value); }
   catch(e){ return setQStatus('could not parse edges', true); }
@@ -405,10 +409,17 @@ async function qoptStart() {
     min_opacity_delta: parseFloat($('min_opacity_delta').value) || 1,
   };
   // warm-start a re-run from the current binning so it keeps refining (not resetting to the box).
-  // The server seeds the tree from the warm start (explicit tree, else per-column tau).
-  if (BINNING_TREE) body.binning_tree = BINNING_TREE;
+  // Columns mode always refines the TAU_COLS editor state (never a tree overlay); the general
+  // path seeds from the explicit tree, else per-column tau.
+  if (columnsMode) {
+    clearTree();
+    body.columns = true;
+    body.tree = false;
+    body.tau_per_lambda = TAU_COLS;
+  }
+  else if (BINNING_TREE) body.binning_tree = BINNING_TREE;
   else body.tau_per_lambda = TAU_COLS;
-  qoptBusy(true); setQStatus('starting Q_rad optimization…'); QLASTDIAG = null;
+  qoptBusy(true); setQStatus(columnsMode ? 'starting columns optimization…' : 'starting Q_rad optimization…'); QLASTDIAG = null;
   try {
     const r = await fetch('/api/optimize_qrad', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
     const d = await r.json();
@@ -439,11 +450,13 @@ function qoptFinish(result) {
   $('qcancel').style.display = 'none';
   qoptBusy(false);
   if (!result) return;
-  // general 2D guillotine: the whole tree drives the plot; tau/lambda boxes are stale (exit = edit them)
+  // The whole tree drives the plot; tau/lambda boxes are stale (exit = edit them). Columns results
+  // are column-family trees, so the same overlay + recompute path applies.
   setTree(result.binning_tree);
   const imp = (100*(result.rms0-result.rms)/result.rms0).toFixed(1);
   const why = result.stop_reason ? ` · stopped: ${result.stop_reason}` : '';
-  setQStatus(`Q_rad optimized: rms ${result.rms0.toExponential(2)} → ${result.rms.toExponential(2)} (−${imp}%)${why} · ${result.n_evals} evals`);
+  const what = result.columns ? 'Columns optimized' : 'Q_rad optimized';
+  setQStatus(`${what}: rms ${result.rms0.toExponential(2)} → ${result.rms.toExponential(2)} (−${imp}%)${why} · ${result.n_evals} evals`);
   compute();
 }
 
@@ -695,7 +708,8 @@ $('model').addEventListener('change', () => {
   compute();  // keep the Q_rad view (+ metrics) in sync for when the tab is next shown
 });
 document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.tab)));
-$('qopt').addEventListener('click', qoptStart);
+$('qopt').addEventListener('click', () => qoptStart(false));
+$('qoptcols').addEventListener('click', () => qoptStart(true));
 $('qcancel').addEventListener('click', qoptCancel);
 $('dl').addEventListener('click', downloadKappa);
 $('lam').addEventListener('keydown', e=>{ if(e.key==='Enter') compute(); });
