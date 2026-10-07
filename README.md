@@ -248,7 +248,7 @@ make clean
 uv run python -m unittest test_build_split_band_index test_kappa_dat_export \
     test_kappa_band_reader test_plot_kap_mean_grid
 uv run python test_derivatives.py     # quick script, not unittest-based
-uv run ruff check . && uv run ruff format --check .   # lint + format check (pre-commit hook runs this)
+uv run ruff check . && uv run darker --formatter=ruff --check .   # lint + diff-only format check (pre-commit hook runs this)
 
 ## Data files
 

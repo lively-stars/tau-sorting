@@ -4,7 +4,6 @@
 # Scoped to the text files we actually edit (Python, docs, shell, web UI):
 # the C sources / model atmospheres / paper vendor files must NOT be
 # reformatted (mixed line endings, vendor whitespace).
-
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.10
@@ -12,8 +11,15 @@ repos:
       - id: ruff-check
         args: [--fix]
         types: [python]
-      - id: ruff-format
-        types: [python]
+
+  # Diff-only formatting on the ruff backend: only lines changed since HEAD
+  # get reformatted, so old untouched code is never rewritten in bulk.
+  - repo: https://github.com/akaihola/darker
+    rev: v3.0.0
+    hooks:
+      - id: darker
+        args: [--formatter=ruff]
+        additional_dependencies: ["ruff==0.16.10"]
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0

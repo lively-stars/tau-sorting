@@ -58,17 +58,18 @@ make stop               # stop it
 make restart            # stop + start
 
 # Lint + format (pre-commit hook runs these on `git commit`; see "Pre-commit" below)
-uv run ruff check .               # lint only
-uv run ruff format .              # format only
+uv run ruff check .               # lint only (autofix: --fix)
+uv run ruff format --check .      # whole-tree format check
+uv run darker --formatter=ruff .  # diff-only format: touches changed lines since HEAD only
 ```
-
-## Pre-commit
 
 Native git workflow: `uv run pre-commit install` wires `.pre-commit-config.yaml`
 into `.git/hooks/pre-commit` (already installed in this checkout). Hooks are scoped
-to Python files (`ruff-check --fix`, `ruff-format`, trailing whitespace, end-of-file
-fixer) plus repo-wide `check-yaml` / `check-added-large-files` / `check-merge-conflict` —
-C sources, model atmospheres, and paper vendor files are excluded (mixed line endings).
+to Python files (`ruff-check --fix`, **darker** with the ruff backend — diff-only
+formatting of lines changed since HEAD, so commits never bulk-reformat untouched
+code — trailing whitespace, end-of-file fixer) plus repo-wide `check-yaml` /
+`check-added-large-files` / `check-merge-conflict` — C sources, model atmospheres,
+and paper vendor files are excluded (mixed line endings).
 
 Ruff is configured in `pyproject.toml` under `[tool.ruff]` — line length 120,
 target `py312`, rules `E,F,W,I,UP` with a small ignore list (`E501`, `E741`,
