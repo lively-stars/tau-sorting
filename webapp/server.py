@@ -178,6 +178,7 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
                 splits=opt.get("splits"),
                 tree=opt["tree"],
                 min_opacity_delta=opt["min_opacity_delta"],
+                initial_tau_bins=(opt.get("initial_tau_bins") or None),
                 on_eval=on_eval,
                 on_progress=on_progress,
                 should_stop=lambda: _QOPT["cancel"],
@@ -461,6 +462,7 @@ class Handler(BaseHTTPRequestHandler):
                         "max_evals": int(req.get("max_evals", 5000)),
                         # user may ask for fewer than the host ceiling, never more.
                         "max_groups": max(2, min(MAX_GROUPS, int(req.get("max_groups", MAX_GROUPS)))),
+                        "initial_tau_bins": max(0, int(req.get("initial_tau_bins", 0) or 0)),
                         "window": _window(req),
                         "target_rms": (float(target) if target else None),
                         "plateau_evals": max(0, int(req.get("plateau_evals", 0) or 0)),

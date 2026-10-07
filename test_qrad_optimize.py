@@ -622,6 +622,27 @@ class TestBeamSearch(unittest.TestCase):
         self.assertEqual(res["n_leaves"], 5)  # coarsened to 4, then beam grew to the cap (was 8, stuck)
         self.assertTrue(qo._tree_feasible(res["binning_tree"], qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
 
+    def test_staged_seeding_splits_bottom_two(self):
+        # Staged seeding: N=3 equally-spaced tau cuts -> tau polish -> bottom-two lambda split
+        # (5 leaves) -> normal path. Data-free bowl rewards leaves, so the count must hold.
+        res = qo.optimize_qrad(
+            [-0.63, 7.0],
+            [3.0, 5.0],
+            flags=[True],
+            grow=False,
+            initial_tau_bins=3,
+            max_groups=8,
+            score_fn=_tree_leafcount_score(),
+            max_evals=5000,
+        )
+        self.assertTrue(res["tree"])
+        self.assertEqual(res["n_leaves"], 5)  # 3 tau bins + 2 extra leaves from the bottom-two split
+        self.assertLessEqual(res["n_leaves"], 8)
+        self.assertTrue(qo._tree_feasible(res["binning_tree"], qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
+        tags = [h["tag"] for h in res["history"]]
+        self.assertIn("staged-tau", tags)
+        self.assertIn("staged-lambda", tags)
+
 
 class TestMainGroupingDispatch(unittest.TestCase):
     """Regression guard for the main() rewrite (P3): every CLI grouping mode resolves to the

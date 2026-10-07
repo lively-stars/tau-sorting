@@ -149,6 +149,7 @@
         <label>metric <select id="qv_metric"><option value="rms">rms</option><option value="maxabs">max |Δ|</option><option value="int_q">∫Q</option></select></label>
         <label>beam width <input type="number" id="qv_beamwidth" min="1" max="12" value="3" title="rival tree topologies kept in parallel each grow round (1 = greedy)" /></label>
         <label>max &tau;-groups <input type="number" id="qv_maxgroups" min="2" max="8" value="5" /></label>
+        <label>initial &tau;-bins <input type="number" id="qv_initbins" min="0" max="8" value="3" title="staged seeding: N equally-spaced tau cuts, polish tau, lambda-split bottom two (0 = off)" /></label>
         <label>max evals <input type="number" id="qv_maxevals" min="20" value="5000" /></label>
         <label>target rms <input type="number" id="qv_targetrms" min="0" step="1000000" value="0" title="0 = off" /></label>
         <label>plateau evals <input type="number" id="qv_plateau" min="0" value="0" title="0 = off" /></label>
@@ -382,6 +383,7 @@ async function qoptStart(columnsMode=false) {
     metric: $('qv_metric').value,
     beam_width: parseInt($('qv_beamwidth').value,10) || 3,
     max_groups: parseInt($('qv_maxgroups').value,10) || undefined,
+    initial_tau_bins: parseInt($('qv_initbins').value,10) || 0,
     max_evals: parseInt($('qv_maxevals').value,10) || undefined,
     target_rms: parseFloat($('qv_targetrms').value) || 0,
     plateau_evals: parseInt($('qv_plateau').value,10) || 0,
@@ -839,6 +841,10 @@ $('addtau').addEventListener('click', () => armSplit('tau'));
 $('addlam').addEventListener('click', () => armSplit('lam'));
 window.addEventListener('keydown', e => { if (e.key === 'Escape' && SPLIT_MODE) armSplit(SPLIT_MODE); });
 $('go').addEventListener('click', compute);
+$('qopt').addEventListener('click', () => qoptStart(false));
+$('qoptcols').addEventListener('click', () => qoptStart(true));
+$('qcancel').addEventListener('click', qoptCancel);
+$('dl').addEventListener('click', downloadKappa);
 $('refresh').addEventListener('click', refreshModels);
 $('model').addEventListener('change', () => {
   ATM = null; ATM_MODEL = null;  // invalidate cached atmosphere for the new model

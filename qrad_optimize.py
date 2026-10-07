@@ -767,6 +767,42 @@ def _topology_search(tree, cost_tree, *, cfg, budget, max_groups, min_gap_tau, m
     return state["tree"], state["c"]
 
 
+def staged_seed_tree(tau_window, lam_window, n_initial_tau_bins, *, min_gap_tau=MIN_GAP_TAU) -> dict:
+    """Seed the staged path: `n_initial_tau_bins` equally-spaced tau groups over the outer
+    tau window (full lambda width, no lambda cuts). Raises ValueError below 1 bin or when
+    the equal spacing violates `min_gap_tau`."""
+    n = int(n_initial_tau_bins)
+    tlo, thi = float(tau_window[0]), float(tau_window[1])
+    if n < 1:
+        raise ValueError(f"need >= 1 initial tau bin, got {n_initial_tau_bins!r}")
+    step = (thi - tlo) / n
+    if step < min_gap_tau - 1e-12:
+        raise ValueError(f"{n} initial tau bins over [{tlo}, {thi}] need spacing {min_gap_tau}, got {step}")
+    cuts = [round(tlo + step * k, 4) for k in range(1, n)]
+    splits = [{"axis": "tau", "tau": t, "lam": 0.5 * (float(lam_window[0]) + float(lam_window[1]))} for t in cuts]
+    return tree_from_splits(list(tau_window), list(lam_window), splits, min_gap_tau=min_gap_tau)
+
+
+def split_bottom_two_tau_groups(tree, lam_at, *, min_gap_tau=MIN_GAP_TAU, min_gap_lam=MIN_GAP_LAM) -> dict:
+    """Lambda-split the bottom two tau groups of a tau-only tree at `lam_at` (each bottom leaf
+    cut into lo/hi lambda halves). Bottom = lowest -log10 tau (first two leaves in DFS order).
+    Raises ValueError when the tree has < 2 leaves or the cut violates the lambda min gap."""
+    out = copy.deepcopy(tree)
+    leaves = list(_iter_leaves_with_path(out["root"], _root_rect(out)))
+    if len(leaves) < 2:
+        raise ValueError(f"need >= 2 tau groups to split the bottom two, got {len(leaves)}")
+    lam_at = float(lam_at)
+    for path, (_tlo, _thi, llo, lhi) in leaves[:2]:
+        if lam_at - llo < min_gap_lam - 1e-12 or lhi - lam_at < min_gap_lam - 1e-12:
+            raise ValueError(f"lambda cut at {lam_at} is within min_gap ({min_gap_lam}) of [{llo}, {lhi}]")
+        leaf = _node_at_path(out["root"], path)
+        leaf.clear()
+        leaf.update({"axis": "lam", "at": lam_at, "lo": {"leaf": True}, "hi": {"leaf": True}})
+    if not _tree_feasible(out, min_gap_tau, min_gap_lam):
+        raise ValueError("bottom-two lambda split violates the tau min gap")
+    return out
+
+
 # --- shared search scaffolding (both optimizers) --------------------------------------
 def _new_search_context(
     *,
@@ -886,6 +922,7 @@ def optimize_qrad(
     beam_positions=(0.35, 0.5, 0.65),  # split-position fractions tried per (leaf, axis)
     beam_leaves=4,  # widest leaves considered for splitting, per beam tree
     min_opacity_delta=None,  # min bottom-opacity max/min ratio to split a group (None -> score default)
+    initial_tau_bins=None,  # staged seeding: N equally-spaced tau cuts, tau-only polish, bottom-two lambda split
     score_fn=None,
     on_progress=None,
     on_eval=None,
@@ -973,7 +1010,20 @@ def optimize_qrad(
     else:
         lmin, lmax = float(lambda_edges[0]), float(lambda_edges[-1])
         btree = tree_from_lpt(tau_edges, [list(lambda_edges) if bool(f) else [lmin, lmax] for f in flags])
-    _best_cost = float("inf")
+    staged = initial_tau_bins is not None
+    if staged:
+        # Staged seeding overrides every other seed shape: N equally-spaced tau cuts over the
+        # outer tau window, tau-only position polish, then a lambda split of the bottom two tau
+        # groups (at the lambda-window midpoint), then joint position polish — then the normal
+        # grow/polish/topology path below.
+        if int(initial_tau_bins) >= max_groups:
+            raise ValueError(f"--initial-tau-bins={initial_tau_bins} needs room under --max-groups={max_groups}")
+        btree = staged_seed_tree(
+            [tau_edges[0], tau_edges[-1]],
+            [lambda_edges[0], lambda_edges[-1]],
+            int(initial_tau_bins),
+            min_gap_tau=min_gap_tau,
+        )
 
     def cost_tree(t):
         # Wrapped evaluator: fires `on_improve` on every strictly better binning (new global-best
@@ -1065,6 +1115,32 @@ def optimize_qrad(
             checkpoint("topo", evaluate(binning_tree=tree)[1])
         return tree, best
 
+    if staged and not budget.exhausted():
+        # (2) tau-only polish of the N-bin seed, then (3) lambda-split the bottom two tau groups
+        # at the lambda-window midpoint + joint position polish; the normal grow/polish path
+        # below starts from this staged tree.
+        btree, _best_cost = _block_fixed_point_tree(
+            btree, cost_tree, cfg=cfg, budget=budget, min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam, report=on_step
+        )
+        checkpoint("staged-tau", evaluate(binning_tree=btree)[1])
+        lam_mid = 0.5 * (float(lambda_edges[0]) + float(lambda_edges[-1]))
+        if _n_leaves(btree) + 2 <= max_groups and not budget.exhausted():
+            try:
+                btree = split_bottom_two_tau_groups(btree, lam_mid, min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam)
+            except ValueError:
+                pass  # lambda window too narrow for the cut: keep the tau-only staging
+            else:
+                _best_cost = cost_tree(btree)
+                btree, _best_cost = _block_fixed_point_tree(
+                    btree,
+                    cost_tree,
+                    cfg=cfg,
+                    budget=budget,
+                    min_gap_tau=min_gap_tau,
+                    min_gap_lam=min_gap_lam,
+                    report=on_step,
+                )
+                checkpoint("staged-lambda", evaluate(binning_tree=btree)[1])
     btree, _best_cost = _refine(btree)
     final_r = evaluate(binning_tree=btree)[1]
     return {
@@ -1729,6 +1805,12 @@ def main(
         help="Only split a group into low/mid/high when its bottom opacity max/min >= this (1 = always split).",
     ),
     max_groups: int = typer.Option(8, "--max-groups"),
+    initial_tau_bins: int = typer.Option(
+        3,
+        "--initial-tau-bins",
+        help="Staged seeding: start from N equally-spaced tau cuts (0 = off), polish tau positions, "
+        "lambda-split the bottom two tau groups, then run the normal grow/polish path.",
+    ),
     max_evals: int = typer.Option(400, "--max-evals"),
     max_seconds: float = typer.Option(1800.0, "--max-seconds"),
     window_lo: float = typer.Option(-1.0, "--window-lo", help="Score rms over log10(tau_Ros) >= this."),
@@ -1915,6 +1997,7 @@ def main(
             beam_positions=tuple(beam_positions),
             beam_leaves=beam_leaves,
             min_opacity_delta=min_opacity_delta,
+            initial_tau_bins=(initial_tau_bins if initial_tau_bins and not columns and not use_grid_search else None),
             on_progress=_progress,
             on_improve=_on_improve if plot_dir else None,
         )
