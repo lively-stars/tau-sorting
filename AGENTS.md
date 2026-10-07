@@ -162,5 +162,5 @@ leaf-count cap is `--max-groups` in `qrad_optimize.py` (default 8).
 - ODF values are stored as short integers; convert to float via `10^(ODF/1000)`.
 - Wavelength grids use `FreqG` (frequency edges) with 329 edges for 328 bins.
 - Saved opacity bands factorize as `band = group * nSplits + split` (`nSplits = 3`: low/mid/high), where a `group` is a **guillotine-tree leaf** in τ-major DFS pre-order (τ cuts at the root, a λ-chain per τ band) — the canonical band order for **every** mode (the former uniform-per-cell layout is relabeled into this τ-major order). The `.npy` stores **linear** opacity with linear `T`/`p`; the `.dat` stores **natural-log** opacity (`kap_mean = ln(mixed)`) with `log10(T)`/`log10(p)` axes and a leading band axis `[nBands, NT, Np]`. The authoritative grouping is the per-group `group_tau_edges` / `group_lam_edges` descriptor; `tau_edges_per_lambda` / `split_along_lambda` in the `.npy` only record which CLI mode produced the tree.
-- Version control uses `jj` (Jujutsu), not git.
+- Version control uses plain `git` (native workflow).
 - **Commit messages carry no AI authorship attribution** — never add `Co-Authored-By:` lines or "Generated with …" footers (the Claude Code / Codex boilerplate). Plain commit messages only.
