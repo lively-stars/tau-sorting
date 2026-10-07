@@ -58,8 +58,6 @@ make stop               # stop it
 make restart            # stop + start
 
 # Lint + format (pre-commit hook runs these on `git commit`; see "Pre-commit" below)
-./scripts/precommit.sh            # auto-fix + format the tree (same as the hook)
-./scripts/precommit.sh --check    # report-only, exit non-zero if changes needed
 uv run ruff check .               # lint only
 uv run ruff format .              # format only
 ```
@@ -71,10 +69,6 @@ into `.git/hooks/pre-commit` (already installed in this checkout). Hooks are sco
 to Python files (`ruff-check --fix`, `ruff-format`, trailing whitespace, end-of-file
 fixer) plus repo-wide `check-yaml` / `check-added-large-files` / `check-merge-conflict` —
 C sources, model atmospheres, and paper vendor files are excluded (mixed line endings).
-
-```bash
-./scripts/precommit.sh            # same checks without the framework
-```
 
 Ruff is configured in `pyproject.toml` under `[tool.ruff]` — line length 120,
 target `py312`, rules `E,F,W,I,UP` with a small ignore list (`E501`, `E741`,
