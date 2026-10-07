@@ -1035,6 +1035,7 @@ def optimize_qrad(
             on_improve(copy.deepcopy(t), r, state["n_evals"])
         return c
 
+    _best_cost = float("inf")
     rms0 = float(evaluate(binning_tree=btree)[1]["rms"])  # rms of the user's seed binning
 
     def _refine(seed_tree):
