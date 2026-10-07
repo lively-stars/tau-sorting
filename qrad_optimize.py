@@ -1720,6 +1720,10 @@ def main(
         raise typer.BadParameter(f"model models/{model_name} is not valid: {report['error']}")
 
     print("[startup] precomputing invariants (reads the ODF; ~10-30s)...")
+    try:
+        qrad_core.require_data_files()
+    except qrad_core.MissingDataError as e:
+        raise typer.BadParameter(str(e))
     qrad_core.precompute(model_name)
 
     n_tau = len(tau_bin_edges) - 1

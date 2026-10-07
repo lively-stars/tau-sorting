@@ -53,6 +53,42 @@ MODELS_DIR = _REPO / "models"  # 1D atmospheres live here (ASCII: z rho p T, one
 DATA_DIR = Path(os.environ.get("TAUSORT_DATA_DIR") or _REPO)
 DEFAULT_MODEL = "G2_1D.dat"  # the model used when a caller doesn't pick one
 
+
+class MissingDataError(FileNotFoundError):
+    """A gitignored large runtime input is absent from DATA_DIR (fresh clone)."""
+
+
+def check_data_files() -> list[str]:
+    """Names of the gitignored runtime inputs required by precompute()/reference(). Missing = absent from DATA_DIR."""
+    need = [
+        "ODF_format.npy|ODF_nc_format.nc",  # either ODF source works
+        "continuumabs.dat|continuumabs.npy",  # either continuum source works
+        str(Path("data") / "kappa_grey.dat"),
+        str(Path("data") / "kappa_fullodf.dat"),
+    ]
+    missing = []
+    for entry in need:
+        if not any((DATA_DIR / alt).exists() for alt in entry.split("|")):
+            missing.append(entry)
+    return missing
+
+
+def require_data_files() -> None:
+    """Fail fast with a copy-pasteable message when a fresh clone lacks the gitignored inputs."""
+    missing = check_data_files()
+    if not missing:
+        return
+    raise MissingDataError(
+        "missing data files under "
+        + str(DATA_DIR)
+        + ": "
+        + ", ".join(missing)
+        + " — copy them from a working checkout (they are gitignored, see README 'Data files')"
+        + (" or set TAUSORT_DATA_DIR" if DATA_DIR == _REPO else "")
+        + "."
+    )
+
+
 # Per-model caches. Each model's edge-independent invariants (INV) and reference Q_rad
 # curves (REF) are computed once (precompute is ~10-30 s) and reused. Keyed by bare filename.
 _INV_CACHE: dict[str, dict] = {}
@@ -257,6 +293,7 @@ def precompute(model=None) -> dict:
     name = _model_name(model)
     if name in _INV_CACHE:
         return _INV_CACHE[name]
+    require_data_files()  # fresh clone without the gitignored inputs -> one clear error, not a mid-load traceback
     with _CACHE_LOCK:
         if name in _INV_CACHE:  # filled while we waited for the lock
             return _INV_CACHE[name]

@@ -532,6 +532,11 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     print("[startup] precomputing invariants (reads the ODF; ~10-30s)...")
+    try:
+        qc.require_data_files()
+    except qc.MissingDataError as e:
+        print(f"[startup] cannot start: {e}")
+        raise SystemExit(1)
     qc.precompute()
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"[ready] Q_rad explorer at http://localhost:{PORT}")

@@ -363,9 +363,12 @@ def read_continuum_data(
         ContinuumData object with all continuum opacities
     """
     cont = ContinuumData()
-
-    if abs_file.exists():
-        cont.kappa_abs = read_continuum_opacity(abs_file, nlam, nt, n_pressure)
+    # `abs_file` may name the .dat while only the fast .npy cache is present
+    # (read_continuum_opacity prefers the .npy); only fail when neither exists.
+    npy_file = Path(str(abs_file).replace(".dat", ".npy"))
+    if not abs_file.exists() and not npy_file.exists():
+        raise FileNotFoundError(f"continuum file not found: {abs_file} (nor its fast cache {npy_file})")
+    cont.kappa_abs = read_continuum_opacity(abs_file, nlam, nt, n_pressure)
 
     return cont
 
