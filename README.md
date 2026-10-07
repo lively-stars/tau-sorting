@@ -25,7 +25,7 @@ Reads `ODF_nc_format.nc`, `continuumabs.dat` and `models/G2_1D.dat` (see [Data f
 and writes:
 
 - `tau_bin_opacities.npy` — structured table with `planck`/`rosseland`/`mixed` each
-  `[nT, nP, nBands]` (linear) plus the grouping descriptor (see `CLAUDE.md` → "Outputs").
+  `[nT, nP, nBands]` (linear) plus the grouping descriptor (see `AGENTS.md` → "Outputs").
 - `kappa_<…>band_<…>.dat` — C-format binary; the filename encodes the binning, and it reads
   back with `kappa_band_reader.read_kappa_4_band_comparison`.
 - diagnostics: `tau_rosseland_at_tau_lambda_one.jpg`, `sorted_weighted_opacity_per_tau_bin.jpg`,
@@ -71,7 +71,7 @@ wavelength splits; mutually exclusive with `--split-lambda`/`--tau-per-lambda`),
 `--tau-per-lambda` (repeat once per λ column, each a comma-separated τ edge list — per-column
 τ stacks with independent counts; mutually exclusive with `--split-lambda`/`--lambda-per-tau`),
 and `--refine-mid/--no-refine-mid`. All modes seed the same guillotine-tree grouping
-(see CLAUDE.md → "Outputs"); see [Sorted-opacity segmentation flags](#sorted-opacity-segmentation-flags) below for `--refine-mid`.
+(see AGENTS.md → "Outputs"); see [Sorted-opacity segmentation flags](#sorted-opacity-segmentation-flags) below for `--refine-mid`.
 
 ### 2. Validate tables — `compare_Qrad_from_kappa.py`
 
