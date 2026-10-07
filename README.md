@@ -253,11 +253,14 @@ uv run python test_derivatives.py     # quick script, not unittest-based
 
 ## Data files
 
-Most data inputs are **gitignored** (large / not ours to redistribute), so a fresh clone does **not**
+Most data inputs are **gitignored** (large), so a fresh clone does **not**
 include them. What ships with the repo: the code and `models/G2_1D.dat` (the single 1D atmosphere the
 binning *and* the radiative transfer run on).
 
-**Required after cloning** — put these in place (repo root, and `data/`) before running the tools:
+**Getting them:** `make start` (and `make data`) fetch what's missing from the
+[`data-v1` release](https://github.com/lively-stars/tau-sorting/releases/tag/data-v1)
+via `scripts/fetch_data.sh` — published with permission from the data owners
+(Kurucz/ATLAS9-derived ODF + continuum; repo-generated reference tables). Or place them manually:
 
 | File | Needed for | What it is |
 | --- | --- | --- |
