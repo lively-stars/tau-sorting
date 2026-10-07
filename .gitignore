@@ -27,7 +27,6 @@ wheels/
 *.gif
 !plots/*.jpg
 !plots/*.png
-!plots/*.gif
 
 # Data
 *.dat
