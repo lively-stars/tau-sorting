@@ -714,7 +714,7 @@ class TestTauScan(unittest.TestCase):
             cost_tree=self._bowl_cost(target),
             rng=0,
         )
-        self.assertTrue(1 <= len(seeds) <= 5)  # dedup after the 5-round polish may collapse seeds
+        self.assertTrue(1 <= len(seeds) <= 5)  # dedup after the light polish may collapse seeds
         costs = [c for c, _ in seeds]
         self.assertEqual(costs, sorted(costs))  # best-first
         cuts = [self._cuts(t) for _, t in seeds]
@@ -745,6 +745,164 @@ class TestTauScan(unittest.TestCase):
         idx = [tags.index(t) for t in order]
         self.assertEqual(idx, sorted(idx))  # plan order preserved
         self.assertLessEqual(res["rms"], res["rms0"])  # converged scan winner: polish must never worsen
+
+    def test_seed_reproducible(self):
+        kw = dict(
+            tau_window=[-0.63, 7.0],
+            lam_window=[3.0, 5.0],
+            n_bins=3,
+            min_gap_tau=0.15,
+            dtau=0.5,
+            n_keep=5,
+            rng=7,
+        )
+        target = [1.0, 3.0]
+        a = qo.scan_tau_seeds(64, cost_tree=self._bowl_cost(target), **kw)
+        b = qo.scan_tau_seeds(64, cost_tree=self._bowl_cost(target), **kw)
+        self.assertEqual([c for c, _ in a], [c for c, _ in b])
+        self.assertEqual([self._cuts(t) for _, t in a], [self._cuts(t) for _, t in b])
+
+    def test_seeds_differ_across_rng(self):
+        target = [1.0, 3.0]
+        a = qo.scan_tau_seeds(
+            64,
+            [-0.63, 7.0],
+            [3.0, 5.0],
+            3,
+            min_gap_tau=0.15,
+            dtau=0.5,
+            n_keep=5,
+            cost_tree=self._bowl_cost(target),
+            rng=0,
+        )
+        b = qo.scan_tau_seeds(
+            64,
+            [-0.63, 7.0],
+            [3.0, 5.0],
+            3,
+            min_gap_tau=0.15,
+            dtau=0.5,
+            n_keep=5,
+            cost_tree=self._bowl_cost(target),
+            rng=1,
+        )
+        self.assertNotEqual([self._cuts(t) for _, t in a], [self._cuts(t) for _, t in b])
+
+
+class TestBottomScan(unittest.TestCase):
+    """Data-free tests for the flipped bottom-region (L, t_lo, t_hi) scan (no ODF)."""
+
+    @staticmethod
+    def _triple_cost(target):
+        tL, ta, tb = (float(v) for v in target)
+
+        def cost_tree(tree):
+            L, a, b = qo._bottom_triple(tree)
+            return float(1e8 + 1e7 * ((L - tL) ** 2 + (a - ta) ** 2 + (b - tb) ** 2))
+
+        return cost_tree
+
+    def _triple_score_fn(self, target):
+        cost = self._triple_cost(np.asarray(target, float))
+
+        def score(tau, lam, flags, model, *, binning_tree=None, window=None):
+            n = sum(1 for _ in qo._leaf_rects(binning_tree["root"], qo._root_rect(binning_tree)))
+            try:
+                rms = cost(binning_tree)
+            except (KeyError, TypeError):
+                rms = 1e8 + 1e7 * n  # non-flipped seed shape (tau-only staging): never the winner
+            return {"rms": rms, "max_abs": 0.0, "int_q_pct": 0.0, "n_empty": 0, "n_groups": n}
+
+        return score
+
+    def test_scan_returns_separated_triples_sorted(self):
+        target = [3.9, 0.5, 1.5]
+        out = qo.scan_bottom_columns(
+            64,
+            [-0.63, 7.0],
+            [3.0, 5.0],
+            2.87,
+            min_gap_tau=0.15,
+            min_gap_lam=0.10,
+            n_keep=3,
+            cost_tree=self._triple_cost(target),
+            rng=0,
+        )
+        self.assertTrue(1 <= len(out) <= 3)
+        costs = [c for c, _ in out]
+        self.assertEqual(costs, sorted(costs))  # best-first
+        triples = [qo._bottom_triple(t) for _, t in out]
+        for L, a, b in triples:  # every triple feasible on its own axes
+            self.assertTrue(L - 3.0 >= 0.10 - 1e-9 and 5.0 - L >= 0.10 - 1e-9)
+            for v in (a, b):
+                self.assertTrue(v - -0.63 >= 0.15 - 1e-9 and 2.87 - v >= 0.15 - 1e-9)
+        for i in range(len(triples)):
+            for j in range(i + 1, len(triples)):
+                sep = (
+                    abs(triples[i][0] - triples[j][0]) >= 0.10 - 1e-9
+                    or abs(triples[i][1] - triples[j][1]) >= 0.15 - 1e-9
+                    or abs(triples[i][2] - triples[j][2]) >= 0.15 - 1e-9
+                )
+                self.assertTrue(sep, (triples[i], triples[j]))  # OR-separated
+        best = triples[0]  # winner lands in the bowl minimum region
+        self.assertTrue(all(abs(b - t) < 0.6 for b, t in zip(best, target)), best)
+
+    def test_scan_needs_cost_tree(self):
+        with self.assertRaises(ValueError):
+            qo.scan_bottom_columns(8, [-0.63, 7.0], [3.0, 5.0], 2.87, cost_tree=None)
+        self.assertEqual(qo.scan_bottom_columns(0, [-0.63, 7.0], [3.0, 5.0], 2.87, cost_tree=lambda t: 1.0), [])
+
+    def test_staged_scan_on_yields_flipped_shape(self):
+        res = qo.optimize_qrad(
+            [-0.63, 7.0],
+            [3.0, 5.0],
+            flags=[True],
+            grow=False,
+            initial_tau_bins=3,
+            staged_lambda_scan=64,
+            max_groups=8,
+            score_fn=self._triple_score_fn([3.9, 0.5, 1.5]),
+            max_evals=5000,
+        )
+        self.assertEqual(res["n_leaves"], 5)
+        root = res["binning_tree"]["root"]
+        self.assertEqual(root["axis"], "tau")  # flipped: tau@top at the root
+        self.assertTrue(root["hi"].get("leaf"))  # top leaf spans the full lambda width
+        bot = root["lo"]
+        self.assertEqual(bot["axis"], "lam")  # bottom region splits on lambda
+        self.assertEqual(bot["lo"]["axis"], "tau")
+        self.assertEqual(bot["hi"]["axis"], "tau")  # per-column tau cuts
+        rects = list(qo._leaf_rects(res["binning_tree"]["root"], qo._root_rect(res["binning_tree"])))
+        lhis = [r[3] for r in rects if abs(r[1] - float(root["at"])) < 1e-9]
+        self.assertTrue(lhis and abs(max(lhis) - 5.0) < 1e-9 and abs(min(r[2] for r in rects) - 3.0) < 1e-9)
+        self.assertTrue(qo._tree_feasible(res["binning_tree"], qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
+
+    def test_staged_scan_off_keeps_sync_path(self):
+        # scan=0 must preserve the current mid-window bottom-lam pair (synced cut survives).
+        res = qo.optimize_qrad(
+            [-0.63, 7.0],
+            [3.0, 5.0],
+            flags=[True],
+            grow=False,
+            initial_tau_bins=3,
+            max_groups=8,
+            score_fn=_tree_leafcount_score(),
+            max_evals=5000,
+        )
+        self.assertEqual(res["n_leaves"], 5)
+        by_sync: dict[str, list] = {}
+
+        def walk(n):
+            if n.get("leaf") or "axis" not in n:
+                return
+            if n.get("sync"):
+                by_sync.setdefault(str(n["sync"]), []).append(round(float(n["at"]), 4))
+            walk(n["lo"])
+            walk(n["hi"])
+
+        walk(res["binning_tree"]["root"])
+        self.assertIn("bottom-lam", by_sync)
+        self.assertEqual(len(set(by_sync["bottom-lam"])), 1)
 
 
 class TestMainGroupingDispatch(unittest.TestCase):
