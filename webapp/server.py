@@ -84,6 +84,7 @@ _QOPT: dict = {
     "model": "",
     "diagram": None,  # binning-diagram data of the current best (for the live top-plot preview)
     "plan": [],  # ordered stage-tag plan for the run (rendered upfront as a checklist)
+    "stage": None,  # current plan stage tag (advances only on plan tags; sub-step noise ignored)
 }
 
 
@@ -135,6 +136,10 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
                 "t": round(time.perf_counter() - _QOPT["t0"], 1),
             }
         )
+        # Advance the checklist stage only on plan tags; sub-step noise (tree sweeps,
+        # per-column tau-col/split/merge reports) must not move or append bullets.
+        if tag in _QOPT.get("plan", []):
+            _QOPT["stage"] = tag
 
     columns = bool(opt.get("columns", False))
     common = dict(
@@ -402,6 +407,7 @@ class Handler(BaseHTTPRequestHandler):
                         "error": _QOPT["error"],
                         "diagram": _QOPT["diagram"],
                         "plan": list(_QOPT.get("plan", [])),
+                        "stage": _QOPT.get("stage"),
                     }
                 ),
             )
@@ -451,6 +457,7 @@ class Handler(BaseHTTPRequestHandler):
                         model=model,
                         diagram=None,
                         plan=[],
+                        stage=None,
                     )
                 try:
                     flags = qc.resolve_flags(req.get("split_lambda") or None, len(tau_edges) - 1)

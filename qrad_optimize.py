@@ -1036,14 +1036,16 @@ def optimize_qrad(
         return c
 
     _best_cost = float("inf")
-    rms0 = float(evaluate(binning_tree=btree)[1]["rms"])  # rms of the user's seed binning
+    rms0_r = evaluate(binning_tree=btree)[1]  # rms of the user's seed binning
+    rms0 = float(rms0_r["rms"])
 
     def _refine(seed_tree):
         """grow -> polish -> topology search from one seed tree. Returns (tree, penalized cost).
         Captures cfg/budget/cost_tree/on_step/checkpoint from the enclosing scope."""
         tree = copy.deepcopy(seed_tree)
         best = cost_tree(tree)
-        checkpoint("start", evaluate(binning_tree=tree)[1])
+        if not staged:  # staged path already checkpointed "start" at the seed
+            checkpoint("start", evaluate(binning_tree=tree)[1])
         # Grow FIRST so the budget builds structure (each grow cheaply refines only its new cut);
         # a heavy refine of the coarse seed up front would exhaust the budget before a leaf is split.
         if grow:
@@ -1117,9 +1119,9 @@ def optimize_qrad(
         return tree, best
 
     if staged and not budget.exhausted():
+        checkpoint("start", rms0_r)  # seed scored first: plan order matches fire order
         # (2) tau-only polish of the N-bin seed, then (3) lambda-split the bottom two tau groups
         # at the lambda-window midpoint + joint position polish; the normal grow/polish path
-        # below starts from this staged tree.
         btree, _best_cost = _block_fixed_point_tree(
             btree, cost_tree, cfg=cfg, budget=budget, min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam, report=on_step
         )

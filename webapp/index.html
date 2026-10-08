@@ -325,7 +325,7 @@ async function init() {
   // resume a Q_rad optimization that's already running (e.g. after a page reload)
   try {
     const s = await (await fetch('/api/optimize_qrad_status')).json();
-    if (s.running) { if (s.plan) { QPLAN = s.plan; renderSteps(s.history || [], true, QPLAN); } qoptBusy(true); $('qcancel').style.display='inline'; QPOLL = setInterval(qoptPoll, 1500); return; }
+    if (s.running) { if (s.plan) { QPLAN = s.plan; renderSteps(s.history || [], true, QPLAN, s.stage); } qoptBusy(true); $('qcancel').style.display='inline'; QPOLL = setInterval(qoptPoll, 1500); return; }
   } catch(e){}
   compute();
 }
@@ -463,18 +463,19 @@ function qstepLabel(tag) {
   if (m) return `column ${+m[1] + 1} tau stack grown + wiggled`;
   return tag;
 }
-function renderSteps(history, running, plan) {
+function renderSteps(history, running, plan, stage) {
   const host = $('qsteps');
   const seen = [];
   for (const h of history || []) if (!seen.includes(h.tag)) seen.push(h.tag);
-  // upfront checklist: full plan shown at once, states flip as history arrives
+  // upfront checklist: plan order fixed; explicit server stage decides states, so sub-step
+  // noise (tree sweeps, per-column reports) never appends bullets or steals the active slot.
+  // Stages before the current one are done, the current one is active, later ones todo.
   const order = (plan && plan.length ? plan : seen).filter((t, i, a) => a.indexOf(t) === i);
-  for (const t of seen) if (!order.includes(t)) order.push(t);  // unexpected tags append live
   if (!order.length) { host.classList.remove('on'); host.innerHTML = ''; return; }
   host.classList.add('on');
-  const lastSeen = seen.length ? seen[seen.length - 1] : null;
-  host.innerHTML = order.map(t => {
-    const cls = !seen.includes(t) ? 'todo' : (running && t === lastSeen ? 'active' : 'done');
+  const at = order.indexOf(stage);
+  host.innerHTML = order.map((t, i) => {
+    const cls = !running ? 'done' : (at < 0 ? (seen.includes(t) ? 'done' : 'todo') : (i < at ? 'done' : (i === at ? 'active' : 'todo')));
     return `<li class="${cls}">${qstepLabel(t)}</li>`;
   }).join('');
 }
@@ -492,7 +493,7 @@ async function qoptPoll() {
   const best = d.best ? d.best.toExponential(2) : '…';
   setQStatus(`optimizing Q_rad… ${d.n_evals} evals · rms ${best}${imp} · ${d.groups} groups · ${Math.round(d.elapsed)}s`);
   if (d.plan && d.plan.length) QPLAN = d.plan;
-  renderSteps(d.history || [], d.running, QPLAN);
+  renderSteps(d.history || [], d.running, QPLAN, d.stage);
 }
 
 function qoptFinish(result) {
