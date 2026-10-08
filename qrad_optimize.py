@@ -1249,7 +1249,7 @@ def optimize_qrad(
         # outer tau window, tau-only position polish, then a lambda split of the bottom two tau
         # groups (at the lambda-window midpoint), then joint position polish — then the normal
         # grow/polish/topology path below.
-        if int(initial_tau_bins) >= max_groups:
+        if int(initial_tau_bins) > max_groups:
             raise ValueError(f"--initial-tau-bins={initial_tau_bins} needs room under --max-groups={max_groups}")
         if int(initial_tau_scan) > 0:
             # LHS tau-cut scan first: the winner's tau cuts replace the uniform/optimal-fixed seed.
