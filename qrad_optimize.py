@@ -26,6 +26,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import heapq
+import json
+import math
 import sys
 import time
 from dataclasses import dataclass
@@ -306,6 +308,106 @@ def _round_tree(tree) -> dict:
         "window_lam": [round(float(v), 4) for v in tree["window_lam"]],
         "root": rec(tree["root"]),
     }
+
+
+def _check_tree_node(node, *, min_gap_tau, min_gap_lam, tlo, thi, llo, lhi) -> None:
+    """Validate one decoded tree node in place (raises ValueError on any shape violation)."""
+    if not isinstance(node, dict):
+        raise ValueError("tree node must be an object")
+    if node.get("leaf", False) or "axis" not in node:
+        if "axis" not in node and not node.get("leaf", False):
+            raise ValueError("tree leaf node needs 'leaf': true")
+        return
+    axis = node.get("axis")
+    if axis not in ("tau", "lam"):
+        raise ValueError(f"tree node axis must be 'tau'|'lam', got {node.get('axis')!r}")
+    if not isinstance(node.get("at"), (int, float)) or not math.isfinite(float(node["at"])):
+        raise ValueError(f"tree node 'at' must be a finite number, got {node.get('at')!r}")
+    at = float(node["at"])
+    if axis == "tau":
+        if not (tlo + min_gap_tau - 1e-12 <= at <= thi - min_gap_tau + 1e-12):
+            raise ValueError(f"tau cut {at} violates min-gap {min_gap_tau} inside [{tlo}, {thi}]")
+        _check_tree_node(
+            node.get("lo"), min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam, tlo=tlo, thi=at, llo=llo, lhi=lhi
+        )
+        _check_tree_node(
+            node.get("hi"), min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam, tlo=at, thi=thi, llo=llo, lhi=lhi
+        )
+    else:
+        if not (llo + min_gap_lam - 1e-12 <= at <= lhi - min_gap_lam + 1e-12):
+            raise ValueError(f"lambda cut {at} violates min-gap {min_gap_lam} inside [{llo}, {lhi}]")
+        _check_tree_node(
+            node.get("lo"), min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam, tlo=tlo, thi=thi, llo=llo, lhi=at
+        )
+        _check_tree_node(
+            node.get("hi"), min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam, tlo=tlo, thi=thi, llo=at, lhi=lhi
+        )
+
+
+def _round_tree_save(tree) -> dict:
+    """Deep-copy a tree with cut positions + windows rounded to 6 decimals (the saved payload)."""
+
+    def rec(node):
+        if _is_leaf(node):
+            return {"leaf": True}
+        out = {"axis": node["axis"], "at": round(float(node["at"]), 6), "lo": rec(node["lo"]), "hi": rec(node["hi"])}
+        if node.get("sync") is not None:
+            out["sync"] = node["sync"]
+        return out
+
+    return {
+        "window_tau": [round(float(v), 6) for v in tree["window_tau"]],
+        "window_lam": [round(float(v), 6) for v in tree["window_lam"]],
+        "root": rec(tree["root"]),
+    }
+
+
+def save_tree(tree, path) -> str:
+    """Write a guillotine-tree dict {window_tau, window_lam, root} to `path` as JSON.
+
+    Cut positions + windows are rounded to 6 decimals (well inside the min-gap + polish
+    tolerances, so a saved tree scores identically when reloaded). Returns the path str.
+    """
+    payload = _round_tree_save(tree)
+    p = Path(path).expanduser()
+    p.write_text(json.dumps(payload, indent=2) + "\n")
+    return str(p)
+
+
+def load_tree(path, *, min_gap_tau=MIN_GAP_TAU, min_gap_lam=MIN_GAP_LAM) -> dict:
+    """Read a JSON guillotine-tree dict written by `save_tree` (raises ValueError when the
+    file is not valid JSON, misses window_tau/window_lam/root, carries non-finite edges,
+    or has an axis/cut outside tau|lam / the min-gap box)."""
+    try:
+        raw = Path(path).expanduser().read_text()
+    except OSError as e:
+        raise ValueError(f"cannot read tree file {path}: {e}")
+    try:
+        tree = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"tree file {path} is not valid JSON: {e}")
+    if not isinstance(tree, dict):
+        raise ValueError(f"tree file {path} must hold a JSON object with window_tau/window_lam/root")
+    for key in ("window_tau", "window_lam", "root"):
+        if key not in tree:
+            raise ValueError(f"tree file {path} misses key {key!r}")
+    for key in ("window_tau", "window_lam"):
+        win = tree[key]
+        if (
+            not isinstance(win, (list, tuple))
+            or len(win) != 2
+            or not all(isinstance(v, (int, float)) and math.isfinite(float(v)) for v in win)
+            or not float(win[0]) < float(win[1])
+        ):
+            raise ValueError(f"tree file {path}: {key} must be 2 increasing finite numbers, got {win!r}")
+    if not isinstance(tree["root"], dict):
+        raise ValueError(f"tree file {path}: root must be an object")
+    tlo, thi = float(tree["window_tau"][0]), float(tree["window_tau"][1])
+    llo, lhi = float(tree["window_lam"][0]), float(tree["window_lam"][1])
+    _check_tree_node(tree["root"], min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam, tlo=tlo, thi=thi, llo=llo, lhi=lhi)
+    if not _tree_feasible(tree, min_gap_tau, min_gap_lam):
+        raise ValueError(f"tree file {path}: leaf rectangles violate the min-gap box")
+    return tree
 
 
 def _lam_chain(lam_edges):
@@ -1295,6 +1397,8 @@ def optimize_qrad(
     # "binning_tree": ...} dict.
 
     if binning_tree is not None:
+        # Highest seed precedence: an explicit (e.g. --load-tree) tree replaces every other
+        # seed shape, and the staged path is skipped for it (initial_tau_bins must be None).
         btree = copy.deepcopy(binning_tree)
     elif splits is not None:
         if len(tau_edges) != 2 or len(lambda_edges) != 2:
@@ -2235,6 +2339,17 @@ def main(
         help="With --plot: also save a tiling frame every N evals (not just improvements), "
         "so the animation covers every step. 0 = improvements only.",
     ),
+    save_tree_path: str = typer.Option(
+        "",
+        "--save-tree",
+        help="Write the result binning_tree to this JSON path after optimizing (round-trip exact via load-tree).",
+    ),
+    load_tree_path: str = typer.Option(
+        "",
+        "--load-tree",
+        help="Load a saved binning_tree JSON as the warm start (highest seed precedence; "
+        "staged seeding is skipped when loaded). Mutually exclusive with --columns and --grid-search.",
+    ),
 ):
     model_name = qrad_core._model_name(model or None)
     report = qrad_core.validate_model_file(qrad_core.MODELS_DIR / model_name)
@@ -2323,6 +2438,16 @@ def main(
             rms_history=list(_rms_hist),
         )
 
+    loaded_tree = None
+    if load_tree_path.strip():
+        if columns:
+            raise typer.BadParameter("--load-tree is mutually exclusive with --columns (trees are general-2D).")
+        if use_grid_search:
+            raise typer.BadParameter("--load-tree is mutually exclusive with --grid-search.")
+        try:
+            loaded_tree = load_tree(load_tree_path.strip(), min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam)
+        except ValueError as e:
+            raise typer.BadParameter(str(e))
     if use_grid_search and columns:
         raise typer.BadParameter("--columns is mutually exclusive with --grid-search.")
     if columns and tree:
@@ -2406,14 +2531,15 @@ def main(
             beam_positions=tuple(beam_positions),
             beam_leaves=beam_leaves,
             min_opacity_delta=min_opacity_delta,
-            initial_tau_bins=(initial_tau_bins if initial_tau_bins and not columns and not use_grid_search else None),
+            binning_tree=loaded_tree,
+            initial_tau_bins=None if loaded_tree is not None else (initial_tau_bins if initial_tau_bins else None),
             initial_tau_scan=(
-                initial_tau_scan if initial_tau_scan and initial_tau_bins and not columns and not use_grid_search else 0
+                0 if loaded_tree is not None else (initial_tau_scan if initial_tau_scan and initial_tau_bins else 0)
             ),
             initial_lambda_scan=(
-                initial_lambda_scan
-                if initial_lambda_scan and initial_tau_bins and not columns and not use_grid_search
-                else 0
+                0
+                if loaded_tree is not None
+                else (initial_lambda_scan if initial_lambda_scan and initial_tau_bins else 0)
             ),
             on_progress=_progress,
             on_eval=_on_eval_frame if plot_dir and plot_every else None,
@@ -2477,6 +2603,10 @@ def main(
             min_opacity_delta=min_opacity_delta,
         )
         print(f"  kappa table -> {written}")
+
+    if save_tree_path.strip():
+        written_tree = save_tree(result["binning_tree"], save_tree_path.strip())
+        print(f"  binning tree -> {written_tree}")
 
 
 def _fmt(edges) -> str:

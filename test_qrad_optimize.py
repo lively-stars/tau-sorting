@@ -8,7 +8,10 @@ every score_fn is invoked as ``score(None, None, None, model, binning_tree=tree,
 
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 
@@ -965,6 +968,105 @@ class TestFlatParamShim(unittest.TestCase):
         self.assertTrue(res["tree"])
         self.assertTrue(qo._tree_feasible(res["binning_tree"], qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
         self.assertEqual(self._rects(res["binning_tree"]), self._rects(expected))
+
+
+class TestSaveLoadTree(unittest.TestCase):
+    """save_tree/load_tree JSON round-trip: dict-equal + score-equal, validation, seed precedence."""
+
+    @staticmethod
+    def _leafcount_score(seen):
+        def score(tau, lam, flags, model, *, binning_tree=None, window=None):
+            seen.append(qo._tree_signature(binning_tree))
+            n = sum(1 for _ in qo._leaf_rects(binning_tree["root"], qo._root_rect(binning_tree)))
+            return {"rms": 1.0e8 / n, "max_abs": 1.0, "int_q_pct": 0.0, "n_empty": 0, "n_groups": n}
+
+        return score
+
+    def test_round_trip_identical_dict_and_score(self):
+        tree = qo.tree_from_splits(
+            [-0.63, 7.0],
+            [3.0, 5.0],
+            [{"axis": "tau", "tau": 1.23456789, "lam": 4.0}, {"axis": "lam", "tau": 0.0, "lam": 3.81234567}],
+        )
+        with tempfile.TemporaryDirectory() as d:
+            p = str(Path(d) / "tree.json")
+            qo.save_tree(tree, p)
+            raw = json.loads(Path(p).read_text())
+            self.assertEqual(raw["window_tau"], [-0.63, 7.0])
+            # 6-decimal rounding on save (not the 4-decimal wire payload)
+            self.assertIn(1.234568, [raw["root"]["at"], raw["root"]["lo"].get("at"), raw["root"]["hi"].get("at")])
+            back = qo.load_tree(p)
+            self.assertEqual(back, raw)
+            seen = []
+            ev, _ = qo.make_evaluator("X", score_fn=self._leafcount_score(seen))
+            c0, r0 = ev(binning_tree=back)
+            c1, r1 = ev(binning_tree=raw)
+            self.assertEqual(c0, c1)
+            self.assertEqual(r0["rms"], r1["rms"])
+
+    def test_load_validation_rejects_bad_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            bad_json = Path(d) / "bad.json"
+            bad_json.write_text("{not json")
+            with self.assertRaises(ValueError):
+                qo.load_tree(str(bad_json))
+            missing = Path(d) / "missing.json"
+            missing.write_text(json.dumps({"window_tau": [-0.63, 7.0]}))
+            with self.assertRaises(ValueError):
+                qo.load_tree(str(missing))
+            bad_axis = Path(d) / "axis.json"
+            bad_axis.write_text(
+                json.dumps(
+                    {
+                        "window_tau": [-0.63, 7.0],
+                        "window_lam": [3.0, 5.0],
+                        "root": {"axis": "rho", "at": 1.0, "lo": {"leaf": True}, "hi": {"leaf": True}},
+                    }
+                )
+            )
+            with self.assertRaises(ValueError):
+                qo.load_tree(str(bad_axis))
+            bad_gap = Path(d) / "gap.json"
+            bad_gap.write_text(
+                json.dumps(
+                    {
+                        "window_tau": [-0.63, 7.0],
+                        "window_lam": [3.0, 5.0],
+                        "root": {"axis": "tau", "at": -0.62, "lo": {"leaf": True}, "hi": {"leaf": True}},
+                    }
+                )
+            )
+            with self.assertRaises(ValueError):
+                qo.load_tree(str(bad_gap))
+
+    def test_loaded_tree_wins_over_flags_seed(self):
+        # grow=False refine-only: the result tree must equal the loaded tree (modulo the
+        # 4-decimal result rounding), even though flags describe a different seed shape.
+        warm = qo.tree_from_splits([-0.63, 7.0], [3.0, 5.0], [{"axis": "tau", "tau": 2.0, "lam": 4.0}])
+        with tempfile.TemporaryDirectory() as d:
+            p = str(Path(d) / "warm.json")
+            qo.save_tree(warm, p)
+            loaded = qo.load_tree(p)
+            seen = []
+            res = qo.optimize_qrad(
+                [-0.63, 0.35, 1.23, 7.0],
+                [3.0, 3.8, 5.0],
+                flags=[True, False, True],
+                grow=False,
+                beam_width=1,
+                binning_tree=loaded,
+                initial_tau_bins=None,
+                score_fn=self._leafcount_score(seen),
+                max_evals=200,
+            )
+            self.assertEqual(
+                qo._tree_signature(res["binning_tree"]),
+                qo._tree_signature(qo._round_tree(loaded)),
+            )
+            # staged seeding skipped when a tree is loaded: no staged tags in history
+            tags = [h["tag"] for h in res["history"]]
+            self.assertNotIn("staged-tau", tags)
+            self.assertNotIn("staged-lambda", tags)
 
 
 if __name__ == "__main__":

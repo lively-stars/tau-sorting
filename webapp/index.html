@@ -197,6 +197,13 @@
     <button id="dl" class="secondary" style="margin-top:12px">&#x2913; Download kappa table (.dat)</button>
     <div class="hint">Writes the current binning's C-format kappa table (`kappa_&lt;…&gt;.dat`). After an
        optimize run this is the optimized table.</div>
+    <div class="opt-row" style="margin-top:8px">
+      <button id="dltree" class="secondary">&#x2913; Download tree (.json)</button>
+      <label class="secondary" for="uptree" style="cursor:pointer" title="Load a saved tree JSON as the warm start">Upload tree…</label>
+      <input type="file" id="uptree" accept=".json,application/json" style="display:none" />
+    </div>
+    <div class="hint">Save the current result tree, or reload one as the next run's warm start
+       (round-trip exact via the CLI <code>--save-tree/--load-tree</code>).</div>
   </div>
 
   <div class="gutter" id="gutter" title="Drag to resize the controls panel"></div>
@@ -546,6 +553,30 @@ async function downloadKappa() {
     setStatus('downloaded ' + name);
   } catch(e){ setStatus(e.message, true); }
   finally { $('dl').disabled = false; }
+}
+
+function downloadTree() {
+  if (!BINNING_TREE) return setStatus('no optimizer tree to save yet — run an optimization first', true);
+  const blob = new Blob([JSON.stringify(BINNING_TREE, null, 2) + '\n'], {type: 'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = 'binning_tree.json';
+  document.body.appendChild(a); a.click();
+  a.remove(); URL.revokeObjectURL(url);
+  setStatus('downloaded binning_tree.json');
+}
+
+async function uploadTree(file) {
+  if (!file) return;
+  try {
+    const tree = JSON.parse(await file.text());
+    if (!tree || !Array.isArray(tree.window_tau) || !Array.isArray(tree.window_lam)
+        || typeof tree.root !== 'object' || !tree.root) throw new Error('not a binning tree');
+    if (tree.window_tau.length !== 2 || tree.window_lam.length !== 2) throw new Error('not a binning tree');
+    setTree(tree);
+    setStatus(`loaded tree from ${file.name} — next optimize run warm-starts from it`);
+    compute();
+  } catch(e){ setStatus(`could not load tree: ${e.message}`, true); }
+  finally { $('uptree').value = ''; }
 }
 
 async function qoptCancel(e){
@@ -926,6 +957,8 @@ $('qopt').addEventListener('click', () => qoptStart(false));
 $('qoptcols').addEventListener('click', () => qoptStart(true));
 $('qcancel').addEventListener('click', qoptCancel);
 $('dl').addEventListener('click', downloadKappa);
+$('dltree').addEventListener('click', downloadTree);
+$('uptree').addEventListener('change', e => uploadTree(e.target.files[0]));
 $('refresh').addEventListener('click', refreshModels);
 $('model').addEventListener('change', () => {
   ATM = null; ATM_MODEL = null;  // invalidate cached atmosphere for the new model
@@ -942,7 +975,6 @@ $('size_reset').addEventListener('click', () => {
   $('q_total').value = SIZE_DEFAULTS.qTotal; $('a_total').value = SIZE_DEFAULTS.aTotal;
   document.querySelectorAll('.qw').forEach(el => { el.value = SIZE_DEFAULTS.qw[+el.dataset.i]; });
   document.querySelectorAll('.aw').forEach(el => { el.value = SIZE_DEFAULTS.aw[+el.dataset.i]; });
-  applySizes();
 });
 restoreSizes();
 
