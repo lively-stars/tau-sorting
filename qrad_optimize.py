@@ -993,9 +993,10 @@ def scan_tau_seeds(
     LHS-samples `n` cut sets (`n_bins - 1` cuts each) on the `dtau` grid over `tau_window`,
     scores each raw via `cost_tree` on a tau-only tree (full lambda width), keeps the best
     `n_keep` pairwise-separated by >= `min_gap_tau` in every cut (greedy: sort by cost, take
-    if separated from all taken), light-polishes each kept seed with a single-round
-    `_block_fixed_point_tree`, and returns [(cost, tree)] best-first. Scoring is fully via
-    the injected `cost_tree`, so this is data-free testable with an analytic objective.
+    if separated from all taken), polishes each kept seed with `_block_fixed_point_tree`
+    (single-sweep passes, up to 5 rounds with early exit on convergence), and returns
+    [(cost, tree)] best-first. Scoring is fully via the injected `cost_tree`, so this is
+    data-free testable with an analytic objective.
     """
     n, n_bins, n_keep = int(n), int(n_bins), int(n_keep)
     if n <= 0 or n_keep <= 0:
@@ -1046,7 +1047,7 @@ def scan_tau_seeds(
         if k and any(min(abs(a - b) for a, b in zip(key, other)) < mg - 1e-9 for _, other, _ in kept):
             continue
         kept.append((cost, key, tree))
-    tight = _Cfg(min_gap_tau=mg, min_gap_lam=min_gap_lam, max_sweeps=1, max_block_rounds=1)
+    tight = _Cfg(min_gap_tau=mg, min_gap_lam=min_gap_lam, max_sweeps=1, max_block_rounds=5)
     use_budget = (
         budget
         if budget is not None
