@@ -363,6 +363,8 @@ def _round_tree_save(tree) -> dict:
         out = {"axis": node["axis"], "at": round(float(node["at"]), 6), "lo": rec(node["lo"]), "hi": rec(node["hi"])}
         if node.get("sync") is not None:
             out["sync"] = node["sync"]
+        if node.get("frozen"):
+            out["frozen"] = True
         return out
 
     return {
