@@ -83,7 +83,24 @@ _QOPT: dict = {
     "groups": 0,
     "model": "",
     "diagram": None,  # binning-diagram data of the current best (for the live top-plot preview)
+    "plan": [],  # ordered stage-tag plan for the run (rendered upfront as a checklist)
 }
+
+
+def _run_plan(opt) -> list[str]:
+    """Ordered stage-tag plan for an optimize run (rendered upfront as a checklist).
+    Columns path: seed -> lambda wiggle -> per-column tau grow -> joint wiggle, repeating
+    per round (shown once; repeats collapse in the UI). General path: optional staged seed
+    (tau groups, bottom-two lambda split), then grow -> polish -> topology."""
+    if bool(opt.get("columns", False)):
+        return ["start", "lambda-wiggle", "tau-groups", "joint-wiggle", "round"]
+    plan = ["start"]
+    if opt.get("initial_tau_bins"):
+        plan += ["staged-tau", "staged-lambda"]
+    plan += ["grow" if int(opt.get("beam_width", 3) or 3) == 1 else "beam", "blocks"]
+    if int(opt.get("beam_width", 3) or 3) >= 2:
+        plan.append("topo")
+    return plan
 
 
 def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
@@ -384,6 +401,7 @@ class Handler(BaseHTTPRequestHandler):
                         "result": _QOPT["result"],
                         "error": _QOPT["error"],
                         "diagram": _QOPT["diagram"],
+                        "plan": list(_QOPT.get("plan", [])),
                     }
                 ),
             )
@@ -432,6 +450,7 @@ class Handler(BaseHTTPRequestHandler):
                         groups=0,
                         model=model,
                         diagram=None,
+                        plan=[],
                     )
                 try:
                     flags = qc.resolve_flags(req.get("split_lambda") or None, len(tau_edges) - 1)
@@ -472,6 +491,7 @@ class Handler(BaseHTTPRequestHandler):
                         "min_gap_lam": float(req.get("min_gap_lam", 0.10) or 0.10),
                         "min_opacity_delta": float(req.get("min_opacity_delta", 1.0) or 1.0),
                     }
+                    _QOPT["plan"] = _run_plan(opt)
                     threading.Thread(
                         target=_run_qrad_opt, args=(tau_edges, lambda_edges, flags, model, opt), daemon=True
                     ).start()

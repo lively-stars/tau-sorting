@@ -41,6 +41,8 @@
   .qsteps li.done::before { content:'●'; color:var(--full); }
   .qsteps li.active { color:var(--ink); font-weight:600; }
   .qsteps li.active::before { content:'◐'; color:var(--accent); }
+  .qsteps li.todo { opacity:.65; }
+  .qsteps li.todo::before { content:'○'; color:var(--muted); }
   #qvars { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
   #qcancel { display:none; margin-left:8px; color:var(--accent); font-weight:600; }
   .flag input { accent-color:var(--accent); }
@@ -323,7 +325,7 @@ async function init() {
   // resume a Q_rad optimization that's already running (e.g. after a page reload)
   try {
     const s = await (await fetch('/api/optimize_qrad_status')).json();
-    if (s.running) { qoptBusy(true); $('qcancel').style.display='inline'; QPOLL = setInterval(qoptPoll, 1500); return; }
+    if (s.running) { if (s.plan) { QPLAN = s.plan; renderSteps(s.history || [], true, QPLAN); } qoptBusy(true); $('qcancel').style.display='inline'; QPOLL = setInterval(qoptPoll, 1500); return; }
   } catch(e){}
   compute();
 }
@@ -357,6 +359,7 @@ async function compute() {
 
 // --- Q_rad optimizer: start a background job, poll it, apply the result ---
 let QPOLL = null;
+let QPLAN = [];  // ordered stage-tag plan for the running run (rendered upfront as a checklist)
 
 function qoptBusy(on){ $('qopt').disabled=on; $('qoptcols').disabled=on; $('go').disabled=on; }
 
@@ -412,7 +415,8 @@ async function qoptStart(columnsMode=false) {
   else if (BINNING_TREE) body.binning_tree = BINNING_TREE;
   else body.splits = SPLITS;
   qoptBusy(true); setQStatus(columnsMode ? 'starting columns optimization…' : 'starting Q_rad optimization…'); QLASTDIAG = null;
-  renderSteps([], false);
+  QPLAN = predictPlan(body);
+  renderSteps([], true, QPLAN);
   try {
     const r = await fetch('/api/optimize_qrad', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
     const d = await r.json();
@@ -420,6 +424,16 @@ async function qoptStart(columnsMode=false) {
     startQBar(body.max_seconds);
     QPOLL = setInterval(qoptPoll, 1500);
   } catch(e){ setQStatus(e.message, true); qoptBusy(false); stopQBar(); }
+}
+// Mirror of server _run_plan: ordered stage tags for this request, so the full checklist
+// renders upfront and polls only flip todo -> active -> done.
+function predictPlan(body) {
+  if (body.columns) return ['start', 'lambda-wiggle', 'tau-groups', 'joint-wiggle', 'round'];
+  const plan = ['start'];
+  if (body.initial_tau_bins) plan.push('staged-tau', 'staged-lambda');
+  plan.push((body.beam_width || 3) === 1 ? 'grow' : 'beam', 'blocks');
+  if ((body.beam_width || 3) >= 2) plan.push('topo');
+  return plan;
 }
 // Staged step list: maps optimizer on_progress tags to human bullets. Latest tag = active,
 // earlier ones done. Columns path: tau groups (per-column grow) -> lambda wiggle -> joint wiggle.
@@ -430,8 +444,8 @@ const QSTEP_LABELS = {
   'staged-lambda': 'bottom-two groups lambda-split + positioned',
   'lambda': 'lambda cuts positioned',
   'lambda-wiggle': 'lambda cuts wiggled',
+  'tau-groups': 'tau groups added (all columns)',
   'columns': 'column tau stacks refined',
-  'joint-wiggle': 'tau + lambda jointly wiggled',
   'round': 'refinement round done',
   'grow': 'grew a tau group',
   'beam': 'beam grow round done',
@@ -449,16 +463,20 @@ function qstepLabel(tag) {
   if (m) return `column ${+m[1] + 1} tau stack grown + wiggled`;
   return tag;
 }
-function renderSteps(history, running) {
+function renderSteps(history, running, plan) {
   const host = $('qsteps');
-  // collapse repeats: keep first occurrence order, latest entry decides the active step
   const seen = [];
-  for (const h of history) if (!seen.includes(h.tag)) seen.push(h.tag);
-  if (!seen.length) { host.classList.remove('on'); host.innerHTML = ''; return; }
+  for (const h of history || []) if (!seen.includes(h.tag)) seen.push(h.tag);
+  // upfront checklist: full plan shown at once, states flip as history arrives
+  const order = (plan && plan.length ? plan : seen).filter((t, i, a) => a.indexOf(t) === i);
+  for (const t of seen) if (!order.includes(t)) order.push(t);  // unexpected tags append live
+  if (!order.length) { host.classList.remove('on'); host.innerHTML = ''; return; }
   host.classList.add('on');
-  const active = running ? seen[seen.length - 1] : null;
-  host.innerHTML = seen.map(t =>
-    `<li class="${t === active ? 'active' : 'done'}">${qstepLabel(t)}</li>`).join('');
+  const lastSeen = seen.length ? seen[seen.length - 1] : null;
+  host.innerHTML = order.map(t => {
+    const cls = !seen.includes(t) ? 'todo' : (running && t === lastSeen ? 'active' : 'done');
+    return `<li class="${cls}">${qstepLabel(t)}</li>`;
+  }).join('');
 }
 
 async function qoptPoll() {
@@ -473,7 +491,8 @@ async function qoptPoll() {
   const imp = (d.rms0 && d.best) ? ` (−${(100*(d.rms0-d.best)/d.rms0).toFixed(1)}%)` : '';
   const best = d.best ? d.best.toExponential(2) : '…';
   setQStatus(`optimizing Q_rad… ${d.n_evals} evals · rms ${best}${imp} · ${d.groups} groups · ${Math.round(d.elapsed)}s`);
-  renderSteps(d.history || [], d.running);
+  if (d.plan && d.plan.length) QPLAN = d.plan;
+  renderSteps(d.history || [], d.running, QPLAN);
 }
 
 function qoptFinish(result) {
@@ -481,7 +500,7 @@ function qoptFinish(result) {
   stopQBar();
   $('qcancel').style.display = 'none';
   qoptBusy(false);
-  if (result && result.history) renderSteps(result.history, false);
+  if (result && result.history) renderSteps(result.history, false, QPLAN);
   // The optimizer returns a free-form tree: keep the manual split list intact and show the
   // result as an overlay (any box/split edit exits it via onEdgeEdit).
   setTree(result.binning_tree);
