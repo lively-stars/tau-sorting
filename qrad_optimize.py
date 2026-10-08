@@ -2233,8 +2233,8 @@ def main(
     ),
     max_evals: int = typer.Option(400, "--max-evals"),
     max_seconds: float = typer.Option(1800.0, "--max-seconds"),
-    window_lo: float = typer.Option(-1.0, "--window-lo", help="Score rms over log10(tau_Ros) >= this."),
-    window_hi: float = typer.Option(2.0, "--window-hi", help="Score rms over log10(tau_Ros) <= this."),
+    window_lo: float = typer.Option(-5.0, "--window-lo", help="Score rms over log10(tau_Ros) >= this."),
+    window_hi: float = typer.Option(3.0, "--window-hi", help="Score rms over log10(tau_Ros) <= this."),
     target_rms: float = typer.Option(0.0, "--target-rms", help="Stop once rms <= this (0 = off)."),
     plateau_evals: int = typer.Option(0, "--plateau-evals", help="Stop if rms stalls this many evals (0 = off)."),
     grow_tol_rel: float = typer.Option(
