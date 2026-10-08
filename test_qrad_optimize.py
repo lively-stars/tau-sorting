@@ -644,6 +644,77 @@ class TestBeamSearch(unittest.TestCase):
         self.assertIn("staged-lambda", tags)
 
 
+class TestTauScan(unittest.TestCase):
+    """Data-free tests for the LHS tau-cut seed scan (injected analytic bowl, no ODF)."""
+
+    @staticmethod
+    def _cuts(tree):
+        return qo._tau_cuts_sorted(tree)
+
+    def _bowl_cost(self, target):
+        target = np.asarray(target, float)
+
+        def cost_tree(tree):
+            cuts = np.asarray(self._cuts(tree), float)
+            n = min(len(cuts), len(target))
+            return float(1e8 + 1e7 * np.sum((cuts[:n] - target[:n]) ** 2))
+
+        return cost_tree
+
+    def _bowl_score_fn(self, target):
+        cost = self._bowl_cost(np.asarray(target, float))
+
+        def score(tau, lam, flags, model, *, binning_tree=None, window=None):
+            n = sum(1 for _ in qo._leaf_rects(binning_tree["root"], qo._root_rect(binning_tree)))
+            return {"rms": cost(binning_tree), "max_abs": 0.0, "int_q_pct": 0.0, "n_empty": 0, "n_groups": n}
+
+        return score
+
+    def test_scan_returns_separated_seeds_sorted(self):
+        target = [1.0, 3.0]
+        seeds = qo.scan_tau_seeds(
+            64,
+            [-0.63, 7.0],
+            [3.0, 5.0],
+            3,
+            min_gap_tau=0.15,
+            dtau=0.5,
+            n_keep=5,
+            cost_tree=self._bowl_cost(target),
+            rng=0,
+        )
+        self.assertEqual(len(seeds), 5)
+        costs = [c for c, _ in seeds]
+        self.assertEqual(costs, sorted(costs))  # best-first
+        cuts = [self._cuts(t) for _, t in seeds]
+        for c in cuts:  # right shape; near the dtau grid (light polish may nudge a cut by <= 0.17)
+            self.assertEqual(len(c), 2)
+            for v in c:
+                self.assertLessEqual(min(abs(v - g) for g in (-0.63 + 0.5 * i for i in range(17))), 0.17 + 1e-9)
+        best = cuts[0]  # winner lands in the bowl minimum region
+        self.assertTrue(all(abs(b - t) < 0.75 for b, t in zip(best, target)), best)
+
+    def test_staged_scan_plan_order(self):
+        target = [1.0, 3.0]
+        res = qo.optimize_qrad(
+            [-0.63, 7.0],
+            [3.0, 5.0],
+            flags=[True],
+            grow=False,
+            initial_tau_bins=3,
+            initial_tau_scan=64,
+            max_groups=8,
+            score_fn=self._bowl_score_fn(target),
+            max_evals=5000,
+        )
+        tags = [h["tag"] for h in res["history"]]
+        self.assertEqual(tags, sorted(tags, key=tags.index))  # no duplicates by construction
+        order = ["start", "tau-scan", "staged-tau", "staged-lambda"]
+        idx = [tags.index(t) for t in order]
+        self.assertEqual(idx, sorted(idx))  # plan order preserved
+        self.assertLess(res["rms"], res["rms0"])
+
+
 class TestMainGroupingDispatch(unittest.TestCase):
     """Regression guard for the main() rewrite (P3): every CLI grouping mode resolves to the
     per-tau-group lambda-edge list (``lpt``) feeding the single guillotine-tree IR, and the tree

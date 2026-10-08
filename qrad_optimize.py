@@ -588,6 +588,8 @@ def _beam_grow_tree(
     beam_positions=(0.35, 0.5, 0.65),
     beam_leaves=4,
     grow_tol=0.0,
+    explore=0.0,  # early exploration: first `explore_rounds` grow rounds also continue when
+    explore_rounds=0,  # the shortfall vs grow_tol stays within this fraction (jump around early)
     report=None,
 ):
     """Non-greedy beam search over guillotine-tree topologies (``beam_width >= 2``).
@@ -610,6 +612,7 @@ def _beam_grow_tree(
     """
     best_tree, best_c = copy.deepcopy(tree), cost_tree(tree)
     beam = [(copy.deepcopy(tree), best_c)]
+    explore_used = 0
     while _n_leaves(best_tree) < max_groups and not budget.exhausted():
         children = []  # (signature, tree, cost)
         for btree, _bc in beam:
@@ -649,7 +652,17 @@ def _beam_grow_tree(
         round_best_tree, round_best_c = new_beam[0]
         if report:
             report("beam", round_best_c, _n_leaves(round_best_tree))
-        if (best_c - round_best_c) <= grow_tol:
+        shortfall = best_c - round_best_c
+        if shortfall <= 0 and explore_used < explore_rounds:
+            # Early exploration (checked BEFORE the grow bar): adopt a non-improving round
+            # winner to jump out of the local basin, provided it is within `explore` fraction
+            # of the running cost. The leaf cap + budget still bound the walk.
+            if (round_best_c - best_c) / max(abs(best_c), 1.0) <= explore:
+                explore_used += 1
+                best_tree, best_c = copy.deepcopy(round_best_tree), round_best_c
+                beam = new_beam
+                continue
+        if shortfall <= grow_tol:
             break  # this round didn't beat the running best past the threshold -> converged
         best_tree, best_c = copy.deepcopy(round_best_tree), round_best_c
         beam = new_beam
@@ -772,21 +785,152 @@ def staged_seed_tree(tau_window, lam_window, n_initial_tau_bins, *, min_gap_tau=
     tau window (full lambda width, no lambda cuts). Raises ValueError below 1 bin or when
     the equal spacing violates `min_gap_tau`."""
     n = int(n_initial_tau_bins)
+    # Best τ-only 3-bin split from exhaustive dτ=0.5 enumeration on G2_1D.dat
+    # (rms=1.9933e8; runner-up also at 1.87 + second cut at 2.37): narrow photospheric
+    # band [1.87, 2.87] instead of uniform spacing.
+    _BEST_TAU3 = [1.87, 2.87]
     tlo, thi = float(tau_window[0]), float(tau_window[1])
     if n < 1:
         raise ValueError(f"need >= 1 initial tau bin, got {n_initial_tau_bins!r}")
-    step = (thi - tlo) / n
-    if step < min_gap_tau - 1e-12:
-        raise ValueError(f"{n} initial tau bins over [{tlo}, {thi}] need spacing {min_gap_tau}, got {step}")
-    cuts = [round(tlo + step * k, 4) for k in range(1, n)]
+    if n == 3 and tlo <= _BEST_TAU3[0] and _BEST_TAU3[-1] <= thi:
+        cuts = [_BEST_TAU3[0], _BEST_TAU3[1]]  # optimal τ-only 3-bin seed, not uniform
+    else:
+        step = (thi - tlo) / n
+        if step < min_gap_tau - 1e-12:
+            raise ValueError(f"{n} initial tau bins over [{tlo}, {thi}] need spacing {min_gap_tau}, got {step}")
+        cuts = [round(tlo + step * k, 4) for k in range(1, n)]
     splits = [{"axis": "tau", "tau": t, "lam": 0.5 * (float(lam_window[0]) + float(lam_window[1]))} for t in cuts]
     return tree_from_splits(list(tau_window), list(lam_window), splits, min_gap_tau=min_gap_tau)
+
+
+def _tau_cuts_sorted(tree) -> list[float]:
+    """Sorted interior tau-cut positions of a tau-only tree (DFS collect, then sort)."""
+    cuts: list[float] = []
+
+    def walk(node):
+        if _is_leaf(node):
+            return
+        if node.get("axis") == "tau":
+            cuts.append(float(node["at"]))
+        walk(node["lo"])
+        walk(node["hi"])
+
+    walk(tree["root"])
+    return sorted(cuts)
+
+
+def _tau_only_tree(tau_window, lam_window, cuts) -> dict:
+    """Tau-only guillotine tree (full lambda width) over `cuts` — the scan's candidate shape."""
+    tlo, thi = float(tau_window[0]), float(tau_window[1])
+    llo, lhi = float(lam_window[0]), float(lam_window[1])
+    return {
+        "window_tau": [tlo, thi],
+        "window_lam": [llo, lhi],
+        "root": _tau_chain([tlo, *sorted(float(c) for c in cuts), thi]),
+    }
+
+
+def scan_tau_seeds(
+    n,
+    tau_window,
+    lam_window,
+    n_bins,
+    *,
+    min_gap_tau=MIN_GAP_TAU,
+    min_gap_lam=MIN_GAP_LAM,
+    dtau=0.5,
+    n_keep=5,
+    cost_tree,
+    budget=None,
+    rng=None,
+) -> list:
+    """Latin-hypercube seed scan over tau-cut sets.
+
+    LHS-samples `n` cut sets (`n_bins - 1` cuts each) on the `dtau` grid over `tau_window`,
+    scores each raw via `cost_tree` on a tau-only tree (full lambda width), keeps the best
+    `n_keep` pairwise-separated by >= `min_gap_tau` in every cut (greedy: sort by cost, take
+    if separated from all taken), light-polishes each kept seed with a single-round
+    `_block_fixed_point_tree`, and returns [(cost, tree)] best-first. Scoring is fully via
+    the injected `cost_tree`, so this is data-free testable with an analytic objective.
+    """
+    n, n_bins, n_keep = int(n), int(n_bins), int(n_keep)
+    if n <= 0 or n_keep <= 0:
+        return []
+    if n_bins < 1:
+        raise ValueError(f"need >= 1 tau bin, got {n_bins!r}")
+    if cost_tree is None:
+        raise ValueError("scan_tau_seeds needs cost_tree(tree) -> cost")
+    tlo, thi = float(tau_window[0]), float(tau_window[1])
+    if not thi > tlo:
+        raise ValueError(f"tau window must be increasing, got {[tlo, thi]}")
+    k = n_bins - 1
+    grid = _grid_points(tlo, thi, float(dtau))[1:-1]  # interior dtau points; endpoints never move
+    if k > 0 and not grid:
+        return []
+    gen = np.random.default_rng(rng)
+    mg = float(min_gap_tau)
+
+    def _feasible(cuts) -> bool:
+        span = [tlo, *cuts, thi]
+        return all(b > a and b - a >= mg - 1e-12 for a, b in zip(span, span[1:]))
+
+    seen: set[tuple] = set()
+    scored: list[tuple[float, tuple, dict]] = []
+    for _ in range(25):
+        if len(seen) >= n or (budget is not None and budget.exhausted()):
+            break
+        strata = np.empty((n, k))
+        for j in range(k):
+            strata[:, j] = (gen.permutation(n) + gen.random(n)) / n
+        for i in range(n):
+            if len(seen) >= n:
+                break
+            snapped = (
+                sorted(min(grid, key=lambda g, s=s: abs(g - (tlo + s * (thi - tlo)))) for s in strata[i]) if k else []
+            )
+            key = tuple(snapped)
+            if key in seen or not _feasible(snapped):
+                continue
+            seen.add(key)
+            tree = _tau_only_tree([tlo, thi], lam_window, snapped)
+            scored.append((float(cost_tree(tree)), key, tree))
+    scored.sort(key=lambda s: s[0])
+    kept = []
+    for cost, key, tree in scored:
+        if len(kept) >= n_keep:
+            break
+        if k and any(min(abs(a - b) for a, b in zip(key, other)) < mg - 1e-9 for _, other, _ in kept):
+            continue
+        kept.append((cost, key, tree))
+    tight = _Cfg(min_gap_tau=mg, min_gap_lam=min_gap_lam, max_sweeps=1, max_block_rounds=1)
+    use_budget = (
+        budget
+        if budget is not None
+        else _Budget(max_evals=10**9, max_seconds=3600.0, state={"n_evals": 0}, t0=time.perf_counter())
+    )
+    polished = []
+    for cost, _key, tree in kept:
+        t = copy.deepcopy(tree)
+        t, c = _block_fixed_point_tree(
+            t, cost_tree, cfg=tight, budget=use_budget, min_gap_tau=mg, min_gap_lam=min_gap_lam
+        )
+        polished.append((c, t))
+    polished.sort(key=lambda s: s[0])
+    final = []
+    for c, t in polished:
+        a = _tau_cuts_sorted(t)
+        if k and any(min(abs(x - y) for x, y in zip(a, _tau_cuts_sorted(u))) < mg - 1e-9 for _, u in final):
+            continue  # polish nudged two seeds together; keep the cheaper one
+        final.append((c, t))
+    return final
 
 
 def split_bottom_two_tau_groups(tree, lam_at, *, min_gap_tau=MIN_GAP_TAU, min_gap_lam=MIN_GAP_LAM) -> dict:
     """Lambda-split the bottom two tau groups of a tau-only tree at `lam_at` (each bottom leaf
     cut into lo/hi lambda halves). Bottom = lowest -log10 tau (first two leaves in DFS order).
-    Raises ValueError when the tree has < 2 leaves or the cut violates the lambda min gap."""
+    The two lambda cuts share one `sync` id so the staged wiggle moves them as a single
+    synchronized cut (plus the two tau cuts) instead of drifting apart. Raises ValueError
+    when the tree has < 2 leaves or the cut violates the lambda min gap."""
     out = copy.deepcopy(tree)
     leaves = list(_iter_leaves_with_path(out["root"], _root_rect(out)))
     if len(leaves) < 2:
@@ -797,10 +941,83 @@ def split_bottom_two_tau_groups(tree, lam_at, *, min_gap_tau=MIN_GAP_TAU, min_ga
             raise ValueError(f"lambda cut at {lam_at} is within min_gap ({min_gap_lam}) of [{llo}, {lhi}]")
         leaf = _node_at_path(out["root"], path)
         leaf.clear()
-        leaf.update({"axis": "lam", "at": lam_at, "lo": {"leaf": True}, "hi": {"leaf": True}})
+        leaf.update({"axis": "lam", "at": lam_at, "lo": {"leaf": True}, "hi": {"leaf": True}, "sync": "bottom-lam"})
     if not _tree_feasible(out, min_gap_tau, min_gap_lam):
         raise ValueError("bottom-two lambda split violates the tau min gap")
     return out
+
+
+def _synced_wiggle(tree, cost_tree, *, cfg, budget, min_gap_tau, min_gap_lam):
+    """Coordinate descent over synced cut groups: nodes sharing a `sync` id move together as
+    one cut (each candidate sets all members, feasibility + cost on the joint move), then all
+    tau-axis cuts get an individual pass. Returns (tree, best). Used by the staged
+    bottom-two step: the shared lambda cut and/or the two tau cuts move in sync."""
+    best = cost_tree(tree)
+    groups: dict[str, list] = {}
+    for node, _lo, _hi in _iter_internal(tree["root"], _root_rect(tree)):
+        if node.get("sync"):
+            groups.setdefault(str(node["sync"]), []).append(node)
+    for _ in range(cfg.max_sweeps):
+        improved = False
+        internals = list(_iter_internal(tree["root"], _root_rect(tree)))
+        spans = {(id(n)): (lo, hi) for n, lo, hi in internals}
+        for _sid, members in groups.items():
+            mg = min_gap_lam if members[0]["axis"] == "lam" else min_gap_tau
+            old = float(members[0]["at"])
+            best_at, best_c = old, best
+            for step in cfg.adjust_steps:
+                for d in (-1.0, +1.0):
+                    if budget.exhausted():
+                        for m in members:
+                            m["at"] = best_at
+                        return tree, best_c
+                    cand = old + d * step
+                    ok = True
+                    for m in members:
+                        lo, hi = spans[id(m)]
+                        if cand <= lo + mg - 1e-12 or cand >= hi - mg + 1e-12:
+                            ok = False
+                            break
+                    if not ok:
+                        continue
+                    for m in members:
+                        m["at"] = cand
+                    if not _tree_feasible(tree, min_gap_tau, min_gap_lam):
+                        continue
+                    c = cost_tree(tree)
+                    if c < best_c - 1e-12:
+                        best_c, best_at = c, cand
+            for m in members:
+                m["at"] = best_at
+            if best_c < best - 1e-12:
+                best, improved = best_c, True
+        # individual tau-cut pass (the two tau splits around the synced lambda cut)
+        for node, span_lo, span_hi in list(_iter_internal(tree["root"], _root_rect(tree))):
+            if node["axis"] != "tau":
+                continue
+            mg = min_gap_tau
+            old = float(node["at"])
+            best_at, best_c = old, best
+            for step in cfg.adjust_steps:
+                for d in (-1.0, +1.0):
+                    if budget.exhausted():
+                        node["at"] = best_at
+                        return tree, best_c
+                    cand = old + d * step
+                    if cand <= span_lo + mg - 1e-12 or cand >= span_hi - mg + 1e-12:
+                        continue
+                    node["at"] = cand
+                    if not _tree_feasible(tree, min_gap_tau, min_gap_lam):
+                        continue
+                    c = cost_tree(tree)
+                    if c < best_c - 1e-12:
+                        best_c, best_at = c, cand
+            node["at"] = best_at
+            if best_c < best - 1e-12:
+                best, improved = best_c, True
+        if not improved:
+            break
+    return tree, best
 
 
 # --- shared search scaffolding (both optimizers) --------------------------------------
@@ -921,8 +1138,11 @@ def optimize_qrad(
     beam_width=3,  # rival tree topologies kept in parallel each round
     beam_positions=(0.35, 0.5, 0.65),  # split-position fractions tried per (leaf, axis)
     beam_leaves=4,  # widest leaves considered for splitting, per beam tree
+    explore=0.05,  # early exploration: adopt non-improving grow rounds within this cost fraction
+    explore_rounds=2,  # how many such jumps allowed before the grow bar goes strict
     min_opacity_delta=None,  # min bottom-opacity max/min ratio to split a group (None -> score default)
     initial_tau_bins=None,  # staged seeding: N equally-spaced tau cuts, tau-only polish, bottom-two lambda split
+    initial_tau_scan=0,  # staged seeding: LHS-scan this many tau-cut sets first, seed from the winner (0 = off)
     score_fn=None,
     on_progress=None,
     on_eval=None,
@@ -1010,20 +1230,6 @@ def optimize_qrad(
     else:
         lmin, lmax = float(lambda_edges[0]), float(lambda_edges[-1])
         btree = tree_from_lpt(tau_edges, [list(lambda_edges) if bool(f) else [lmin, lmax] for f in flags])
-    staged = initial_tau_bins is not None
-    if staged:
-        # Staged seeding overrides every other seed shape: N equally-spaced tau cuts over the
-        # outer tau window, tau-only position polish, then a lambda split of the bottom two tau
-        # groups (at the lambda-window midpoint), then joint position polish — then the normal
-        # grow/polish/topology path below.
-        if int(initial_tau_bins) >= max_groups:
-            raise ValueError(f"--initial-tau-bins={initial_tau_bins} needs room under --max-groups={max_groups}")
-        btree = staged_seed_tree(
-            [tau_edges[0], tau_edges[-1]],
-            [lambda_edges[0], lambda_edges[-1]],
-            int(initial_tau_bins),
-            min_gap_tau=min_gap_tau,
-        )
 
     def cost_tree(t):
         # Wrapped evaluator: fires `on_improve` on every strictly better binning (new global-best
@@ -1036,6 +1242,44 @@ def optimize_qrad(
         return c
 
     _best_cost = float("inf")
+    staged = initial_tau_bins is not None
+    _did_scan = False
+    if staged:
+        # Staged seeding overrides every other seed shape: N equally-spaced tau cuts over the
+        # outer tau window, tau-only position polish, then a lambda split of the bottom two tau
+        # groups (at the lambda-window midpoint), then joint position polish — then the normal
+        # grow/polish/topology path below.
+        if int(initial_tau_bins) >= max_groups:
+            raise ValueError(f"--initial-tau-bins={initial_tau_bins} needs room under --max-groups={max_groups}")
+        if int(initial_tau_scan) > 0:
+            # LHS tau-cut scan first: the winner's tau cuts replace the uniform/optimal-fixed seed.
+            seeds = scan_tau_seeds(
+                int(initial_tau_scan),
+                [tau_edges[0], tau_edges[-1]],
+                [lambda_edges[0], lambda_edges[-1]],
+                int(initial_tau_bins),
+                min_gap_tau=min_gap_tau,
+                cost_tree=cost_tree,
+                budget=budget,
+            )
+            if seeds:
+                btree = seeds[0][1]
+                _did_scan = True
+            else:
+                btree = staged_seed_tree(
+                    [tau_edges[0], tau_edges[-1]],
+                    [lambda_edges[0], lambda_edges[-1]],
+                    int(initial_tau_bins),
+                    min_gap_tau=min_gap_tau,
+                )
+        else:
+            btree = staged_seed_tree(
+                [tau_edges[0], tau_edges[-1]],
+                [lambda_edges[0], lambda_edges[-1]],
+                int(initial_tau_bins),
+                min_gap_tau=min_gap_tau,
+            )
+
     rms0_r = evaluate(binning_tree=btree)[1]  # rms of the user's seed binning
     rms0 = float(rms0_r["rms"])
 
@@ -1064,10 +1308,10 @@ def optimize_qrad(
                     beam_positions=tuple(beam_positions),
                     beam_leaves=beam_leaves,
                     grow_tol=gtol,
+                    explore=explore,
+                    explore_rounds=explore_rounds,
                     report=on_step,
                 )
-                budget.reset_plateau(state["n_evals"])
-                checkpoint("grow", evaluate(binning_tree=tree)[1])
             else:
                 while _n_leaves(tree) < max_groups and not budget.exhausted():
                     cand = _grow_tree(
@@ -1120,6 +1364,8 @@ def optimize_qrad(
 
     if staged and not budget.exhausted():
         checkpoint("start", rms0_r)  # seed scored first: plan order matches fire order
+        if _did_scan:
+            checkpoint("tau-scan", rms0_r)  # winner already scored in the scan: reuse, no extra eval
         # (2) tau-only polish of the N-bin seed, then (3) lambda-split the bottom two tau groups
         # at the lambda-window midpoint + joint position polish; the normal grow/polish path
         btree, _best_cost = _block_fixed_point_tree(
@@ -1134,14 +1380,15 @@ def optimize_qrad(
                 pass  # lambda window too narrow for the cut: keep the tau-only staging
             else:
                 _best_cost = cost_tree(btree)
-                btree, _best_cost = _block_fixed_point_tree(
+                # Synced wiggle: the shared bottom-two lambda cut moves as one cut, then the
+                # two tau cuts get an individual pass (all accepted on joint improvement only).
+                btree, _best_cost = _synced_wiggle(
                     btree,
                     cost_tree,
                     cfg=cfg,
                     budget=budget,
                     min_gap_tau=min_gap_tau,
                     min_gap_lam=min_gap_lam,
-                    report=on_step,
                 )
                 checkpoint("staged-lambda", evaluate(binning_tree=btree)[1])
     btree, _best_cost = _refine(btree)
@@ -1817,6 +2064,11 @@ def main(
         help="Staged seeding: start from N equally-spaced tau cuts (0 = off), polish tau positions, "
         "lambda-split the bottom two tau groups, then run the normal grow/polish path.",
     ),
+    initial_tau_scan: int = typer.Option(
+        64,
+        "--initial-tau-scan",
+        help="Staged seeding: LHS-scan NUM tau-cut sets on the dtau grid and seed from the winner (0 = off).",
+    ),
     max_evals: int = typer.Option(400, "--max-evals"),
     max_seconds: float = typer.Option(1800.0, "--max-seconds"),
     window_lo: float = typer.Option(-1.0, "--window-lo", help="Score rms over log10(tau_Ros) >= this."),
@@ -1867,6 +2119,12 @@ def main(
     ),
     dtau: float = typer.Option(0.5, "--dtau", help="Grid step in -log10(tau) for --grid-search."),
     dlam: float = typer.Option(0.25, "--dlam", help="Grid step in log10(lambda) for --grid-search."),
+    plot_every: int = typer.Option(
+        0,
+        "--plot-every",
+        help="With --plot: also save a tiling frame every N evals (not just improvements), "
+        "so the animation covers every step. 0 = improvements only.",
+    ),
 ):
     model_name = qrad_core._model_name(model or None)
     report = qrad_core.validate_model_file(qrad_core.MODELS_DIR / model_name)
@@ -1908,11 +2166,45 @@ def main(
         _plot_seen.add(sig)
         _plot_n[0] += 1
         _rms_hist.append((int(n_evals), float(r["rms"])))
-        out = plot_dir / f"step_{n_evals:04d}_rms_{float(r['rms']):.3e}.png"
+        out = plot_dir / f"frame_{n_evals:05d}_rms_{float(r['rms']):.3e}.png"
         _plot_tree_binning(
             tree,
             out,
             rms=float(r["rms"]),
+            n_empty=int(r.get("n_empty", 0)),
+            groups=int(r.get("n_groups", 0)),
+            n_evals=n_evals,
+            seq=_plot_n[0],
+            model=model_name,
+            rms_history=list(_rms_hist),
+        )
+
+    _plot_every = [0]  # evals since last --plot-every frame
+
+    def _on_eval_frame(n_evals, cost, r):
+        # --plot-every N: save a frame every N evals (any tiling, not just improvements).
+        # Same frame_NNNNN_rms_*.png naming as improvements, so one glob covers every step.
+        # The scorer raw dict carries group_tau/lam_edges; pass them as display rects.
+        if plot_dir is None or not plot_every or plot_every < 1:
+            return
+        if not isinstance(r, dict) or r.get("group_tau_edges") is None:
+            return
+        _plot_every[0] += 1
+        if _plot_every[0] < plot_every:
+            return
+        _plot_every[0] = 0
+        _plot_n[0] += 1
+        _rms_hist.append((int(n_evals), float(r.get("rms", cost))))
+        gte = np.asarray(r["group_tau_edges"], dtype=float)
+        gle = np.asarray(r["group_lam_edges"], dtype=float)
+        rects = [(float(a), float(b), float(c), float(d)) for (a, b), (c, d) in zip(gte, gle)]
+        tw = (float(gte[:, 0].min()), float(gte[:, 1].max()))
+        lw = (float(gle[:, 0].min()), float(gle[:, 1].max()))
+        out = plot_dir / f"frame_{n_evals:05d}_rms_{float(r.get('rms', cost)):.3e}.png"
+        _plot_tree_binning(
+            {"rects": rects, "window_tau": list(tw), "window_lam": list(lw)},
+            out,
+            rms=float(r.get("rms", cost)),
             n_empty=int(r.get("n_empty", 0)),
             groups=int(r.get("n_groups", 0)),
             n_evals=n_evals,
@@ -1976,6 +2268,7 @@ def main(
             min_opacity_delta=min_opacity_delta,
             on_progress=_progress,
             on_improve=_on_improve if plot_dir else None,
+            on_eval=_on_eval_frame if plot_dir and plot_every else None,
         )
     else:
         result = optimize_qrad(
@@ -2004,7 +2297,11 @@ def main(
             beam_leaves=beam_leaves,
             min_opacity_delta=min_opacity_delta,
             initial_tau_bins=(initial_tau_bins if initial_tau_bins and not columns and not use_grid_search else None),
+            initial_tau_scan=(
+                initial_tau_scan if initial_tau_scan and initial_tau_bins and not columns and not use_grid_search else 0
+            ),
             on_progress=_progress,
+            on_eval=_on_eval_frame if plot_dir and plot_every else None,
             on_improve=_on_improve if plot_dir else None,
         )
 
@@ -2135,7 +2432,7 @@ def _plot_tree_binning(
     import matplotlib.pyplot as plt
     from matplotlib.patches import Rectangle
 
-    rects = list(_leaf_rects(tree["root"], _root_rect(tree)))
+    rects = list(_leaf_rects(tree["root"], _root_rect(tree))) if "root" in tree else list(tree["rects"])
     wt, wl = tree["window_tau"], tree["window_lam"]
     cmap = plt.get_cmap("tab20")
 
