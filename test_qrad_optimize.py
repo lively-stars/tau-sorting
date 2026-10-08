@@ -905,6 +905,64 @@ class TestBottomScan(unittest.TestCase):
         self.assertEqual(len(set(by_sync["bottom-lam"])), 1)
 
 
+class TestStagedPortfolio(unittest.TestCase):
+    """Data-free tests for the multi-seed staged portfolio (no ODF)."""
+
+    @staticmethod
+    def _bowl_score(target):
+        target = np.asarray(target, float)
+
+        def cost_tree(tree):
+            cuts = np.asarray(qo._tau_cuts_sorted(tree), float)
+            n = min(len(cuts), len(target))
+            return float(1e8 + 1e7 * np.sum((cuts[:n] - target[:n]) ** 2))
+
+        def score(tau, lam, flags, model, *, binning_tree=None, window=None):
+            n = sum(1 for _ in qo._leaf_rects(binning_tree["root"], qo._root_rect(binning_tree)))
+            return {"rms": cost_tree(binning_tree), "max_abs": 0.0, "int_q_pct": 0.0, "n_empty": 0, "n_groups": n}
+
+        return score
+
+    def _run(self, **kw):
+        base = dict(
+            flags=[True],
+            grow=False,
+            beam_width=1,
+            initial_tau_bins=3,
+            initial_tau_scan=32,
+            staged_lambda_scan=32,
+            max_groups=8,
+            score_fn=self._bowl_score([1.0, 3.0]),
+            max_evals=5000,
+        )
+        base.update(kw)
+        return qo.optimize_qrad([-0.63, 7.0], [3.0, 5.0], **base)
+
+    def test_single_seed_matches_default(self):
+        # n_staged_seeds=1 must reproduce today's single-seed path: same tags, same rms, same tree.
+        a = self._run(seed=3)
+        b = self._run(seed=3, n_staged_seeds=1)
+        self.assertEqual([h["tag"] for h in a["history"]], [h["tag"] for h in b["history"]])
+        self.assertEqual(a["rms"], b["rms"])
+        self.assertEqual(qo._tree_signature(a["binning_tree"]), qo._tree_signature(b["binning_tree"]))
+
+    def test_portfolio_never_loses(self):
+        # Best-of-K over distinct rng streams must beat-or-tie any single stream on the same bowl.
+        singles = [self._run(seed=s)["rms"] for s in range(5)]
+        port = self._run(seed=0, n_staged_seeds=5)
+        self.assertLessEqual(port["rms"], min(singles))
+        tags = [h["tag"] for h in port["history"]]
+        self.assertIn("staged-tau:0", tags)
+        self.assertIn("staged-lambda:0", tags)
+
+    def test_single_basin_signature_equal(self):
+        # One global basin (seed scans off): every member stages the same fixed seed tree,
+        # so the winner's signature equals the single-seed result.
+        a = self._run(seed=3, initial_tau_scan=0, staged_lambda_scan=0)
+        b = self._run(seed=3, initial_tau_scan=0, staged_lambda_scan=0, n_staged_seeds=3)
+        self.assertEqual(qo._tree_signature(a["binning_tree"]), qo._tree_signature(b["binning_tree"]))
+
+
 class TestMainGroupingDispatch(unittest.TestCase):
     """Regression guard for the main() rewrite (P3): every CLI grouping mode resolves to the
     per-tau-group lambda-edge list (``lpt``) feeding the single guillotine-tree IR, and the tree

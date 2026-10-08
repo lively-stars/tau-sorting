@@ -1454,6 +1454,7 @@ def optimize_qrad(
     staged_lambda_scan=0,  # staged seeding: LHS-scan this many (L, t_lo, t_hi) bottom triples (0 = off, keep sync path)
     staged_lambda_n_keep=3,  # bottom-triple scan: survivors polished + returned best-first
     seed=None,  # RNG seed for the LHS scans (None = fresh entropy; same seed = reproducible run)
+    n_staged_seeds=1,  # staged portfolio: members sharing the budget (member m: tau rng seed+m*2, bottom seed+m*2+1)
     score_fn=None,
     on_progress=None,
     on_eval=None,
@@ -1557,6 +1558,7 @@ def optimize_qrad(
     _best_cost = float("inf")
     staged = initial_tau_bins is not None
     _did_scan = False
+    _n_members = max(1, int(n_staged_seeds)) if staged else 1
     if staged:
         # Staged seeding overrides every other seed shape: N equally-spaced tau cuts over the
         # outer tau window, tau-only position polish, then a lambda split of the bottom two tau
@@ -1564,38 +1566,124 @@ def optimize_qrad(
         # grow/polish/topology path below.
         if int(initial_tau_bins) > max_groups:
             raise ValueError(f"--initial-tau-bins={initial_tau_bins} needs room under --max-groups={max_groups}")
-        if int(initial_tau_scan) > 0:
-            # LHS tau-cut scan first: the winner's tau cuts replace the uniform/optimal-fixed seed.
-            seeds = scan_tau_seeds(
-                int(initial_tau_scan),
-                [tau_edges[0], tau_edges[-1]],
-                [lambda_edges[0], lambda_edges[-1]],
-                int(initial_tau_bins),
-                min_gap_tau=min_gap_tau,
-                cost_tree=cost_tree,
-                budget=budget,
-                rng=seed,
-            )
-            if seeds:
-                btree = seeds[0][1]
-                _did_scan = True
-            else:
-                btree = staged_seed_tree(
+        _one = _n_members == 1
+        _winners: list = []  # (staged-lambda penalized cost, tree) per portfolio member
+
+        def _member_seed(m, tau_scan_rng):
+            """Seed tree for portfolio member m: fixed seed tree unless the tau scan is on."""
+            nonlocal _did_scan
+            if int(initial_tau_scan) > 0:
+                # LHS tau-cut scan first: the winner's tau cuts replace the uniform/optimal-fixed seed.
+                seeds = scan_tau_seeds(
+                    int(initial_tau_scan),
                     [tau_edges[0], tau_edges[-1]],
                     [lambda_edges[0], lambda_edges[-1]],
                     int(initial_tau_bins),
                     min_gap_tau=min_gap_tau,
+                    cost_tree=cost_tree,
+                    budget=budget,
+                    rng=tau_scan_rng,
                 )
-        else:
-            btree = staged_seed_tree(
+                if seeds:
+                    _did_scan = True
+                    return seeds[0][1]
+            return staged_seed_tree(
                 [tau_edges[0], tau_edges[-1]],
                 [lambda_edges[0], lambda_edges[-1]],
                 int(initial_tau_bins),
                 min_gap_tau=min_gap_tau,
             )
 
-    rms0_r = evaluate(binning_tree=btree)[1]  # rms of the user's seed binning
-    rms0 = float(rms0_r["rms"])
+        def _member_lambda_step(tree, m, tag_suffix):
+            """Lambda step of the staged pipeline on `tree` (flipped scan or sync path).
+            Returns (tree, penalized cost at the staged-lambda checkpoint)."""
+            lam_mid = 0.5 * (float(lambda_edges[0]) + float(lambda_edges[-1]))
+            bottom_rng = None if seed is None else int(seed) + m * 2 + 1
+            _did_lambda_scan = False
+            _best = cost_tree(tree)
+            if int(staged_lambda_scan) > 0 and _n_leaves(tree) + 2 <= max_groups and not budget.exhausted():
+                # Flipped bottom-region scan: freeze the top cut, LHS-scan (L, t_lo, t_hi) triples over
+                # the bottom region, take the winner, checkpoint staged-lambda, and skip the mid-window
+                # split_bottom_two_tau_groups + _synced_wiggle path. Falls back to the sync path when
+                # the scan returns no survivor.
+                _top = max(_tau_cuts_sorted(tree), default=float(tau_edges[-1]))
+                freeze_tau_cuts(tree, top_only=True)
+                triples = scan_bottom_columns(
+                    int(staged_lambda_scan),
+                    [tau_edges[0], tau_edges[-1]],
+                    [lambda_edges[0], lambda_edges[-1]],
+                    _top,
+                    min_gap_tau=min_gap_tau,
+                    min_gap_lam=min_gap_lam,
+                    n_keep=int(staged_lambda_n_keep),
+                    cost_tree=cost_tree,
+                    budget=budget,
+                    rng=bottom_rng,
+                )
+                if triples:
+                    tree, _best = triples[0][1], triples[0][0]
+                    checkpoint(f"staged-lambda{tag_suffix}", evaluate(binning_tree=tree)[1])
+                    _did_lambda_scan = True
+            if not _did_lambda_scan and _n_leaves(tree) + 2 <= max_groups and not budget.exhausted():
+                try:
+                    tree = split_bottom_two_tau_groups(tree, lam_mid, min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam)
+                except ValueError:
+                    pass  # lambda window too narrow for the cut: keep the tau-only staging
+                else:
+                    _best = cost_tree(tree)
+                    # Synced wiggle: the shared bottom-two lambda cut moves as one cut, then the
+                    # two tau cuts get an individual pass (all accepted on joint improvement only).
+                    tree, _best = _synced_wiggle(
+                        tree,
+                        cost_tree,
+                        cfg=cfg,
+                        budget=budget,
+                        min_gap_tau=min_gap_tau,
+                        min_gap_lam=min_gap_lam,
+                    )
+                    checkpoint(f"staged-lambda{tag_suffix}", evaluate(binning_tree=tree)[1])
+            return tree, _best
+
+        for _m in range(_n_members):
+            _tau_rng = None if seed is None else int(seed) + _m * 2
+            _tag = "" if _one else f":{_m}"
+            _member = _member_seed(_m, _tau_rng)
+            if _m == 0:
+                btree = _member
+                rms0_r = evaluate(binning_tree=btree)[1]  # rms of the user's seed binning
+                rms0 = float(rms0_r["rms"])
+            if budget.exhausted():
+                break
+            if _m == 0:
+                checkpoint("start", rms0_r)  # seed scored first: plan order matches fire order
+            if _did_scan:
+                # Tau-scan winner already scored in the scan: reuse, no extra eval.
+                checkpoint(f"tau-scan{_tag}", evaluate(binning_tree=_member)[1])
+            # (2) tau-only polish of the N-bin seed, then (3) lambda step + joint position polish.
+            _member, _ = _block_fixed_point_tree(
+                _member,
+                cost_tree,
+                cfg=cfg,
+                budget=budget,
+                min_gap_tau=min_gap_tau,
+                min_gap_lam=min_gap_lam,
+                report=on_step,
+            )
+            checkpoint(f"staged-tau{_tag}", evaluate(binning_tree=_member)[1])
+            _member, _mcost = _member_lambda_step(_member, _m, _tag)
+            freeze_tau_cuts(_member, top_only=True)  # top seed cut fixed: later phases never move/remove it
+            # The staged-lambda checkpoint cost selects the winner: the lambda step always
+            # checkpoints (scan path, or sync path when the leaf cap / budget / window allows);
+            # when neither fired, the staged-tau tree stands in for the member.
+            _winners.append((_mcost, _member))
+            if budget.exhausted():
+                break
+        if _winners:
+            _winners.sort(key=lambda w: w[0])
+            btree, _best_cost = copy.deepcopy(_winners[0][1]), _winners[0][0]
+    else:
+        rms0_r = evaluate(binning_tree=btree)[1]  # rms of the user's seed binning
+        rms0 = float(rms0_r["rms"])
 
     def _refine(seed_tree):
         """grow -> polish -> topology search from one seed tree. Returns (tree, penalized cost).
@@ -1676,61 +1764,6 @@ def optimize_qrad(
             checkpoint("topo", evaluate(binning_tree=tree)[1])
         return tree, best
 
-    if staged and not budget.exhausted():
-        checkpoint("start", rms0_r)  # seed scored first: plan order matches fire order
-        if _did_scan:
-            checkpoint("tau-scan", rms0_r)  # winner already scored in the scan: reuse, no extra eval
-        # (2) tau-only polish of the N-bin seed, then (3) lambda-split the bottom two tau groups
-        # at the lambda-window midpoint (optionally rescanned to the best synced position) +
-        # joint position polish; the normal grow/polish path
-        btree, _best_cost = _block_fixed_point_tree(
-            btree, cost_tree, cfg=cfg, budget=budget, min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam, report=on_step
-        )
-        checkpoint("staged-tau", evaluate(binning_tree=btree)[1])
-        lam_mid = 0.5 * (float(lambda_edges[0]) + float(lambda_edges[-1]))
-        _did_lambda_scan = False
-        if int(staged_lambda_scan) > 0 and _n_leaves(btree) + 2 <= max_groups and not budget.exhausted():
-            # Flipped bottom-region scan: freeze the top cut, LHS-scan (L, t_lo, t_hi) triples over
-            # the bottom region, take the winner, checkpoint staged-lambda, and skip the mid-window
-            # split_bottom_two_tau_groups + _synced_wiggle path. Falls back to the sync path when
-            # the scan returns no survivor.
-            _top = max(_tau_cuts_sorted(btree), default=float(tau_edges[-1]))
-            freeze_tau_cuts(btree, top_only=True)
-            triples = scan_bottom_columns(
-                int(staged_lambda_scan),
-                [tau_edges[0], tau_edges[-1]],
-                [lambda_edges[0], lambda_edges[-1]],
-                _top,
-                min_gap_tau=min_gap_tau,
-                min_gap_lam=min_gap_lam,
-                n_keep=int(staged_lambda_n_keep),
-                cost_tree=cost_tree,
-                budget=budget,
-                rng=(None if seed is None else int(seed) + 1),
-            )
-            if triples:
-                btree, _best_cost = triples[0][1], triples[0][0]
-                checkpoint("staged-lambda", evaluate(binning_tree=btree)[1])
-                _did_lambda_scan = True
-        if not _did_lambda_scan and _n_leaves(btree) + 2 <= max_groups and not budget.exhausted():
-            try:
-                btree = split_bottom_two_tau_groups(btree, lam_mid, min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam)
-            except ValueError:
-                pass  # lambda window too narrow for the cut: keep the tau-only staging
-            else:
-                _best_cost = cost_tree(btree)
-                # Synced wiggle: the shared bottom-two lambda cut moves as one cut, then the
-                # two tau cuts get an individual pass (all accepted on joint improvement only).
-                btree, _best_cost = _synced_wiggle(
-                    btree,
-                    cost_tree,
-                    cfg=cfg,
-                    budget=budget,
-                    min_gap_tau=min_gap_tau,
-                    min_gap_lam=min_gap_lam,
-                )
-                checkpoint("staged-lambda", evaluate(binning_tree=btree)[1])
-        freeze_tau_cuts(btree, top_only=True)  # top seed cut fixed: grow/polish/topo never move/remove it
     btree, _best_cost = _refine(btree)
     final_r = evaluate(binning_tree=btree)[1]
     return {
@@ -2419,6 +2452,13 @@ def main(
         "--seed",
         help="RNG seed for the staged LHS scans (same seed = reproducible run; omit = fresh entropy).",
     ),
+    n_staged_seeds: int = typer.Option(
+        1,
+        "--n-staged-seeds",
+        help="Staged seeding: run the stage→staged-lambda pipeline K times under the shared budget "
+        "(member m uses seed+m*2 / seed+m*2+1 for the tau/bottom scans), keep the best staged-lambda "
+        "checkpoint, then refine once. 1 = single pass. Skipped with --load-tree.",
+    ),
     max_evals: int = typer.Option(400, "--max-evals"),
     max_seconds: float = typer.Option(1800.0, "--max-seconds"),
     window_lo: float = typer.Option(-5.0, "--window-lo", help="Score rms over log10(tau_Ros) >= this."),
@@ -2676,6 +2716,7 @@ def main(
                 0 if loaded_tree is not None else (staged_lambda_scan if staged_lambda_scan and initial_tau_bins else 0)
             ),
             seed=seed,
+            n_staged_seeds=(1 if loaded_tree is not None or not initial_tau_bins else n_staged_seeds),
             on_progress=_progress,
             on_eval=_on_eval_frame if plot_dir and plot_every else None,
             on_improve=_on_improve if plot_dir else None,
