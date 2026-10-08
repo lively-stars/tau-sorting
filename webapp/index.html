@@ -162,6 +162,7 @@
         <label>max &tau;-groups <input type="number" id="qv_maxgroups" min="2" max="8" value="5" /></label>
         <label>initial &tau;-bins <input type="number" id="qv_initbins" min="0" max="8" value="3" title="staged seeding: N equally-spaced tau cuts, polish tau, lambda-split bottom two (0 = off)" /></label>
         <label>initial &tau;-scan <input type="number" id="qv_initscan" min="0" max="512" value="64" title="staged seeding: LHS-scan NUM tau-cut sets on the dtau grid, seed from the winner (0 = off)" /></label>
+        <label>initial &lambda;-scan <input type="number" id="qv_initscan_lam" min="0" max="512" value="0" title="staged seeding: LHS-scan NUM synced bottom-two lambda-cut positions, keep the best (0 = off)" /></label>
         <label>max evals <input type="number" id="qv_maxevals" min="20" value="5000" /></label>
         <label>target rms <input type="number" id="qv_targetrms" min="0" step="1000000" value="0" title="0 = off" /></label>
         <label>plateau evals <input type="number" id="qv_plateau" min="0" value="0" title="0 = off" /></label>
@@ -398,6 +399,7 @@ async function qoptStart(columnsMode=false) {
     max_groups: parseInt($('qv_maxgroups').value,10) || undefined,
     initial_tau_bins: parseInt($('qv_initbins').value,10) || 0,
     initial_tau_scan: parseInt($('qv_initscan').value,10) || 0,
+    initial_lambda_scan: parseInt($('qv_initscan_lam').value,10) || 0,
     max_evals: parseInt($('qv_maxevals').value,10) || undefined,
     target_rms: parseFloat($('qv_targetrms').value) || 0,
     plateau_evals: parseInt($('qv_plateau').value,10) || 0,
@@ -434,7 +436,9 @@ function predictPlan(body) {
   const plan = ['start'];
   if (body.initial_tau_bins) {
     if (body.initial_tau_scan) plan.push('tau-scan');
-    plan.push('staged-tau', 'staged-lambda');
+    plan.push('staged-tau');
+    if (body.initial_lambda_scan) plan.push('lambda-scan');
+    plan.push('staged-lambda');
   }
   plan.push((body.beam_width || 3) === 1 ? 'grow' : 'beam', 'blocks');
   if ((body.beam_width || 3) >= 2) plan.push('topo');
@@ -447,6 +451,7 @@ const QSTEP_LABELS = {
   'start': 'seed binning scored',
   'tau-scan': 'tau seed scan (LHS) done',
   'staged-tau': 'tau groups placed + positioned',
+  'lambda-scan': 'lambda split position scanned',
   'staged-lambda': 'bottom-two groups lambda-split + positioned',
   'lambda': 'lambda cuts positioned',
   'lambda-wiggle': 'lambda cuts wiggled',

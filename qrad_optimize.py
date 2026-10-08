@@ -947,6 +947,92 @@ def split_bottom_two_tau_groups(tree, lam_at, *, min_gap_tau=MIN_GAP_TAU, min_ga
     return out
 
 
+def scan_lambda_split(
+    n,
+    tree,
+    lam_window,
+    *,
+    min_gap_lam=MIN_GAP_LAM,
+    dlam=0.25,
+    n_keep=3,
+    cost_tree,
+    budget=None,
+    rng=None,
+) -> list:
+    """LHS scan over the synced bottom-two lambda-cut position.
+
+    Samples `n` cut positions on the `dlam` grid clipped to the intersection of the
+    bottom-two leaves' lambda spans (the feasible range of the shared `bottom-lam`
+    cut), scores each raw by setting BOTH synced cuts to the candidate and calling
+    `cost_tree` (no polish), keeps the best `n_keep` pairwise-separated by >=
+    `min_gap_lam` (greedy best-first), and returns [(cost, position)] best-first.
+    The input tree is left unmoved (candidates are applied temporarily, then the
+    placeholder position is restored). Scoring is fully via the injected
+    `cost_tree`, so this is data-free testable with an analytic objective.
+    """
+    n, n_keep = int(n), int(n_keep)
+    if n <= 0 or n_keep <= 0:
+        return []
+    if cost_tree is None:
+        raise ValueError("scan_lambda_split needs cost_tree(tree) -> cost")
+    llo, lhi = float(lam_window[0]), float(lam_window[1])
+    if not lhi > llo:
+        raise ValueError(f"lambda window must be increasing, got {[llo, lhi]}")
+    synced = [
+        (node, lo, hi)
+        for node, lo, hi in _iter_internal(tree["root"], _root_rect(tree))
+        if node.get("sync") == "bottom-lam"
+    ]
+    if len(synced) < 2:
+        raise ValueError(f"need a synced bottom-lam cut pair to scan, found {len(synced)}")
+    ilo = max(max(lo for _, lo, _ in synced), llo)
+    ihi = min(min(hi for _, _, hi in synced), lhi)
+    if not ihi > ilo:
+        return []
+    mg = float(min_gap_lam)
+    grid = [
+        g
+        for g in _grid_points(llo, lhi, float(dlam))
+        if g >= ilo - 1e-12
+        and g <= ihi + 1e-12
+        and all(g - lo >= mg - 1e-12 and hi - g >= mg - 1e-12 for _, lo, hi in synced)
+    ]
+    if not grid:
+        return []
+    gen = np.random.default_rng(rng)
+    members = [node for node, _, _ in synced]
+    old = [float(m["at"]) for m in members]
+    seen: set[float] = set()
+    scored: list[tuple[float, float]] = []
+    try:
+        for _ in range(25):
+            if len(seen) >= n or (budget is not None and budget.exhausted()):
+                break
+            strata = (gen.permutation(n) + gen.random(n)) / n
+            for s in strata:
+                if len(seen) >= n:
+                    break
+                cand = min(grid, key=lambda g: abs(g - (ilo + float(s) * (ihi - ilo))))
+                if cand in seen:
+                    continue
+                seen.add(cand)
+                for m in members:
+                    m["at"] = cand
+                scored.append((float(cost_tree(tree)), cand))
+    finally:
+        for m, a in zip(members, old):
+            m["at"] = a
+    scored.sort(key=lambda s: s[0])
+    kept = []
+    for cost, pos in scored:
+        if len(kept) >= n_keep:
+            break
+        if any(abs(pos - q) < mg - 1e-9 for _, q in kept):
+            continue
+        kept.append((cost, pos))
+    return kept
+
+
 def _synced_wiggle(tree, cost_tree, *, cfg, budget, min_gap_tau, min_gap_lam):
     """Coordinate descent over synced cut groups: nodes sharing a `sync` id move together as
     one cut (each candidate sets all members, feasibility + cost on the joint move), then all
@@ -1143,6 +1229,7 @@ def optimize_qrad(
     min_opacity_delta=None,  # min bottom-opacity max/min ratio to split a group (None -> score default)
     initial_tau_bins=None,  # staged seeding: N equally-spaced tau cuts, tau-only polish, bottom-two lambda split
     initial_tau_scan=0,  # staged seeding: LHS-scan this many tau-cut sets first, seed from the winner (0 = off)
+    initial_lambda_scan=0,  # staged seeding: LHS-scan this many synced bottom-two lambda-cut positions (0 = off)
     score_fn=None,
     on_progress=None,
     on_eval=None,
@@ -1367,7 +1454,8 @@ def optimize_qrad(
         if _did_scan:
             checkpoint("tau-scan", rms0_r)  # winner already scored in the scan: reuse, no extra eval
         # (2) tau-only polish of the N-bin seed, then (3) lambda-split the bottom two tau groups
-        # at the lambda-window midpoint + joint position polish; the normal grow/polish path
+        # at the lambda-window midpoint (optionally rescanned to the best synced position) +
+        # joint position polish; the normal grow/polish path
         btree, _best_cost = _block_fixed_point_tree(
             btree, cost_tree, cfg=cfg, budget=budget, min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam, report=on_step
         )
@@ -1379,6 +1467,23 @@ def optimize_qrad(
             except ValueError:
                 pass  # lambda window too narrow for the cut: keep the tau-only staging
             else:
+                if int(initial_lambda_scan) > 0 and not budget.exhausted():
+                    # LHS lambda-cut scan: the winner's position replaces the midpoint
+                    # structural placeholder (midpoint keeps the split feasible first),
+                    # then the synced wiggle polishes from the winner as now.
+                    lam_hits = scan_lambda_split(
+                        int(initial_lambda_scan),
+                        btree,
+                        [lambda_edges[0], lambda_edges[-1]],
+                        min_gap_lam=min_gap_lam,
+                        cost_tree=cost_tree,
+                        budget=budget,
+                    )
+                    if lam_hits:
+                        for _node, _lo, _hi in _iter_internal(btree["root"], _root_rect(btree)):
+                            if _node.get("sync") == "bottom-lam":
+                                _node["at"] = lam_hits[0][1]
+                        checkpoint("lambda-scan", evaluate(binning_tree=btree)[1])
                 _best_cost = cost_tree(btree)
                 # Synced wiggle: the shared bottom-two lambda cut moves as one cut, then the
                 # two tau cuts get an individual pass (all accepted on joint improvement only).
@@ -2069,6 +2174,11 @@ def main(
         "--initial-tau-scan",
         help="Staged seeding: LHS-scan NUM tau-cut sets on the dtau grid and seed from the winner (0 = off).",
     ),
+    initial_lambda_scan: int = typer.Option(
+        0,
+        "--initial-lambda-scan",
+        help="Staged seeding: LHS-scan NUM synced bottom-two lambda-cut positions, keep the best (0 = off).",
+    ),
     max_evals: int = typer.Option(400, "--max-evals"),
     max_seconds: float = typer.Option(1800.0, "--max-seconds"),
     window_lo: float = typer.Option(-1.0, "--window-lo", help="Score rms over log10(tau_Ros) >= this."),
@@ -2299,6 +2409,11 @@ def main(
             initial_tau_bins=(initial_tau_bins if initial_tau_bins and not columns and not use_grid_search else None),
             initial_tau_scan=(
                 initial_tau_scan if initial_tau_scan and initial_tau_bins and not columns and not use_grid_search else 0
+            ),
+            initial_lambda_scan=(
+                initial_lambda_scan
+                if initial_lambda_scan and initial_tau_bins and not columns and not use_grid_search
+                else 0
             ),
             on_progress=_progress,
             on_eval=_on_eval_frame if plot_dir and plot_every else None,

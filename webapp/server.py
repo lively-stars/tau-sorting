@@ -99,7 +99,10 @@ def _run_plan(opt) -> list[str]:
     if opt.get("initial_tau_bins"):
         if opt.get("initial_tau_scan"):
             plan.append("tau-scan")
-        plan += ["staged-tau", "staged-lambda"]
+        plan.append("staged-tau")
+        if opt.get("initial_lambda_scan"):
+            plan.append("lambda-scan")
+        plan.append("staged-lambda")
     plan += ["grow" if int(opt.get("beam_width", 3) or 3) == 1 else "beam", "blocks"]
     if int(opt.get("beam_width", 3) or 3) >= 2:
         plan.append("topo")
@@ -204,6 +207,7 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
                 min_opacity_delta=opt["min_opacity_delta"],
                 initial_tau_bins=(opt.get("initial_tau_bins") or None),
                 initial_tau_scan=int(opt.get("initial_tau_scan") or 0),
+                initial_lambda_scan=int(opt.get("initial_lambda_scan") or 0),
                 on_eval=on_eval,
                 on_progress=on_progress,
                 should_stop=lambda: _QOPT["cancel"],
@@ -493,6 +497,7 @@ class Handler(BaseHTTPRequestHandler):
                         "max_groups": max(2, min(MAX_GROUPS, int(req.get("max_groups", MAX_GROUPS)))),
                         "initial_tau_bins": max(0, int(req.get("initial_tau_bins", 0) or 0)),
                         "initial_tau_scan": max(0, int(req.get("initial_tau_scan", 0) or 0)),
+                        "initial_lambda_scan": max(0, int(req.get("initial_lambda_scan", 0) or 0)),
                         "window": _window(req),
                         "target_rms": (float(target) if target else None),
                         "plateau_evals": max(0, int(req.get("plateau_evals", 0) or 0)),

@@ -715,6 +715,94 @@ class TestTauScan(unittest.TestCase):
         self.assertLess(res["rms"], res["rms0"])
 
 
+class TestLambdaScan(unittest.TestCase):
+    """Data-free tests for the synced bottom-two lambda-cut scan (injected analytic bowl, no ODF)."""
+
+    @staticmethod
+    def _synced_cuts(tree):
+        return sorted(
+            float(n["at"]) for n, _lo, _hi in qo._iter_internal(tree["root"], qo._root_rect(tree)) if n.get("sync")
+        )
+
+    def _bowl_cost(self, lam_target):
+        def cost_tree(tree):
+            cuts = self._synced_cuts(tree)
+            return float(1e8 + 1e7 * sum((c - lam_target) ** 2 for c in cuts))
+
+        return cost_tree
+
+    def _bowl_score_fn(self, lam_target):
+        cost = self._bowl_cost(lam_target)
+
+        def score(tau, lam, flags, model, *, binning_tree=None, window=None):
+            n = sum(1 for _ in qo._leaf_rects(binning_tree["root"], qo._root_rect(binning_tree)))
+            return {"rms": cost(binning_tree), "max_abs": 0.0, "int_q_pct": 0.0, "n_empty": 0, "n_groups": n}
+
+        return score
+
+    def _split_tree(self):
+        seed = qo.staged_seed_tree([-0.63, 7.0], [3.0, 5.0], 3, min_gap_tau=qo.MIN_GAP_TAU)
+        return qo.split_bottom_two_tau_groups(seed, 4.0, min_gap_tau=qo.MIN_GAP_TAU, min_gap_lam=qo.MIN_GAP_LAM)
+
+    def test_scan_returns_separated_positions_sorted(self):
+        lam_target = 3.8
+        hits = qo.scan_lambda_split(
+            32,
+            self._split_tree(),
+            [3.0, 5.0],
+            min_gap_lam=0.10,
+            dlam=0.25,
+            n_keep=3,
+            cost_tree=self._bowl_cost(lam_target),
+            rng=0,
+        )
+        self.assertEqual(len(hits), 3)
+        costs = [c for c, _ in hits]
+        self.assertEqual(costs, sorted(costs))  # best-first
+        poss = [p for _, p in hits]
+        for a, b in zip(poss, poss[1:]):
+            self.assertGreaterEqual(abs(a - b), 0.10 - 1e-9)  # pairwise-separated
+        for p in poss:  # on the dlam grid
+            self.assertLessEqual(min(abs(p - g) for g in qo._grid_points(3.0, 5.0, 0.25)), 1e-9)
+        self.assertLess(abs(poss[0] - lam_target), 0.30)  # winner near the bowl minimum
+
+    def test_staged_scan_plan_order(self):
+        res = qo.optimize_qrad(
+            [-0.63, 7.0],
+            [3.0, 5.0],
+            flags=[True],
+            grow=False,
+            initial_tau_bins=3,
+            initial_lambda_scan=32,
+            max_groups=8,
+            score_fn=self._bowl_score_fn(3.8),
+            max_evals=5000,
+        )
+        tags = [h["tag"] for h in res["history"]]
+        self.assertEqual(tags, sorted(tags, key=tags.index))  # no duplicates by construction
+        order = ["start", "staged-tau", "lambda-scan", "staged-lambda"]
+        idx = [tags.index(t) for t in order]
+        self.assertEqual(idx, sorted(idx))  # plan order preserved
+        lam_cuts = sorted(
+            float(n["at"])
+            for n, _lo, _hi in qo._iter_internal(res["binning_tree"]["root"], qo._root_rect(res["binning_tree"]))
+            if n["axis"] == "lam"
+        )
+        self.assertEqual(len(lam_cuts), 2)  # the bottom-two split pair
+        self.assertAlmostEqual(lam_cuts[0], lam_cuts[1])  # synced cuts stay equal
+        off = qo.optimize_qrad(
+            [-0.63, 7.0],
+            [3.0, 5.0],
+            flags=[True],
+            grow=False,
+            initial_tau_bins=3,
+            max_groups=8,
+            score_fn=self._bowl_score_fn(3.8),
+            max_evals=5000,
+        )
+        self.assertNotIn("lambda-scan", [h["tag"] for h in off["history"]])
+
+
 class TestMainGroupingDispatch(unittest.TestCase):
     """Regression guard for the main() rewrite (P3): every CLI grouping mode resolves to the
     per-tau-group lambda-edge list (``lpt``) feeding the single guillotine-tree IR, and the tree
