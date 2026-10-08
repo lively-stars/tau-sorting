@@ -309,6 +309,8 @@ def _round_tree(tree) -> dict:
         }
         if node.get("sync") is not None:
             out["sync"] = node["sync"]
+        if node.get("frozen"):
+            out["frozen"] = True
         return out
 
     return {
@@ -570,6 +572,8 @@ def _tree_position_search(tree, cost_tree, *, cfg, budget, min_gap_tau, min_gap_
         improved = False
         spans = {id(n): (lo, hi) for n, lo, hi in _iter_internal(tree["root"], _root_rect(tree))}
         for node, _span_lo, _span_hi in list(_iter_internal(tree["root"], _root_rect(tree))):
+            if node.get("frozen"):
+                continue  # staged seed cut: position fixed, never wiggled again
             members = synced.get(str(node.get("sync", "")), None) if node.get("sync") else None
             if members is not None and len(members) > 1 and members[0] is not node:
                 continue  # moved jointly with the group's first node
@@ -621,6 +625,8 @@ def _refine_node(tree, path, cost_tree, *, cfg, budget, min_gap_tau, min_gap_lam
     (the rest of the tree was already refined, so re-sweeping every node per candidate is wasteful
     and — at RTE cost — eats the whole budget before the tree can grow)."""
     node = _node_at_path(tree["root"], path)
+    if node.get("frozen"):
+        return tree, best if best is not None else cost_tree(tree)  # staged seed cut: fixed
     group = _synced_groups(tree).get(str(node.get("sync", "")), [node]) if node.get("sync") else [node]
     group = [m for m in group if "at" in m] or [node]
     spans = {id(n): (lo, hi) for n, lo, hi in _iter_internal(tree["root"], _root_rect(tree))}
@@ -906,6 +912,8 @@ def _topology_search(tree, cost_tree, *, cfg, budget, max_groups, min_gap_tau, m
                 break
             if _node_at_path(state["tree"]["root"], rmpath).get("sync"):
                 continue  # hard sync: never remove one synced cut without the other
+            if _node_at_path(state["tree"]["root"], rmpath).get("frozen"):
+                continue  # staged seed cut: never remove the fixed skeleton
             base = copy.deepcopy(state["tree"])
             _remove_node_at_path(base["root"], rmpath)  # merge two leaves -> frees one leaf slot
             if try_splits(base):
@@ -1057,6 +1065,20 @@ def scan_tau_seeds(
             continue  # polish nudged two seeds together; keep the cheaper one
         final.append((c, t))
     return final
+
+
+def freeze_tau_cuts(tree, *, top_only=True) -> dict:
+    """Mark staged seed tau cuts `frozen`: their positions are fixed and later grow/polish/
+    topology phases must neither move nor remove them. With `top_only` (default) only the
+    top seed cut (highest `at`, the top bin's lower boundary) freezes -- the bottom-two
+    groups stay live for the synced lambda wiggle. New cuts from grow stay unfrozen.
+    Idempotent."""
+    tau_nodes = [node for node, _lo, _hi in _iter_internal(tree["root"], _root_rect(tree)) if node.get("axis") == "tau"]
+    if top_only:
+        tau_nodes = [max(tau_nodes, key=lambda n: float(n["at"]))] if tau_nodes else []
+    for node in tau_nodes:
+        node["frozen"] = True
+    return tree
 
 
 def split_bottom_two_tau_groups(tree, lam_at, *, min_gap_tau=MIN_GAP_TAU, min_gap_lam=MIN_GAP_LAM) -> dict:
@@ -1632,6 +1654,7 @@ def optimize_qrad(
                     min_gap_lam=min_gap_lam,
                 )
                 checkpoint("staged-lambda", evaluate(binning_tree=btree)[1])
+        freeze_tau_cuts(btree)  # top seed cut fixed: grow/polish/topo never move/remove it
     btree, _best_cost = _refine(btree)
     final_r = evaluate(binning_tree=btree)[1]
     return {
