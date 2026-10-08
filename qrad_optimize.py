@@ -301,7 +301,15 @@ def _round_tree(tree) -> dict:
     def rec(node):
         if _is_leaf(node):
             return {"leaf": True}
-        return {"axis": node["axis"], "at": round(float(node["at"]), 4), "lo": rec(node["lo"]), "hi": rec(node["hi"])}
+        out = {
+            "axis": node["axis"],
+            "at": round(float(node["at"]), 4),
+            "lo": rec(node["lo"]),
+            "hi": rec(node["hi"]),
+        }
+        if node.get("sync") is not None:
+            out["sync"] = node["sync"]
+        return out
 
     return {
         "window_tau": [round(float(v), 4) for v in tree["window_tau"]],
@@ -543,32 +551,50 @@ def tree_from_lpt(tau_edges, lambda_edges_per_tau) -> dict:
     return {"window_tau": [tau[0], tau[-1]], "window_lam": [lmin, lmax], "root": node}
 
 
+def _synced_groups(tree) -> dict[str, list]:
+    """Map sync id -> member internal nodes (nodes sharing a `sync` id move as one cut)."""
+    groups: dict[str, list] = {}
+    for node, _lo, _hi in _iter_internal(tree["root"], _root_rect(tree)):
+        if node.get("sync"):
+            groups.setdefault(str(node["sync"]), []).append(node)
+    return groups
+
+
 def _tree_position_search(tree, cost_tree, *, cfg, budget, min_gap_tau, min_gap_lam):
     """Gauss-Seidel coordinate descent on every internal cut's position. Each candidate must
     stay in its node's axis span (per-axis min gap) and keep the whole tree feasible; the best
     strict improvement per node is committed in place."""
     best = cost_tree(tree)
+    synced = _synced_groups(tree)  # sync id -> members; joint moves keep them equal
     for _ in range(cfg.max_sweeps):
         improved = False
-        for node, span_lo, span_hi in list(_iter_internal(tree["root"], _root_rect(tree))):
+        spans = {id(n): (lo, hi) for n, lo, hi in _iter_internal(tree["root"], _root_rect(tree))}
+        for node, _span_lo, _span_hi in list(_iter_internal(tree["root"], _root_rect(tree))):
+            members = synced.get(str(node.get("sync", "")), None) if node.get("sync") else None
+            if members is not None and len(members) > 1 and members[0] is not node:
+                continue  # moved jointly with the group's first node
+            group = members if members and len(members) > 1 else [node]
             mg = min_gap_tau if node["axis"] == "tau" else min_gap_lam
             old = float(node["at"])
             best_at, best_c = old, best
             for step in cfg.adjust_steps:
                 for d in (-1.0, +1.0):
                     if budget.exhausted():
-                        node["at"] = best_at
+                        for m in group:
+                            m["at"] = best_at
                         return tree, best_c
                     cand = old + d * step
-                    if cand <= span_lo + mg - 1e-12 or cand >= span_hi - mg + 1e-12:
+                    if any(cand <= spans[id(m)][0] + mg - 1e-12 or cand >= spans[id(m)][1] - mg + 1e-12 for m in group):
                         continue
-                    node["at"] = cand
+                    for m in group:
+                        m["at"] = cand
                     if not _tree_feasible(tree, min_gap_tau, min_gap_lam):
                         continue
                     c = cost_tree(tree)
                     if c < best_c - 1e-12:
                         best_c, best_at = c, cand
-            node["at"] = best_at
+            for m in group:
+                m["at"] = best_at
             if best_c < best - 1e-12:
                 best, improved = best_c, True
         if not improved:
@@ -595,29 +621,33 @@ def _refine_node(tree, path, cost_tree, *, cfg, budget, min_gap_tau, min_gap_lam
     (the rest of the tree was already refined, so re-sweeping every node per candidate is wasteful
     and — at RTE cost — eats the whole budget before the tree can grow)."""
     node = _node_at_path(tree["root"], path)
-    span = next(((lo, hi) for n, lo, hi in _iter_internal(tree["root"], _root_rect(tree)) if n is node), None)
-    best_c = best if best is not None else cost_tree(tree)
-    if span is None or "at" not in node:
-        return tree, best_c
-    span_lo, span_hi = span
+    group = _synced_groups(tree).get(str(node.get("sync", "")), [node]) if node.get("sync") else [node]
+    group = [m for m in group if "at" in m] or [node]
+    spans = {id(n): (lo, hi) for n, lo, hi in _iter_internal(tree["root"], _root_rect(tree))}
+    if any(id(m) not in spans for m in group):
+        return tree, best if best is not None else cost_tree(tree)
     mg = min_gap_tau if node["axis"] == "tau" else min_gap_lam
+    best_c = best if best is not None else cost_tree(tree)
     best_at = float(node["at"])
     for step in cfg.adjust_steps:
         old = best_at
         for d in (-1.0, +1.0):
             if budget.exhausted():
-                node["at"] = best_at
+                for m in group:
+                    m["at"] = best_at
                 return tree, best_c
             cand = old + d * step
-            if cand <= span_lo + mg - 1e-12 or cand >= span_hi - mg + 1e-12:
+            if any(cand <= spans[id(m)][0] + mg - 1e-12 or cand >= spans[id(m)][1] - mg + 1e-12 for m in group):
                 continue
-            node["at"] = cand
+            for m in group:
+                m["at"] = cand
             if not _tree_feasible(tree, min_gap_tau, min_gap_lam):
                 continue
             c = cost_tree(tree)
             if c < best_c - 1e-12:
                 best_c, best_at = c, cand
-    node["at"] = best_at
+    for m in group:
+        m["at"] = best_at
     return tree, best_c
 
 
@@ -874,6 +904,8 @@ def _topology_search(tree, cost_tree, *, cfg, budget, max_groups, min_gap_tau, m
         for rmpath, _rr in list(_iter_removable_with_path(state["tree"]["root"], _root_rect(state["tree"]))):
             if budget.exhausted():
                 break
+            if _node_at_path(state["tree"]["root"], rmpath).get("sync"):
+                continue  # hard sync: never remove one synced cut without the other
             base = copy.deepcopy(state["tree"])
             _remove_node_at_path(base["root"], rmpath)  # merge two leaves -> frees one leaf slot
             if try_splits(base):

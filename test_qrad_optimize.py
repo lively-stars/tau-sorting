@@ -646,6 +646,34 @@ class TestBeamSearch(unittest.TestCase):
         self.assertIn("staged-tau", tags)
         self.assertIn("staged-lambda", tags)
 
+    def test_hard_sync_survives_grow_and_polish(self):
+        # Synced bottom-two lambda cuts must stay equal through grow + polish, not just staging.
+        res = qo.optimize_qrad(
+            [-0.63, 7.0],
+            [3.0, 5.0],
+            flags=[True],
+            grow=True,
+            beam_width=2,
+            initial_tau_bins=3,
+            max_groups=6,
+            score_fn=_tree_dev_score(tau_target=1.5, lam_target=3.8),
+            max_evals=3000,
+        )
+        by_sync: dict[str, list] = {}
+
+        def walk(n):
+            if n.get("leaf") or "axis" not in n:
+                return
+            if n.get("sync"):
+                by_sync.setdefault(str(n["sync"]), []).append(round(float(n["at"]), 4))
+            walk(n["lo"])
+            walk(n["hi"])
+
+        walk(res["binning_tree"]["root"])
+        self.assertTrue(by_sync, "expected surviving synced cuts")
+        for sid, ats in by_sync.items():
+            self.assertEqual(len(set(ats)), 1, f"sync group {sid} desynced: {ats}")
+
 
 class TestTauScan(unittest.TestCase):
     """Data-free tests for the LHS tau-cut seed scan (injected analytic bowl, no ODF)."""
