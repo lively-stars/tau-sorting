@@ -1407,6 +1407,109 @@ class TestTopologyTransplant(unittest.TestCase):
         self.assertTrue(qo._try_transplant(seed, adopt=adopt, **self._transplant_kwargs(cost)))
         self.assertEqual(float(seed["root"]["at"]), 3.0)  # input untouched (candidates are copies)
 
+    # Hardcoded seed-3 constants: the 5-group winner (rms 4.8733e7) from the seed5g
+    # RNG sweep. Root tau@TOP frozen (as staged freeze leaves it), dense column
+    # tau-stacked at T1/T2 behind lam@L, sparse side + top leaf undivided.
+    _SEED3_TOP = 4.37
+    _SEED3_L = 3.83
+    _SEED3_T1 = 1.02
+    _SEED3_T2 = 2.0925
+
+    @staticmethod
+    def _seed3_loser():
+        # 5-leaf loser (cap-saturated: SPLIT dead). S-lo holds a single tau cut at T1
+        # (already at target), S-hi a single tau cut; lam at 4.13 (0.3 off basin); root
+        # at 4.084 so the 0.35-fraction re-cut of the donee upper leaf lands at T2.
+        # Donor = S-hi tau (two-leaf collapse frees 1 slot: 5-1+1=5 ok); donee = S-lo
+        # upper leaf. The re-cut hits T2 nearly exactly, so the transplant's joint-L
+        # walk only needs L -- which REALLOC's single-cut gate never moves (see bowl).
+        return {
+            "window_tau": [-0.63, 7.0],
+            "window_lam": [3.0, 5.0],
+            "root": {
+                "axis": "tau",
+                "at": 4.084,
+                "lo": {
+                    "axis": "lam",
+                    "at": 4.13,
+                    "lo": {"axis": "tau", "at": 1.02, "lo": {"leaf": True}, "hi": {"leaf": True}},
+                    "hi": {"axis": "tau", "at": 1.47, "lo": {"leaf": True}, "hi": {"leaf": True}},
+                },
+                "hi": {"leaf": True},
+                "frozen": True,
+            },
+        }
+
+    def test_seed3_basin_reached_via_transplant(self):
+        # Regression guard for the seed-3 basin: an analytic bowl whose minimum sits
+        # exactly at the hardcoded seed-3 tiling must be reached from loser staging.
+        # The wall sits at BASE-0.45e7 (95.5e6): the transplanted shape at old L costs
+        # ~95.9e6 (rejected raw), but its joint-L walk dips to ~95.2e6 (passes); the
+        # same tree through REALLOC's single-cut gate never moves L and stalls at
+        # ~95.9e6 (rejected). Margins ~0.3e6, deterministic (analytic, no noise).
+        seed = self._seed3_loser()
+        BASE = 1e8
+
+        def score(tau, lam, flags, model, *, binning_tree=None, window=None):
+            t = binning_tree
+            n = sum(1 for _ in qo._leaf_rects(t["root"], qo._root_rect(t)))
+            root = t["root"]
+            lo = root.get("lo") if root.get("axis") == "tau" else None
+            # ONLY the nested stack scores the basin (smooth quadratic, no wall):
+            # second tau cut inside the donee upper leaf.
+            nested = (
+                n == 5
+                and root.get("axis") == "tau"
+                and isinstance(lo, dict)
+                and lo.get("axis") == "lam"
+                and isinstance(lo.get("lo"), dict)
+                and lo["lo"].get("axis") == "tau"
+                and isinstance(lo["lo"].get("hi"), dict)
+                and lo["lo"]["hi"].get("axis") == "tau"
+                and qo._is_leaf(lo.get("hi", {}))
+                and qo._is_leaf(root.get("hi", {}))
+            )
+            if nested:
+                L = float(lo["at"])
+                c = sorted(self._tau_cuts(lo))
+                rms = (
+                    BASE
+                    - 0.5e7
+                    + 1e7 * ((L - self._SEED3_L) ** 2 + (c[0] - self._SEED3_T1) ** 2 + (c[1] - self._SEED3_T2) ** 2)
+                )
+            else:
+                rms = BASE - 0.45e7 if n == 5 else BASE + (0.0 if n < 5 else 5e7)
+            return {"rms": rms, "max_abs": 2 * rms, "int_q_pct": 0.0, "n_empty": 0, "n_groups": n}
+
+        res = qo.optimize_qrad(
+            [-0.63, 7.0],
+            [3.0, 5.0],
+            flags=[True],
+            binning_tree=seed,
+            grow=True,
+            beam_width=2,  # topology search runs (skipped for greedy beam_width == 1)
+            max_groups=5,  # cap saturated: SPLIT dead, only depth moves can win
+            score_fn=score,
+            max_evals=5000,
+        )
+        self.assertLess(res["rms"], res["rms0"])  # basin reached via the transplant cliff
+        root = res["binning_tree"]["root"]
+        self.assertEqual(root["axis"], "tau")
+        # Root frozen at the loser's 4.084: the transplant reallocates depth below it.
+        lo = root["lo"]
+        self.assertEqual(lo["axis"], "lam")
+        self.assertTrue(qo._is_leaf(lo["hi"]))  # sparse side undivided
+        self.assertAlmostEqual(float(lo["at"]), self._SEED3_L, delta=0.1)
+        stack = lo["lo"]
+        self.assertEqual(stack["axis"], "tau")  # dense column holds the tau stack
+        self.assertEqual(stack["hi"]["axis"], "tau")  # NESTED: second cut inside the upper leaf
+        got = sorted(self._tau_cuts(lo))
+        self.assertEqual(len(got), 2)  # depth transplanted into the dense column
+        self.assertAlmostEqual(got[0], self._SEED3_T1, delta=0.1)
+        self.assertAlmostEqual(got[1], self._SEED3_T2, delta=0.1)
+        self.assertEqual(res["n_leaves"], 5)
+        self.assertTrue(qo._tree_feasible(res["binning_tree"], qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
+
 
 if __name__ == "__main__":
     unittest.main()
