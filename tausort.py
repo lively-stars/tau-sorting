@@ -2300,12 +2300,67 @@ def build_split_band_index(
     return split_band_index
 
 
+def band_average_precompute(odf: ODFData) -> dict[str, NDArray[np.float64] | NDArray[np.int64]]:
+    """Edge-independent tables for `calculate_tau_bin_opacities`.
+
+    Everything here depends only on the ODF (wavelength grid, sub-bin weights, T/P
+    grids) — never on the tree edges or band assignment — so per-model callers hoist
+    it into their cache (`qrad_core.precompute` stores it as `inv["band_pre"]`) and
+    pass it as `pre=` instead of rebuilding it every evaluation. Values are identical
+    to the locals the band loop used to build inline.
+
+    Returns dict with `subbin_widths`/`subbin_centers` [nbins*nsubbins, cm],
+    `bin_of_subbin` [nbins*nsubbins] (wavelength-bin per sub-bin), `B_lambda`/`dB_dT`
+    [nt, nbins*nsubbins] on the ODF T grid, and `pressure_linear` [np].
+    """
+    if odf.ODF is None:
+        raise ValueError("ODF data must be loaded.")
+    if odf.wavelength_grid is None or odf.subbin is None:
+        raise ValueError("ODF wavelength grid and subbin weights are required.")
+    wavelength_grid = odf.wavelength_grid
+    subbin_weights = odf.subbin
+    if wavelength_grid.shape[0] != odf.nbins + 1:
+        raise ValueError(f"Wavelength grid length ({wavelength_grid.shape[0]}) must be nbins+1 ({odf.nbins + 1})")
+    if subbin_weights.shape != (odf.nbins, odf.nsubbins):
+        raise ValueError(f"Sub-bin weights shape {subbin_weights.shape} does not match ({odf.nbins}, {odf.nsubbins})")
+
+    # Sub-bin centers and widths from bin edges and per-bin relative weights.
+    bin_widths = np.diff(wavelength_grid)[:, np.newaxis]
+    subbin_widths_2d = bin_widths * subbin_weights
+    subbin_offsets = np.cumsum(subbin_widths_2d, axis=1) - 0.5 * subbin_widths_2d
+    subbin_centers_2d = wavelength_grid[:-1, np.newaxis] + subbin_offsets
+
+    subbin_widths = subbin_widths_2d.reshape(-1)
+    subbin_centers = subbin_centers_2d.reshape(-1)
+    bin_of_subbin = np.arange(odf.nbins * odf.nsubbins, dtype=np.int64) // odf.nsubbins
+
+    # ODF tables store log10(T)/log10(p); the band loop wants K, linear p, and the
+    # Planck tables on the ODF T grid.
+    temperature_1d = np.power(10.0, odf.T)
+    temperature_2d = temperature_1d[:, np.newaxis]
+    wavelength_2d = subbin_centers[np.newaxis, :]
+    B_lambda = planck_function(wavelength_2d, temperature_2d)
+    dB_dT = planck_derivative_analytic(wavelength_2d, temperature_2d)
+    pressure_linear = np.power(10.0, odf.P)
+
+    return {
+        "subbin_widths": subbin_widths,
+        "subbin_centers": subbin_centers,
+        "bin_of_subbin": bin_of_subbin,
+        "B_lambda": B_lambda,
+        "dB_dT": dB_dT,
+        "pressure_linear": pressure_linear,
+    }
+
+
 def calculate_tau_bin_opacities(
     odf: ODFData,
     cont: ContinuumData,
     band_index: NDArray[np.int32],
     n_bins: int,
     tau_transition: float = 0.35,
+    *,
+    pre: dict[str, NDArray[np.float64] | NDArray[np.int64]] | None = None,
 ) -> dict[str, NDArray[np.float64] | NDArray[np.int32]]:
     r"""
     Calculate tau-binned opacities.
@@ -2326,6 +2381,11 @@ def calculate_tau_bin_opacities(
             Shape: [nbins * nsubbins], values -1 for out-of-range
         n_bins: Number of tau bins in output (len(tau_bin_edges) - 1)
         tau_transition: Optical depth transition scale in Eq. 12
+        pre: Edge-independent tables from `band_average_precompute` (sub-bin widths,
+            bin_of_subbin, B_lambda/dB_dT, pressure grid). Callers that score many
+            binnings on one model (qrad_core) hoist this into their per-model cache
+            and pass it here; None (default) rebuilds it inline, so standalone
+            callers are unchanged.
 
     Returns:
         Dictionary with:
@@ -2369,66 +2429,94 @@ def calculate_tau_bin_opacities(
 
     n_bands = n_bins
 
-    # Build sub-bin centers and widths from bin edges and per-bin relative weights.
-    bin_widths = np.diff(wavelength_grid)[:, np.newaxis]
-    subbin_widths_2d = bin_widths * subbin_weights
-    subbin_offsets = np.cumsum(subbin_widths_2d, axis=1) - 0.5 * subbin_widths_2d
-    subbin_centers_2d = wavelength_grid[:-1, np.newaxis] + subbin_offsets
-
-    subbin_widths = subbin_widths_2d.reshape(-1)
-    subbin_centers = subbin_centers_2d.reshape(-1)
+    if pre is None:
+        pre = band_average_precompute(odf)
+    subbin_widths = np.asarray(pre["subbin_widths"], dtype=np.float64)
+    B_lambda = np.asarray(pre["B_lambda"], dtype=np.float64)
+    dB_dT = np.asarray(pre["dB_dT"], dtype=np.float64)
+    bin_of_subbin = np.asarray(pre["bin_of_subbin"])
+    pressure_linear = np.asarray(pre["pressure_linear"], dtype=np.float64)
+    if (
+        subbin_widths.shape != (n_subbin_points,)
+        or B_lambda.shape != (odf.nt, n_subbin_points)
+        or dB_dT.shape != (odf.nt, n_subbin_points)
+        or bin_of_subbin.shape != (n_subbin_points,)
+        or pressure_linear.shape != (odf.np,)
+    ):
+        raise ValueError("pre= tables do not match this ODF (stale cache?); rebuild via band_average_precompute(odf)")
 
     # Opacity per (T, p, sub-bin) = line ODF + continuum (per wavelength bin). We do NOT
     # materialize the full (nt, np, nbins, nsubbins) sum (~1.4 GB temporary): odf.ODF is
     # C-contiguous so .reshape is a free view, and the band loop below gathers only that
-    # band's member columns and adds the continuum for each member's bin. This reproduces
+    # band's member columns into a small reused T-chunked buffer, adding the continuum for
+    # each member's bin in place. This reproduces
     # `(odf.ODF + cont.kappa_abs[..., None]).reshape(nt, np, -1)[:, :, member_mask]` exactly
     # (C-order flatten: sub-bin index k -> bin k // nsubbins), with no full-grid allocation.
     odf_flat = odf.ODF.reshape(odf.nt, odf.np, -1)
-    bin_of_subbin = np.arange(n_subbin_points) // odf.nsubbins
-
-    # ODF tables store log10(T), convert to K for Planck weighting.
-    temperature_1d = np.power(10.0, odf.T)
-    temperature_2d = temperature_1d[:, np.newaxis]
-    wavelength_2d = subbin_centers[np.newaxis, :]
-
-    B_lambda = planck_function(wavelength_2d, temperature_2d)
-    dB_dT = planck_derivative_analytic(wavelength_2d, temperature_2d)
+    cont_kappa = cont.kappa_abs
+    kappa_dtype = np.result_type(odf_flat.dtype, cont_kappa.dtype)
 
     B_band = np.zeros((odf.nt, n_bands), dtype=np.float64)
     dBdT_band = np.zeros((odf.nt, n_bands), dtype=np.float64)
     kappa_planck = np.zeros((odf.nt, odf.np, n_bands), dtype=np.float64)
     kappa_rosseland = np.zeros((odf.nt, odf.np, n_bands), dtype=np.float64)
-    members_per_band = np.zeros((n_bands,), dtype=np.int32)
+    members_per_band = np.bincount(band_index[valid_band_mask], minlength=n_bands).astype(np.int32)
+
+    # T-chunked accumulation: the old per-band gather fancy-indexed odf_flat[:, :, mi]
+    # (~189 MiB for m=1102) then promoted to ~378 MiB float64 products — ~1 GB transient
+    # for the biggest band. Instead each band reduces one T-chunk at a time through two
+    # reused scratch buffers (native-dtype kappa; one float64 scratch shared by both
+    # numerators), sized by the largest band. The per-(T, p) reduction order over members
+    # is unchanged, so the mixed Planck/Rosseland math matches bit-near-identically.
+    m_max = int(members_per_band.max())
+    t_chunk = 32
+    kappa_buf = np.empty((t_chunk, odf.np, m_max), dtype=kappa_dtype)
+    prod_buf = np.empty((t_chunk, odf.np, m_max), dtype=np.float64)
+    # Floor before the harmonic mean's 1/kappa. 1e-300 underflows to 0 in float32 (min
+    # normal ~1.2e-38); use 1e-30 there (a no-op for real opacities, which are >= ~1e-12,
+    # but guards against 1/0). float64 keeps 1e-300 so its result stays bit-identical.
+    # The division below promotes to float64 (weighted_dBdT is float64), so the Rosseland
+    # accumulation is float64 regardless of kappa's dtype.
+    kappa_floor = 1.0e-30 if kappa_dtype == np.float32 else 1.0e-300
 
     for band in range(n_bands):
-        member_mask = band_index == band
-        members_per_band[band] = int(np.sum(member_mask))
-        if members_per_band[band] == 0:
+        m = int(members_per_band[band])
+        if m == 0:
             continue
 
-        member_idx = np.flatnonzero(member_mask)
+        member_idx = np.flatnonzero(band_index == band)
         widths = subbin_widths[member_idx]
         B_sel = B_lambda[:, member_idx]
         dB_dT_sel = dB_dT[:, member_idx]
-        # Gather only this band's members: ODF columns + continuum for each member's bin.
-        kappa_sel = odf_flat[:, :, member_idx] + cont.kappa_abs[:, :, bin_of_subbin[member_idx]]
 
         weighted_B = B_sel * widths[np.newaxis, :]
         weighted_dBdT = dB_dT_sel * widths[np.newaxis, :]
 
         B_sum = np.sum(weighted_B, axis=1)
         dBdT_sum = np.sum(weighted_dBdT, axis=1)
-        # Planck numerator uses the UNCLIPPED opacity; then clip in place and reuse that same
-        # buffer as the Rosseland (harmonic-mean) denominator — avoids a second full-size copy.
-        planck_num = np.sum(kappa_sel * weighted_B[:, np.newaxis, :], axis=2)
-        # Floor before the harmonic mean's 1/kappa. 1e-300 underflows to 0 in float32 (min
-        # normal ~1.2e-38); use 1e-30 there (a no-op for real opacities, which are >= ~1e-12,
-        # but guards against 1/0). float64 keeps 1e-300 so its result stays bit-identical.
-        # The division below promotes to float64 (weighted_dBdT is float64), so the Rosseland
-        # accumulation is float64 regardless of kappa's dtype.
-        np.clip(kappa_sel, 1.0e-30 if kappa_sel.dtype == np.float32 else 1.0e-300, None, out=kappa_sel)
-        rosseland_denom = np.sum(weighted_dBdT[:, np.newaxis, :] / kappa_sel, axis=2)
+
+        kbuf = kappa_buf[:, :, :m]
+        pbuf = prod_buf[:, :, :m]
+        planck_num = np.empty((odf.nt, odf.np), dtype=np.float64)
+        rosseland_denom = np.empty((odf.nt, odf.np), dtype=np.float64)
+        for t0 in range(0, odf.nt, t_chunk):
+            t1 = min(t0 + t_chunk, odf.nt)
+            kk = kbuf[: t1 - t0]
+            pp = pbuf[: t1 - t0]
+            wB = weighted_B[t0:t1]
+            wdB = weighted_dBdT[t0:t1]
+            # Gather this chunk's members (line ODF + each member's continuum bin) into
+            # the reused buffer; the in-place add keeps it to one [C, np, m] temporary.
+            np.take(odf_flat[t0:t1], member_idx, axis=2, out=kk)
+            kk += cont_kappa[t0:t1][:, :, bin_of_subbin[member_idx]]
+            # Planck numerator uses the UNCLIPPED opacity; then clip in place and reuse
+            # the same float64 scratch as the Rosseland (harmonic-mean) denominator —
+            # both numerators reduce this one chunk before moving on (single pass).
+            np.multiply(kk, wB[:, np.newaxis, :], out=pp)
+            np.sum(pp, axis=2, out=planck_num[t0:t1])
+            np.clip(kk, kappa_floor, None, out=kk)
+            np.divide(wdB[:, np.newaxis, :], kk, out=pp)
+            np.sum(pp, axis=2, out=rosseland_denom[t0:t1])
 
         B_band[:, band] = B_sum
         dBdT_band[:, band] = dBdT_sum
@@ -2446,8 +2534,6 @@ def calculate_tau_bin_opacities(
         )
 
     # Match tausort.c (meanop): tau_i = kappa_ro * p / 2.74e4
-    # ODF pressure grid is log10(p), convert to linear pressure.
-    pressure_linear = np.power(10.0, odf.P)
     tau_i = kappa_rosseland * pressure_linear[np.newaxis, :, np.newaxis] / 2.74e4
     mix_planck = np.power(2.0, -(tau_i / tau_transition))
     mix_planck = np.clip(mix_planck, 0.0, 1.0)

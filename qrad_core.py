@@ -209,8 +209,25 @@ def _qrad_from_table(inv, kap_tab, b_tab, ttab, ptab):
     nband = kap_tab.shape[0]
     nz = z.size
 
-    lt = np.interp(np.log10(tem), ttab, np.arange(ttab.size))
-    lp = np.interp(np.log10(pre), ptab, np.arange(ptab.size))
+    # Edge-independent interp indices (fix #1): precomputed in precompute() from the
+    # atmosphere + ODF grids. Reused only when the caller's tables live on those same
+    # grids (the per-binning score path); reference .dat tables (gray/full/golden)
+    # carry their own T/p grids, so they fall back to computing inline — identical
+    # values either way.
+    lt = inv.get("lt")
+    lp = inv.get("lp")
+    odf = inv.get("odf")
+    if (
+        lt is None
+        or lp is None
+        or odf is None
+        or lt.shape != tem.shape
+        or lp.shape != pre.shape
+        or not (np.shape(ttab) == np.shape(odf.T) and np.array_equal(np.asarray(ttab), np.asarray(odf.T)))
+        or not (np.shape(ptab) == np.shape(odf.P) and np.array_equal(np.asarray(ptab), np.asarray(odf.P)))
+    ):
+        lt = np.interp(np.log10(tem), ttab, np.arange(ttab.size))
+        lp = np.interp(np.log10(pre), ptab, np.arange(ptab.size))
     k_z = np.zeros((nband, nz))
     b_z = np.zeros((nband, nz))
     for i in range(nband):
@@ -322,6 +339,23 @@ def precompute(model=None) -> dict:
         bin_x_all = np.log10(np.asarray(wl_centers) * 1e8)
         bin_y_all = -np.log10(np.clip(tau_at_lam1, 1e-300, None))
 
+        # Edge-independent band-average tables (fix #1): the sub-bin geometry
+        # (widths/centers), the wavelength-bin per sub-bin, the Planck tables on the
+        # ODF T grid, and the linear pressure grid depend only on the ODF — never on
+        # the tree edges — so they are built once here and reused by every
+        # score_binning eval via calculate_tau_bin_opacities(..., pre=...).
+        band_pre = ts.band_average_precompute(odf)
+
+        # Edge-independent RTE-interp grids (fix #1): _qrad_from_table interpolates the
+        # per-binning ln(kappa)/ln(B) tables (on the ODF log10 T/p grids) onto the
+        # atmosphere via lt/lp index arrays that depend only on the model atmosphere +
+        # ODF grids — not on the binning. Hoisted here so each eval skips them.
+        pre_p, tem = atm.p, atm.T
+        ttab = np.asarray(odf.T)
+        ptab = np.asarray(odf.P)
+        lt = np.interp(np.log10(tem), ttab, np.arange(ttab.size))
+        lp = np.interp(np.log10(pre_p), ptab, np.arange(ptab.size))
+
         inv = dict(
             model=name,
             atm=atm,
@@ -335,6 +369,9 @@ def precompute(model=None) -> dict:
             bin_x_all=bin_x_all,
             bin_y_all=bin_y_all,
             n_subbins=len(wl_centers),
+            band_pre=band_pre,
+            lt=lt,
+            lp=lp,
         )
         _INV_CACHE[name] = inv
         print(
@@ -421,7 +458,9 @@ def score_binning(
         min_opacity_delta=min_opacity_delta,
     )
     n_bands = n_groups * n_splits
-    res = ts.calculate_tau_bin_opacities(odf=odf, cont=cont, band_index=split_band_index, n_bins=n_bands)
+    res = ts.calculate_tau_bin_opacities(
+        odf=odf, cont=cont, band_index=split_band_index, n_bins=n_bands, pre=inv.get("band_pre")
+    )
     mixed = np.asarray(res["kappa_mixed"])  # [nT, nP, nBands]
     b_band = np.asarray(res["B_band"])  # [nT, nBands]
     members = np.asarray(res["members_per_band"])
@@ -587,7 +626,9 @@ def save_kappa_dat(
         min_opacity_delta=min_opacity_delta,
     )
     n_bands = n_groups * n_splits
-    res = ts.calculate_tau_bin_opacities(odf=odf, cont=cont, band_index=split_band_index, n_bins=n_bands)
+    res = ts.calculate_tau_bin_opacities(
+        odf=odf, cont=cont, band_index=split_band_index, n_bins=n_bands, pre=inv.get("band_pre")
+    )
 
     members = np.asarray(res["members_per_band"])
     empty = members == 0
