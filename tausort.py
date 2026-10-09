@@ -2448,75 +2448,45 @@ def calculate_tau_bin_opacities(
     # Opacity per (T, p, sub-bin) = line ODF + continuum (per wavelength bin). We do NOT
     # materialize the full (nt, np, nbins, nsubbins) sum (~1.4 GB temporary): odf.ODF is
     # C-contiguous so .reshape is a free view, and the band loop below gathers only that
-    # band's member columns into a small reused T-chunked buffer, adding the continuum for
-    # each member's bin in place. This reproduces
+    # band's member columns and adds the continuum for each member's bin. This reproduces
     # `(odf.ODF + cont.kappa_abs[..., None]).reshape(nt, np, -1)[:, :, member_mask]` exactly
     # (C-order flatten: sub-bin index k -> bin k // nsubbins), with no full-grid allocation.
     odf_flat = odf.ODF.reshape(odf.nt, odf.np, -1)
-    cont_kappa = cont.kappa_abs
-    kappa_dtype = np.result_type(odf_flat.dtype, cont_kappa.dtype)
 
     B_band = np.zeros((odf.nt, n_bands), dtype=np.float64)
     dBdT_band = np.zeros((odf.nt, n_bands), dtype=np.float64)
     kappa_planck = np.zeros((odf.nt, odf.np, n_bands), dtype=np.float64)
     kappa_rosseland = np.zeros((odf.nt, odf.np, n_bands), dtype=np.float64)
-    members_per_band = np.bincount(band_index[valid_band_mask], minlength=n_bands).astype(np.int32)
-
-    # T-chunked accumulation: the old per-band gather fancy-indexed odf_flat[:, :, mi]
-    # (~189 MiB for m=1102) then promoted to ~378 MiB float64 products — ~1 GB transient
-    # for the biggest band. Instead each band reduces one T-chunk at a time through two
-    # reused scratch buffers (native-dtype kappa; one float64 scratch shared by both
-    # numerators), sized by the largest band. The per-(T, p) reduction order over members
-    # is unchanged, so the mixed Planck/Rosseland math matches bit-near-identically.
-    m_max = int(members_per_band.max())
-    t_chunk = 32
-    kappa_buf = np.empty((t_chunk, odf.np, m_max), dtype=kappa_dtype)
-    prod_buf = np.empty((t_chunk, odf.np, m_max), dtype=np.float64)
-    # Floor before the harmonic mean's 1/kappa. 1e-300 underflows to 0 in float32 (min
-    # normal ~1.2e-38); use 1e-30 there (a no-op for real opacities, which are >= ~1e-12,
-    # but guards against 1/0). float64 keeps 1e-300 so its result stays bit-identical.
-    # The division below promotes to float64 (weighted_dBdT is float64), so the Rosseland
-    # accumulation is float64 regardless of kappa's dtype.
-    kappa_floor = 1.0e-30 if kappa_dtype == np.float32 else 1.0e-300
+    members_per_band = np.zeros((n_bands,), dtype=np.int32)
 
     for band in range(n_bands):
-        m = int(members_per_band[band])
-        if m == 0:
+        member_mask = band_index == band
+        members_per_band[band] = int(np.sum(member_mask))
+        if members_per_band[band] == 0:
             continue
 
-        member_idx = np.flatnonzero(band_index == band)
+        member_idx = np.flatnonzero(member_mask)
         widths = subbin_widths[member_idx]
         B_sel = B_lambda[:, member_idx]
         dB_dT_sel = dB_dT[:, member_idx]
+        # Gather only this band's members: ODF columns + continuum for each member's bin.
+        kappa_sel = odf_flat[:, :, member_idx] + cont.kappa_abs[:, :, bin_of_subbin[member_idx]]
 
         weighted_B = B_sel * widths[np.newaxis, :]
         weighted_dBdT = dB_dT_sel * widths[np.newaxis, :]
 
         B_sum = np.sum(weighted_B, axis=1)
         dBdT_sum = np.sum(weighted_dBdT, axis=1)
-
-        kbuf = kappa_buf[:, :, :m]
-        pbuf = prod_buf[:, :, :m]
-        planck_num = np.empty((odf.nt, odf.np), dtype=np.float64)
-        rosseland_denom = np.empty((odf.nt, odf.np), dtype=np.float64)
-        for t0 in range(0, odf.nt, t_chunk):
-            t1 = min(t0 + t_chunk, odf.nt)
-            kk = kbuf[: t1 - t0]
-            pp = pbuf[: t1 - t0]
-            wB = weighted_B[t0:t1]
-            wdB = weighted_dBdT[t0:t1]
-            # Gather this chunk's members (line ODF + each member's continuum bin) into
-            # the reused buffer; the in-place add keeps it to one [C, np, m] temporary.
-            np.take(odf_flat[t0:t1], member_idx, axis=2, out=kk)
-            kk += cont_kappa[t0:t1][:, :, bin_of_subbin[member_idx]]
-            # Planck numerator uses the UNCLIPPED opacity; then clip in place and reuse
-            # the same float64 scratch as the Rosseland (harmonic-mean) denominator —
-            # both numerators reduce this one chunk before moving on (single pass).
-            np.multiply(kk, wB[:, np.newaxis, :], out=pp)
-            np.sum(pp, axis=2, out=planck_num[t0:t1])
-            np.clip(kk, kappa_floor, None, out=kk)
-            np.divide(wdB[:, np.newaxis, :], kk, out=pp)
-            np.sum(pp, axis=2, out=rosseland_denom[t0:t1])
+        # Planck numerator uses the UNCLIPPED opacity; then clip in place and reuse that same
+        # buffer as the Rosseland (harmonic-mean) denominator — avoids a second full-size copy.
+        planck_num = np.sum(kappa_sel * weighted_B[:, np.newaxis, :], axis=2)
+        # Floor before the harmonic mean's 1/kappa. 1e-300 underflows to 0 in float32 (min
+        # normal ~1.2e-38); use 1e-30 there (a no-op for real opacities, which are >= ~1e-12,
+        # but guards against 1/0). float64 keeps 1e-300 so its result stays bit-identical.
+        # The division below promotes to float64 (weighted_dBdT is float64), so the Rosseland
+        # accumulation is float64 regardless of kappa's dtype.
+        np.clip(kappa_sel, 1.0e-30 if kappa_sel.dtype == np.float32 else 1.0e-300, None, out=kappa_sel)
+        rosseland_denom = np.sum(weighted_dBdT[:, np.newaxis, :] / kappa_sel, axis=2)
 
         B_band[:, band] = B_sum
         dBdT_band[:, band] = dBdT_sum
