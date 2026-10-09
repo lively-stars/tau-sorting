@@ -810,27 +810,117 @@ def _beam_grow_tree(
 
 
 def _remove_node_at_path(root, path):
-    """Collapse the internal node at `path` into a leaf (its two child leaves merge into one group)."""
+    """Collapse the internal node at `path` into a leaf (its whole subtree merges into one group,
+    freeing ``leaves - 1`` slots). Callers must only pass paths yielded by
+    `_iter_removable_with_path` (never frozen/sync-covering)."""
     n = _node_at_path(root, path)
     n.clear()
     n["leaf"] = True
 
 
+def _subtree_guarded(node) -> bool:
+    """True when `node` or any descendant carries a frozen/sync flag -- collapsing such a subtree
+    would touch the fixed skeleton or half-remove a sync pair."""
+    if node.get("frozen") or node.get("sync"):
+        return True
+    if _is_leaf(node):
+        return False
+    return _subtree_guarded(node["lo"]) or _subtree_guarded(node["hi"])
+
+
 def _iter_removable_with_path(node, rect, path=()):
-    """Internal nodes whose BOTH children are leaves -- removing one merges two leaves into one
-    (net -1 leaf). Yields (path, rect)."""
+    """Collapsible internal nodes, cheapest first. Collapsing the node at `path` into a leaf frees
+    ``_count_leaves(subtree) - 1`` leaf slots. Yields (path, rect, freed): the two-leaf fast path
+    (freed == 1) first in DFS order, then nested collapses (freed > 1, ascending). Nodes carrying
+    -- or covering -- frozen/sync flags are never yielded."""
+    found: list = []
+
+    def walk(n, r, p):
+        if _is_leaf(n):
+            return
+        tlo, thi, llo, lhi = r
+        at = float(n["at"])
+        if n["axis"] == "tau":
+            rlo, rhi = (tlo, at, llo, lhi), (at, thi, llo, lhi)
+        else:
+            rlo, rhi = (tlo, thi, llo, at), (tlo, thi, at, lhi)
+        if not _subtree_guarded(n):
+            found.append((_count_leaves(n) - 1, p, r))
+        walk(n["lo"], rlo, (*p, "lo"))
+        walk(n["hi"], rhi, (*p, "hi"))
+
+    walk(node, rect, path)
+    found.sort(key=lambda t: t[0])  # stable: DFS order among equal freed counts
+    for freed, p, r in found:
+        yield (p, r, freed)
+
+
+def _iter_lam_columns(node, rect, path=()):
+    """(path, rect) per internal lambda node -- each spans a two-column pair (its lo/hi subtrees)."""
     if _is_leaf(node):
         return
     tlo, thi, llo, lhi = rect
     at = float(node["at"])
-    if node["axis"] == "tau":
-        rlo, rhi = (tlo, at, llo, lhi), (at, thi, llo, lhi)
-    else:
-        rlo, rhi = (tlo, thi, llo, at), (tlo, thi, at, lhi)
-    if _is_leaf(node["lo"]) and _is_leaf(node["hi"]):
+    if node["axis"] == "lam":
         yield (path, rect)
-    yield from _iter_removable_with_path(node["lo"], rlo, (*path, "lo"))
-    yield from _iter_removable_with_path(node["hi"], rhi, (*path, "hi"))
+        rlo, rhi = (tlo, thi, llo, at), (tlo, thi, at, lhi)
+    else:
+        rlo, rhi = (tlo, at, llo, lhi), (at, thi, llo, lhi)
+    yield from _iter_lam_columns(node["lo"], rlo, (*path, "lo"))
+    yield from _iter_lam_columns(node["hi"], rhi, (*path, "hi"))
+
+
+def _try_transplant(base, *, cost_tree, cfg, budget, max_groups, min_gap_tau, min_gap_lam, positions, adopt):
+    """Cross-column depth transplant: for each shared lambda cut, collapse a tau cut inside one
+    column (freeing `freed` leaf slots, nested collapses included) and cut the other column on tau
+    at `positions` fractions. Winners promote through `adopt(cand, new_path, joint_paths)` with the
+    shared lambda cut jointly polished, so moves that only pay off once L follows the depth across
+    columns survive the cheap pre-filter. First-improvement: True on adoption."""
+    n_base = _n_leaves(base)
+    for lampath, lamrect in list(_iter_lam_columns(base["root"], _root_rect(base))):
+        if budget.exhausted():
+            return False
+        lamnode = _node_at_path(base["root"], lampath)
+        tlo, thi, llo, lhi = lamrect
+        lat = float(lamnode["at"])
+        cols = (
+            (lamnode["lo"], (tlo, thi, llo, lat), (*lampath, "lo")),
+            (lamnode["hi"], (tlo, thi, lat, lhi), (*lampath, "hi")),
+        )
+        for di in (0, 1):
+            donor, drect, dpath = cols[di]
+            donee, erect, epath = cols[1 - di]
+            removals = [
+                (rp, freed)
+                for rp, _rr, freed in _iter_removable_with_path(donor, drect)
+                if _node_at_path(donor, rp).get("axis") == "tau"
+            ]
+            if not removals:
+                continue
+            for rmpath_rel, freed in removals:
+                if budget.exhausted():
+                    return False
+                if n_base - freed + 1 > max_groups:
+                    continue  # collapse frees `freed` slots, the re-cut spends one
+                for leaf_rel, (ltlo, ltthi, _llo, _lhi) in list(_iter_leaves_with_path(donee, erect)):
+                    if (ltthi - ltlo) < 2 * min_gap_tau:
+                        continue
+                    for f in positions:
+                        if budget.exhausted():
+                            return False
+                        pos = ltlo + f * (ltthi - ltlo)
+                        if pos - ltlo < min_gap_tau - 1e-12 or ltthi - pos < min_gap_tau - 1e-12:
+                            continue
+                        cand = copy.deepcopy(base)
+                        _remove_node_at_path(cand["root"], (*dpath, *rmpath_rel))
+                        leaf = _node_at_path(cand["root"], (*epath, *leaf_rel))
+                        leaf.clear()
+                        leaf.update({"axis": "tau", "at": pos, "lo": {"leaf": True}, "hi": {"leaf": True}})
+                        if not _tree_feasible(cand, min_gap_tau, min_gap_lam):
+                            continue
+                        if adopt(cand, (*epath, *leaf_rel), (lampath,)):
+                            return True
+    return False
 
 
 def _topology_search(tree, cost_tree, *, cfg, budget, max_groups, min_gap_tau, min_gap_lam, report=None):
@@ -842,18 +932,24 @@ def _topology_search(tree, cost_tree, *, cfg, budget, max_groups, min_gap_tau, m
     converged tree it tries STRUCTURAL moves, each polished to its position optimum before
     scoring:
       * SPLIT: cut any leaf on tau OR lambda (when under the leaf cap);
-      * REALLOC: drop a redundant cut (a node above two leaves) and re-cut a leaf, typically on
-        the other axis -- same leaf budget, different topology (e.g. trade a redundant tau-group
-        for a lambda split of the photospheric group).
-    Each candidate is cheaply pre-filtered by refining only its new cut (`_refine_node`); only
-    promising ones get a full `_block_fixed_point_tree` polish. First-improvement greedy, restart
-    after each adoption; bounded by `budget`; never increases the cost.
+      * TRANSPLANT: move tau depth across a shared lambda cut -- collapse a tau cut inside one
+        column (nested collapses included) and cut the other column on tau, with the shared
+        lambda cut jointly polished alongside the new cut (e.g. reach the deep asymmetric basin
+        where one column holds the tau stack and the other spans free);
+      * REALLOC: drop a collapsible cut (nested collapses free >1 slot) and re-cut a leaf,
+        typically on the other axis -- different topology under the same leaf budget (e.g. trade
+        a redundant tau-group for a lambda split of the photospheric group).
+    Each candidate is cheaply pre-filtered by refining only its new cut (`_refine_node`, plus the
+    shared lambda cut for transplants); only promising ones get a full `_block_fixed_point_tree`
+    polish. First-improvement greedy, restart after each adoption; bounded by `budget`; never
+    increases the cost.
     """
     positions = (0.35, 0.5, 0.65)
     state = {"tree": copy.deepcopy(tree), "c": cost_tree(tree)}
 
-    def adopt_if_better(cand, new_path):
-        # Cheap pre-filter: refine ONLY the newly added cut against the running best.
+    def adopt_if_better(cand, new_path, joint_paths=()):
+        # Cheap pre-filter: refine ONLY the newly added cut (plus joint cuts such as a
+        # transplant's shared lambda cut) against the running best.
         cand, c = _refine_node(
             cand,
             new_path,
@@ -864,6 +960,19 @@ def _topology_search(tree, cost_tree, *, cfg, budget, max_groups, min_gap_tau, m
             min_gap_lam=min_gap_lam,
             best=state["c"],
         )
+        for jp in joint_paths:
+            if budget.exhausted():
+                break
+            cand, c = _refine_node(
+                cand,
+                jp,
+                cost_tree,
+                cfg=cfg,
+                budget=budget,
+                min_gap_tau=min_gap_tau,
+                min_gap_lam=min_gap_lam,
+                best=c,
+            )
         if c >= state["c"] - 1e-9 or budget.exhausted():
             return False
         # Promising -> full position polish, then adopt if it still wins.
@@ -908,8 +1017,22 @@ def _topology_search(tree, cost_tree, *, cfg, budget, max_groups, min_gap_tau, m
         if _n_leaves(state["tree"]) < max_groups and try_splits(state["tree"]):
             improved = True
             continue
-        # REALLOC: remove each redundant cut, then re-split (often on the other axis).
-        for rmpath, _rr in list(_iter_removable_with_path(state["tree"]["root"], _root_rect(state["tree"]))):
+        # TRANSPLANT (move tau depth across a shared lambda cut, L jointly polished).
+        if _try_transplant(
+            state["tree"],
+            cost_tree=cost_tree,
+            cfg=cfg,
+            budget=budget,
+            max_groups=max_groups,
+            min_gap_tau=min_gap_tau,
+            min_gap_lam=min_gap_lam,
+            positions=positions,
+            adopt=adopt_if_better,
+        ):
+            improved = True
+            continue
+        # REALLOC: remove each collapsible cut (nested collapses free >1 slot), then re-split.
+        for rmpath, _rr, _freed in list(_iter_removable_with_path(state["tree"]["root"], _root_rect(state["tree"]))):
             if budget.exhausted():
                 break
             if _node_at_path(state["tree"]["root"], rmpath).get("sync"):
@@ -917,7 +1040,7 @@ def _topology_search(tree, cost_tree, *, cfg, budget, max_groups, min_gap_tau, m
             if _node_at_path(state["tree"]["root"], rmpath).get("frozen"):
                 continue  # staged seed cut: never remove the fixed skeleton
             base = copy.deepcopy(state["tree"])
-            _remove_node_at_path(base["root"], rmpath)  # merge two leaves -> frees one leaf slot
+            _remove_node_at_path(base["root"], rmpath)  # collapse the subtree -> free its leaf slots
             if try_splits(base):
                 improved = True
                 break

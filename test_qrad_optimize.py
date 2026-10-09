@@ -1226,5 +1226,187 @@ class TestSaveLoadTree(unittest.TestCase):
             self.assertNotIn("staged-lambda", tags)
 
 
+class TestTopologyTransplant(unittest.TestCase):
+    """Data-free tests for the cross-column depth transplant (+ nested-removal support, no ODF)."""
+
+    @staticmethod
+    def _symmetric_seed(lam_at=1.0):
+        # Loser-like staging: a shared lam cut with one tau cut per column (4 leaves).
+        return {
+            "window_tau": [0.0, 4.0],
+            "window_lam": [0.0, 4.0],
+            "root": {
+                "axis": "lam",
+                "at": float(lam_at),
+                "lo": {"axis": "tau", "at": 1.0, "lo": {"leaf": True}, "hi": {"leaf": True}},
+                "hi": {"axis": "tau", "at": 3.0, "lo": {"leaf": True}, "hi": {"leaf": True}},
+            },
+        }
+
+    @staticmethod
+    def _tau_cuts(node):
+        out = []
+
+        def walk(n):
+            if n.get("leaf") or "axis" not in n:
+                return
+            if n["axis"] == "tau":
+                out.append(float(n["at"]))
+            walk(n["lo"])
+            walk(n["hi"])
+
+        walk(node)
+        return sorted(out)
+
+    @staticmethod
+    def _budget():
+        return qo._Budget(max_evals=10**9, max_seconds=1e12, state={"n_evals": 0}, t0=0.0)
+
+    def _transplant_kwargs(self, cost, **over):
+        kw = dict(
+            cost_tree=cost,
+            cfg=None,
+            budget=self._budget(),
+            max_groups=4,
+            min_gap_tau=qo.MIN_GAP_TAU,
+            min_gap_lam=qo.MIN_GAP_LAM,
+            positions=(0.35, 0.5, 0.65),
+        )
+        kw.update(over)
+        return kw
+
+    def test_transplant_moves_depth_across_columns(self):
+        # Mechanism: the first candidate collapses lo's tau cut and cuts hi's wide leaf at the
+        # 0.35 fraction (1.05); the bowl minimum sits exactly at the resulting nested shape
+        # (hi keeps its tau@3.0 cut, the new tau@1.05 cut nests inside), so it is adopted at once.
+        seed = self._symmetric_seed(lam_at=3.0)
+        BASE = 1e8
+        target = np.asarray([1.05, 3.0])
+
+        def cost(tree):
+            got = np.asarray(self._tau_cuts(tree["root"]), float)
+            return BASE + 1e7 * float(np.sum((got - target[: len(got)]) ** 2))
+
+        calls = []
+        best = [cost(seed)]
+
+        def adopt(cand, new_path, joint_paths):
+            c = cost(cand)
+            calls.append((qo._tree_signature(cand), tuple(new_path), tuple(joint_paths), c))
+            if c < best[0] - 1e-9:
+                best[0] = c
+                return True
+            return False
+
+        won = qo._try_transplant(seed, adopt=adopt, **self._transplant_kwargs(cost))
+        self.assertTrue(won)
+        self.assertTrue(calls)
+        sig, new_path, joint, _c = calls[0]
+        self.assertEqual(new_path, ("hi", "lo"))  # tau cut transplanted lo -> hi column
+        self.assertEqual(joint, ((),))  # shared lam cut jointly polished
+        expected = self._symmetric_seed(lam_at=3.0)
+        expected["root"]["lo"] = {"leaf": True}
+        expected["root"]["hi"]["lo"] = {"axis": "tau", "at": 1.05, "lo": {"leaf": True}, "hi": {"leaf": True}}
+        self.assertEqual(sig, qo._tree_signature(expected))
+        self.assertEqual(len(sig), 4)  # collapse freed 1 slot, the re-cut spent it
+
+    def test_transplant_needs_joint_lambda_move(self):
+        # End-to-end: the bowl's lam optimum is conditional on the shape (1.0 for the symmetric
+        # seed, 1.35 once transplanted), so the transplanted shape at the OLD lam position costs
+        # MORE than the seed -- only the transplant's joint lam polish crosses the gap.
+        seed = self._symmetric_seed(lam_at=1.0)
+        BASE = 1e8
+
+        def score(tau, lam, flags, model, *, binning_tree=None, window=None):
+            t = binning_tree
+            n = sum(1 for _ in qo._leaf_rects(t["root"], qo._root_rect(t)))
+            root = t["root"]
+            cuts = self._tau_cuts(root["hi"]) if root.get("axis") == "lam" and not qo._is_leaf(root["hi"]) else []
+            if root.get("axis") == "lam" and qo._is_leaf(root["lo"]) and cuts:
+                L = float(root["at"])
+                rms = BASE + 1e7 * ((L - 1.35) ** 2 + (cuts[0] - 1.05) ** 2)
+            else:
+                L = float(root["at"]) if root.get("axis") == "lam" else 1.0
+                rms = BASE + 1e7 * ((L - 1.0) ** 2 + 0.1)
+            return {"rms": rms, "max_abs": 2 * rms, "int_q_pct": 0.0, "n_empty": 0, "n_groups": n}
+
+        res = qo.optimize_qrad(
+            [0.0, 4.0],
+            [0.0, 4.0],
+            flags=[True],
+            binning_tree=seed,
+            grow=True,
+            beam_width=2,  # topology search runs (it is skipped for greedy beam_width == 1)
+            max_groups=4,  # cap saturated: SPLIT disabled, only depth moves can win
+            score_fn=score,
+            max_evals=5000,
+        )
+        self.assertLess(res["rms"], res["rms0"])  # never-worsens, and the basin was reached
+        root = res["binning_tree"]["root"]
+        self.assertEqual(root["axis"], "lam")
+        self.assertTrue(qo._is_leaf(root["lo"]))  # donor column collapsed to a leaf
+        self.assertEqual(root["hi"]["axis"], "tau")  # donee column holds the tau stack
+        self.assertAlmostEqual(float(root["at"]), 1.35, delta=0.06)
+        self.assertAlmostEqual(float(root["hi"]["lo"]["at"]), 1.05, delta=0.06)
+        self.assertEqual(res["n_leaves"], 4)
+        self.assertTrue(qo._tree_feasible(res["binning_tree"], qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
+
+    def test_nested_removal_skips_guarded(self):
+        seed = self._symmetric_seed()
+        plain = list(qo._iter_removable_with_path(seed["root"], qo._root_rect(seed)))
+        self.assertEqual([f for _, _, f in plain], [1, 1, 3])  # two-leaf fast path first, root collapse last
+        seed["root"]["lo"]["frozen"] = True  # lo column skeleton fixed
+        got = list(qo._iter_removable_with_path(seed["root"], qo._root_rect(seed)))
+        self.assertEqual([(p, f) for p, _, f in got], [(("hi",), 1)])  # root covers frozen: excluded too
+        for path, _rect, freed in got:
+            node = qo._node_at_path(seed["root"], path)
+            self.assertEqual(qo._count_leaves(node) - 1, freed)
+        both = self._symmetric_seed()
+        both["root"]["lo"]["sync"] = "s"
+        both["root"]["hi"]["sync"] = "s"
+        self.assertEqual(list(qo._iter_removable_with_path(both["root"], qo._root_rect(both))), [])
+
+    def test_transplant_respects_guards_and_cap(self):
+        def never(cand, new_path, joint_paths):
+            self.fail(f"adopt called for a guarded/capped tree: {new_path}")
+
+        frozen = self._symmetric_seed()
+        frozen["root"]["lo"]["frozen"] = True
+        frozen["root"]["hi"]["frozen"] = True
+        self.assertFalse(qo._try_transplant(frozen, adopt=never, **self._transplant_kwargs(lambda t: 1.0)))
+        synced = self._symmetric_seed()
+        synced["root"]["lo"]["sync"] = "s"
+        synced["root"]["hi"]["sync"] = "s"
+        self.assertFalse(qo._try_transplant(synced, adopt=never, **self._transplant_kwargs(lambda t: 1.0)))
+        capped = self._symmetric_seed()
+        self.assertFalse(  # 4 leaves, collapse frees 1, re-cut spends 1 -> 4 > 3: no room
+            qo._try_transplant(capped, adopt=never, **self._transplant_kwargs(lambda t: 1.0, max_groups=3))
+        )
+
+    def test_transplant_keeps_frozen_lambda_fixed(self):
+        # A frozen shared lam cut is jointly "polished" (a no-op) but never moved.
+        seed = self._symmetric_seed(lam_at=3.0)
+        seed["root"]["frozen"] = True
+        BASE = 1e8
+
+        def cost(tree):
+            if qo._is_leaf(tree["root"]["lo"]) and not qo._is_leaf(tree["root"]["hi"]):
+                t = float(tree["root"]["hi"]["lo"]["at"])
+                return BASE + 1e7 * (t - 1.05) ** 2
+            return BASE + 1e7 * 5.0
+
+        best = [cost(seed)]
+
+        def adopt(cand, new_path, joint_paths):
+            c = cost(cand)
+            if c < best[0] - 1e-9:
+                best[0] = c
+                return True
+            return False
+
+        self.assertTrue(qo._try_transplant(seed, adopt=adopt, **self._transplant_kwargs(cost)))
+        self.assertEqual(float(seed["root"]["at"]), 3.0)  # input untouched (candidates are copies)
+
+
 if __name__ == "__main__":
     unittest.main()
