@@ -89,30 +89,38 @@ class Solver:
 
         dtau = self.tau[:, 1:] - self.tau[:, :-1]
 
-        for idm, mu in enumerate(self.mus):
-            # set up boundary conditions
-            if mu > 0:  # outward
-                I[:, -1, idm] = self.S[:, -1]  # S in optically thick region, TODO: anything better?
-            elif mu < 0:  # inward
-                I[:, 0, idm] = 0  # nothing comes in from outside
-
-            # calc dtau and lin interp coeffs
-            delta = dtau / np.abs(mu)
+        # Batched by ray direction: all mu > 0 (outward) share one ascending pass,
+        # all mu < 0 (inward) one descending pass. Per-(lam, mu) flops run in the
+        # same order as the old per-mu loop, so results are bit-identical; the
+        # z-loop runs twice instead of 2*nmu times with 4x wider inner ops.
+        mus = np.asarray(self.mus)
+        for sign, loc in ((1.0, -1), (-1.0, 0)):
+            sel = np.flatnonzero(mus * sign > 0.0)
+            if sel.size == 0:
+                continue
+            if sign > 0.0:  # outward: S in the optically thick region
+                I[:, loc, sel] = self.S[:, loc][:, np.newaxis]
+            else:  # inward: nothing comes in from outside
+                I[:, loc, sel] = 0.0
+            amu = np.abs(mus[sel])[np.newaxis, :]  # [1, n_sel]
+            # delta/[Ac, Bc] per (lam, mu): [Nlam, nz-1, n_sel].
+            delta = dtau[:, :, np.newaxis] / amu[:, np.newaxis, :]
             Ac, Bc = calc_coeff(delta)
-
-            # calc Iwmu
-            for i in range(nz - 1):
-                if mu > 0:
-                    i_up = -i - 1
-                    i_loc = -i - 2
-                elif mu < 0:
-                    i_up = i
-                    i_loc = i + 1
-                I[:, i_loc, idm] = (
-                    I[:, i_up, idm] * np.exp(-delta[:, i_up])
-                    + Ac[:, i_up] * self.S[:, i_loc]
-                    + Bc[:, i_up] * self.S[:, i_up]
-                )
+            E = np.exp(-delta)
+            S = self.S[:, :, np.newaxis]
+            if sign > 0.0:  # outward: sweep from the bottom up
+                for i in range(nz - 1):
+                    i_up, i_loc = -i - 1, -i - 2
+                    I[:, i_loc, sel] = (
+                        I[:, i_up, sel] * E[:, i_up, :]
+                        + Ac[:, i_up, :] * S[:, i_loc, :]
+                        + Bc[:, i_up, :] * S[:, i_up, :]
+                    )
+            else:  # inward: sweep from the top down
+                for i in range(nz - 1):
+                    I[:, i + 1, sel] = (
+                        I[:, i, sel] * E[:, i, :] + Ac[:, i, :] * S[:, i + 1, :] + Bc[:, i, :] * S[:, i, :]
+                    )
 
         self.intensity = I
 

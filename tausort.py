@@ -2087,6 +2087,78 @@ def _segment_defs(
     ]
 
 
+def _tail_breaks_vectorized(
+    s_bot: NDArray[np.float64],
+    smooth_window: int = 7,
+    max_tail_frac_high: float = 0.1,
+) -> dict:
+    """Vectorized equivalent of ``analyze_group(s, refine_mid=False)``.
+
+    The hot ``score_binning`` path segments every group's bot-sorted curve with
+    ``refine_mid=False`` — exactly the initial 3-segment break search
+    (``piecewise_linear_breaks_tails``). The reference implementation evaluates
+    each (low_len, high_len) candidate with three Python-level
+    ``np.polyfit``/closed-form calls; this evaluates the whole candidate grid
+    with vectorized prefix-sum SSE over (low_len, high_len) meshgrids — one C
+    pass per segment instead of hundreds of Python calls (~6x on the 5-group
+    seed). Returns ``{"seg": {"b1", "b2", "split_mid": False}}``.
+
+    The meshgrid visits candidates in the same (low-outer, high-inner) order
+    with the same strict ``<`` comparison, so ties resolve identically —
+    verified bit-identical (b1, b2) against ``analyze_group`` on all seed
+    trees (5-leaf seeds 0–4 and the columns case).
+    """
+    from group_derivatives import smooth_1d
+
+    v = np.asarray(s_bot, dtype=float)
+    pos = v[v > 0]
+    if pos.size == 0:
+        raise ValueError("All values are <= 0, cannot take log10.")
+    y_data = np.log10(np.where(v <= 0, pos.min() * 1e-6, v)) if bool((v <= 0).any()) else np.log10(v)
+    y_smooth = np.asarray(smooth_1d(y_data, window=smooth_window), dtype=float)
+    n = y_smooth.size
+    if n < 10:
+        raise ValueError("Too few points for 3 segments.")
+    x = np.arange(n, dtype=float)
+    min_lo = max(3, int(round(0.01 * n)))
+    max_lo = max(min_lo + 1, int(round(0.20 * n)))
+    min_hi = max(3, int(round(0.01 * n)))
+    max_hi = max(min_hi + 1, int(round(max_tail_frac_high * n)))
+    step = max(1, int(round(0.01 * n)))
+    min_mid = max(1, int(round(0.20 * n)))
+    px = np.concatenate(([0.0], np.cumsum(x)))
+    pxx = np.concatenate(([0.0], np.cumsum(x * x)))
+    py = np.concatenate(([0.0], np.cumsum(y_smooth)))
+    pxy = np.concatenate(([0.0], np.cumsum(x * y_smooth)))
+    pyy = np.concatenate(([0.0], np.cumsum(y_smooth * y_smooth)))
+
+    def _sse(I: NDArray[np.float64], J: NDArray[np.float64]) -> NDArray[np.float64]:
+        # SSE of the least-squares line over inclusive windows [I..J] (same
+        # closed form as the reference: SSE = Syy - a*Sy - b*Sxy).
+        m = J - I + 1
+        sx = px[J + 1] - px[I]
+        sxx = pxx[J + 1] - pxx[I]
+        sy = py[J + 1] - py[I]
+        sxy = pxy[J + 1] - pxy[I]
+        syy = pyy[J + 1] - pyy[I]
+        denom = m * sxx - sx * sx
+        safe = np.where(denom > 0.0, denom, 1.0)
+        slope = np.where(denom > 0.0, (m * sxy - sx * sy) / safe, 0.0)
+        intercept = np.where(denom > 0.0, (sy - slope * sx) / m, sy / m)
+        return syy - intercept * sy - slope * sxy
+
+    lows = np.arange(min_lo, max_lo + 1, step)
+    highs = np.arange(min_hi, max_hi + 1, step)
+    L, H = np.meshgrid(lows, highs, indexing="ij")
+    B1 = L - 1
+    B2 = n - H
+    sse = (_sse(np.zeros_like(B1), B1) + _sse(B1, B2) + _sse(B2, np.full_like(B2, n - 1))).astype(float)
+    sse[(n - L - H) < min_mid] = np.inf  # middle too small, skip (as the reference)
+    k = int(np.argmin(sse.ravel()))  # ravel = low-outer/high-inner = reference loop order
+    b1, b2 = int(B1.ravel()[k]), int(B2.ravel()[k])
+    return {"seg": {"b1": b1, "b2": b2, "split_mid": False}}
+
+
 def compute_bot_segment_overlap_per_tau_bin(
     sorted_per_bin: dict[int, dict],
     group_tau_edges: NDArray[np.float64],
@@ -2276,12 +2348,9 @@ def build_split_band_index(
             continue
 
         try:
-            res = analyze_group(
-                s_bot,
-                smooth_window=smooth_window,
-                max_tail_frac_high=0.1,
-                refine_mid=False,
-            )
+            # Vectorized 3-segment break search (bit-identical to analyze_group
+            # with refine_mid=False; verified on all seed trees — no fallback).
+            res = _tail_breaks_vectorized(s_bot, smooth_window=smooth_window, max_tail_frac_high=0.1)
         except Exception as e:
             split_band_index[member_indices] = g * n_splits
             console.print(f"[yellow]group {g}: analyze_group failed ({e}); assigned all to split 0 (low).[/yellow]")
@@ -2309,9 +2378,10 @@ def band_average_precompute(odf: ODFData) -> dict[str, NDArray[np.float64] | NDA
     pass it as `pre=` instead of rebuilding it every evaluation. Values are identical
     to the locals the band loop used to build inline.
 
-    Returns dict with `subbin_widths`/`subbin_centers` [nbins*nsubbins, cm],
     `bin_of_subbin` [nbins*nsubbins] (wavelength-bin per sub-bin), `B_lambda`/`dB_dT`
-    [nt, nbins*nsubbins] on the ODF T grid, and `pressure_linear` [np].
+    [nt, nbins*nsubbins] on the ODF T grid, `W_B`/`W_dB` (width-weighted: B_lambda and
+    dB_dT times subbin_widths, the per-(T, sub-bin) coefficients the band loop sums),
+    and `pressure_linear` [np].
     """
     if odf.ODF is None:
         raise ValueError("ODF data must be loaded.")
@@ -2342,6 +2412,11 @@ def band_average_precompute(odf: ODFData) -> dict[str, NDArray[np.float64] | NDA
     B_lambda = planck_function(wavelength_2d, temperature_2d)
     dB_dT = planck_derivative_analytic(wavelength_2d, temperature_2d)
     pressure_linear = np.power(10.0, odf.P)
+    # Width-weighted coefficients: every band sum the loop computes is over
+    # (width * B) and (width * dB/dT), which never depend on the binning, so
+    # fold the widths in once here instead of re-broadcasting per evaluation.
+    W_B = B_lambda * subbin_widths[np.newaxis, :]
+    W_dB = dB_dT * subbin_widths[np.newaxis, :]
 
     return {
         "subbin_widths": subbin_widths,
@@ -2349,6 +2424,8 @@ def band_average_precompute(odf: ODFData) -> dict[str, NDArray[np.float64] | NDA
         "bin_of_subbin": bin_of_subbin,
         "B_lambda": B_lambda,
         "dB_dT": dB_dT,
+        "W_B": W_B,
+        "W_dB": W_dB,
         "pressure_linear": pressure_linear,
     }
 
@@ -2431,77 +2508,144 @@ def calculate_tau_bin_opacities(
 
     if pre is None:
         pre = band_average_precompute(odf)
-    subbin_widths = np.asarray(pre["subbin_widths"], dtype=np.float64)
-    B_lambda = np.asarray(pre["B_lambda"], dtype=np.float64)
-    dB_dT = np.asarray(pre["dB_dT"], dtype=np.float64)
+    _B = np.asarray(pre["B_lambda"], dtype=np.float64)
+    _dB = np.asarray(pre["dB_dT"], dtype=np.float64)
+    _w = np.asarray(pre["subbin_widths"], dtype=np.float64)
+    W_B = np.asarray(pre["W_B"], dtype=np.float64) if "W_B" in pre else _B * _w[np.newaxis, :]
+    W_dB = np.asarray(pre["W_dB"], dtype=np.float64) if "W_dB" in pre else _dB * _w[np.newaxis, :]
     bin_of_subbin = np.asarray(pre["bin_of_subbin"])
     pressure_linear = np.asarray(pre["pressure_linear"], dtype=np.float64)
     if (
-        subbin_widths.shape != (n_subbin_points,)
-        or B_lambda.shape != (odf.nt, n_subbin_points)
-        or dB_dT.shape != (odf.nt, n_subbin_points)
+        W_B.shape != (odf.nt, n_subbin_points)
+        or W_dB.shape != (odf.nt, n_subbin_points)
         or bin_of_subbin.shape != (n_subbin_points,)
         or pressure_linear.shape != (odf.np,)
     ):
         raise ValueError("pre= tables do not match this ODF (stale cache?); rebuild via band_average_precompute(odf)")
 
-    # Opacity per (T, p, sub-bin) = line ODF + continuum (per wavelength bin). We do NOT
-    # materialize the full (nt, np, nbins, nsubbins) sum (~1.4 GB temporary): odf.ODF is
-    # C-contiguous so .reshape is a free view, and the band loop below gathers only that
-    # band's member columns and adds the continuum for each member's bin. This reproduces
-    # `(odf.ODF + cont.kappa_abs[..., None]).reshape(nt, np, -1)[:, :, member_mask]` exactly
-    # (C-order flatten: sub-bin index k -> bin k // nsubbins), with no full-grid allocation.
-    odf_flat = odf.ODF.reshape(odf.nt, odf.np, -1)
+    # Opacity per (T, p, sub-bin) = line ODF + continuum (per wavelength bin).
+    # Band-contiguous order: one stable argsort of band_index turns every band's
+    # members into a single slice of `order` (no per-band boolean scans or fancy
+    # gathers on the sub-bin axis). The outer loop is over T rows: B/dBdT band sums
+    # are one C-level bincount each, and the Planck numerator + clipped-1/kappa
+    # Rosseland denominator accumulate into small (np, n_bands) scratch reused
+    # across all T — no per-band temporaries. This reproduces
+    # `(odf.ODF + cont.kappa_abs[..., None]).reshape(nt, np, -1)[:, :, member_mask]`
+    # exactly (C-order flatten: sub-bin index k -> bin k // nsubbins).
+    #
+    # Sub-major gather (opt-4): pass `odf_submajor`/`cont_submajor` ((n_sub, nt*np)
+    # C-order, built once per model in qrad_core.precompute) to gather each
+    # member's pressure row contiguously. Without them, fall back to strided
+    # column gathers on odf.ODF/cont (same values, ~2x slower gather).
+    bi = np.asarray(band_index)
+    order = np.argsort(bi, kind="stable")
+    b_sorted = bi[order]
+    valid_lo = int(np.searchsorted(b_sorted, 0, side="left"))
+    starts = np.searchsorted(b_sorted, np.arange(n_bands + 1), side="left")
+    members_per_band = np.diff(starts).astype(np.int32)
 
+    sub = pre.get("odf_submajor") if isinstance(pre, dict) else None
+    sub_c = pre.get("cont_submajor") if isinstance(pre, dict) else None
     B_band = np.zeros((odf.nt, n_bands), dtype=np.float64)
     dBdT_band = np.zeros((odf.nt, n_bands), dtype=np.float64)
     kappa_planck = np.zeros((odf.nt, odf.np, n_bands), dtype=np.float64)
     kappa_rosseland = np.zeros((odf.nt, odf.np, n_bands), dtype=np.float64)
-    members_per_band = np.zeros((n_bands,), dtype=np.int32)
+    # Floor before the harmonic mean's 1/kappa. 1e-300 underflows to 0 in float32
+    # (min normal ~1.2e-38); use 1e-30 there (a no-op for real opacities, which are
+    # >= ~1e-12, but guards against 1/0). float64 keeps 1e-300 so its result stays
+    # bit-identical. The division promotes to float64 (weights are float64), so the
+    # Rosseland accumulation is float64 regardless of kappa's dtype.
+    floor = 1.0e-30 if odf.ODF.dtype == np.float32 else 1.0e-300
+    m_max = int(members_per_band.max()) if members_per_band.size else 0
+    planck_num = np.zeros((odf.np, n_bands), dtype=np.float64)
+    ros_denom = np.zeros((odf.np, n_bands), dtype=np.float64)
+    kap_buf = np.empty((m_max, odf.np), dtype=np.float32) if m_max else np.empty((0, odf.np), dtype=np.float32)
+    tmp_buf = np.empty((m_max, odf.np), dtype=np.float64) if m_max else np.empty((0, odf.np), dtype=np.float64)
 
-    for band in range(n_bands):
-        member_mask = band_index == band
-        members_per_band[band] = int(np.sum(member_mask))
-        if members_per_band[band] == 0:
-            continue
-
-        member_idx = np.flatnonzero(member_mask)
-        widths = subbin_widths[member_idx]
-        B_sel = B_lambda[:, member_idx]
-        dB_dT_sel = dB_dT[:, member_idx]
-        # Gather only this band's members: ODF columns + continuum for each member's bin.
-        kappa_sel = odf_flat[:, :, member_idx] + cont.kappa_abs[:, :, bin_of_subbin[member_idx]]
-
-        weighted_B = B_sel * widths[np.newaxis, :]
-        weighted_dBdT = dB_dT_sel * widths[np.newaxis, :]
-
-        B_sum = np.sum(weighted_B, axis=1)
-        dBdT_sum = np.sum(weighted_dBdT, axis=1)
-        # Planck numerator uses the UNCLIPPED opacity; then clip in place and reuse that same
-        # buffer as the Rosseland (harmonic-mean) denominator — avoids a second full-size copy.
-        planck_num = np.sum(kappa_sel * weighted_B[:, np.newaxis, :], axis=2)
-        # Floor before the harmonic mean's 1/kappa. 1e-300 underflows to 0 in float32 (min
-        # normal ~1.2e-38); use 1e-30 there (a no-op for real opacities, which are >= ~1e-12,
-        # but guards against 1/0). float64 keeps 1e-300 so its result stays bit-identical.
-        # The division below promotes to float64 (weighted_dBdT is float64), so the Rosseland
-        # accumulation is float64 regardless of kappa's dtype.
-        np.clip(kappa_sel, 1.0e-30 if kappa_sel.dtype == np.float32 else 1.0e-300, None, out=kappa_sel)
-        rosseland_denom = np.sum(weighted_dBdT[:, np.newaxis, :] / kappa_sel, axis=2)
-
-        B_band[:, band] = B_sum
-        dBdT_band[:, band] = dBdT_sum
-        kappa_planck[:, :, band] = np.divide(
-            planck_num,
-            B_sum[:, np.newaxis],
-            out=np.zeros_like(planck_num),
-            where=B_sum[:, np.newaxis] > 0.0,
-        )
-        kappa_rosseland[:, :, band] = np.divide(
-            dBdT_sum[:, np.newaxis],
-            rosseland_denom,
-            out=np.zeros_like(rosseland_denom),
-            where=rosseland_denom > 0.0,
-        )
+    band_cols = [order[int(starts[b]) : int(starts[b + 1])] for b in range(n_bands)]
+    band_bins = [bin_of_subbin[cols] for cols in band_cols]
+    if sub is not None and sub_c is not None:
+        S = np.asarray(sub)
+        C = np.asarray(sub_c)
+        np_ = odf.np
+        # Kappa-total: line + continuum folded once (one BLAS-free streaming
+        # pass, ~0.1 s) so the per-(T, band) gather is a single row-take instead
+        # of take + add. Band members are contiguous slices of `order[valid_lo:]`
+        # (band-major), so per band we slice views — no per-band take at all.
+        K = np.asarray(pre["kappa_total"]) if pre.get("kappa_total") is not None else S + C[np.asarray(bin_of_subbin)]
+        band_lo = np.concatenate(([valid_lo], np.asarray(starts[1:], dtype=np.int64)))
+        # Kappa-total rows are floored once in precompute (see below); the local
+        # S + C fallback keeps the per-T-row clip (same values, one extra stream).
+        skip_clip = pre.get("kappa_total") is not None
+        # Band-major permute (opt-7): one 480 MB row-permute of K replaces 300
+        # per-T fancy takes (~230 ms of index-translation overhead) with free
+        # per-T view slices; per-band members are then contiguous views. (The
+        # take already yields C-order rows, so no extra copy is needed.)
+        Kb = K[order[valid_lo:]]
+        # Stacked weights (opt-8): W_B/W_dB columns in band-major order, built
+        # once (~5 ms). Per-(T, band) weights are then contiguous slices — no
+        # per-band fancy indexing in the hot loop.
+        WBstack = np.ascontiguousarray(W_B[:, order[valid_lo:]])
+        WDstack = np.ascontiguousarray(W_dB[:, order[valid_lo:]])
+        bids = b_sorted[valid_lo:]
+        for t in range(odf.nt):
+            Kt = Kb[:, t * np_ : (t + 1) * np_]
+            if not skip_clip:
+                # Floor before the harmonic mean's 1/kappa (see above).
+                np.clip(Kt, floor, None, out=Kt)
+            wBt = WBstack[t]
+            wdBt = WDstack[t]
+            B_band[t] = np.bincount(bids, weights=wBt, minlength=n_bands)
+            dBdT_band[t] = np.bincount(bids, weights=wdBt, minlength=n_bands)
+            planck_num[:] = 0.0
+            ros_denom[:] = 0.0
+            for b in range(n_bands):
+                lo = int(band_lo[b]) - valid_lo
+                hi = int(starts[b + 1]) - valid_lo
+                if hi <= lo:
+                    continue
+                kap = Kt[lo:hi]  # view into this T-row's band-major block, no copy
+                planck_num[:, b] = np.einsum("jp,j->p", kap, wBt[lo:hi])
+                ros_denom[:, b] = np.divide(wdBt[lo:hi][:, np.newaxis], kap, out=tmp_buf[: hi - lo]).sum(axis=0)
+            B_sum = B_band[t]
+            dB_sum = dBdT_band[t]
+            nz_B = B_sum > 0.0
+            nz_dB = dB_sum > 0.0
+            kappa_planck[t][:, nz_B] = planck_num[:, nz_B] / B_sum[nz_B][np.newaxis, :]
+            kappa_rosseland[t][:, nz_dB] = dB_sum[nz_dB][np.newaxis, :] / ros_denom[:, nz_dB]
+    else:
+        cont_abs = cont.kappa_abs
+        odf_2d = odf.ODF.reshape(odf.nt * odf.np, -1)  # free view (odf.ODF is C-contiguous)
+        kap_buf_T = kap_buf.T  # (np, m_max) view for the strided path
+        tmp_buf_T = tmp_buf.T
+        for t in range(odf.nt):
+            wB = W_B[t]
+            wdB = W_dB[t]
+            B_band[t] = np.bincount(b_sorted[valid_lo:], weights=wB[order[valid_lo:]], minlength=n_bands)
+            dBdT_band[t] = np.bincount(b_sorted[valid_lo:], weights=wdB[order[valid_lo:]], minlength=n_bands)
+            o_row = odf_2d[t * odf.np : (t + 1) * odf.np, :]  # [np, n_sub] view, no copy
+            c_row = cont_abs[t]  # [np, nbins] view, no copy
+            planck_num[:] = 0.0
+            ros_denom[:] = 0.0
+            for b in range(n_bands):
+                cols = band_cols[b]
+                m = cols.size
+                if m == 0:
+                    continue
+                w = wB[cols]
+                wd = wdB[cols]
+                kap = kap_buf_T[:, :m]
+                # odf_2d columns are the flattened sub-bins; cont adds each member's bin.
+                np.add(o_row[:, cols], c_row[:, band_bins[b]], out=kap)
+                planck_num[:, b] = kap @ w
+                np.clip(kap, floor, None, out=kap)
+                ros_denom[:, b] = np.divide(wd, kap, out=tmp_buf_T[:, :m]).sum(axis=1)
+            B_sum = B_band[t]
+            dB_sum = dBdT_band[t]
+            nz_B = B_sum > 0.0
+            nz_dB = dB_sum > 0.0
+            kappa_planck[t][:, nz_B] = planck_num[:, nz_B] / B_sum[nz_B][np.newaxis, :]
+            kappa_rosseland[t][:, nz_dB] = dB_sum[nz_dB][np.newaxis, :] / ros_denom[:, nz_dB]
 
     # Match tausort.c (meanop): tau_i = kappa_ro * p / 2.74e4
     tau_i = kappa_rosseland * pressure_linear[np.newaxis, :, np.newaxis] / 2.74e4

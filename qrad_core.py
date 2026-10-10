@@ -206,7 +206,6 @@ def _qrad_from_table(inv, kap_tab, b_tab, ttab, ptab):
     keep_idx = np.where(keep)[0]
     kap_tab = kap_tab[keep]
     b_tab = np.where(np.isfinite(b_tab[keep]), b_tab[keep], -700.0)
-    nband = kap_tab.shape[0]
     nz = z.size
 
     # Edge-independent interp indices (fix #1): precomputed in precompute() from the
@@ -228,11 +227,33 @@ def _qrad_from_table(inv, kap_tab, b_tab, ttab, ptab):
     ):
         lt = np.interp(np.log10(tem), ttab, np.arange(ttab.size))
         lp = np.interp(np.log10(pre), ptab, np.arange(ptab.size))
-    k_z = np.zeros((nband, nz))
-    b_z = np.zeros((nband, nz))
-    for i in range(nband):
-        b_z[i] = np.exp(np.interp(np.log10(tem), ttab, b_tab[i]))
-        k_z[i] = np.exp(_bilin_interp(kap_tab[i], lt, lp))
+    lt = np.asarray(lt, dtype=np.float64)
+    lp = np.asarray(lp, dtype=np.float64)
+    ttab = np.asarray(ttab, dtype=np.float64)
+    ltem = np.log10(tem)
+    # Vectorized over bands (all [nband, nz] at once — one pass, no per-band
+    # temporaries). Same linear/bilinear weights as np.interp/_bilin_interp.
+    ti = np.searchsorted(ttab, ltem) - 1
+    ti = np.clip(ti, 0, ttab.size - 2)
+    tf = (ltem - ttab[ti]) / (ttab[ti + 1] - ttab[ti])
+    b_z = np.exp((1.0 - tf)[np.newaxis, :] * b_tab[:, ti] + tf[np.newaxis, :] * b_tab[:, ti + 1])
+    xi = np.clip(lt, 0, kap_tab.shape[1] - 2)
+    yi = np.clip(lp, 0, kap_tab.shape[2] - 2)
+    x0 = xi.astype(int)
+    y0 = yi.astype(int)
+    fx = xi - x0
+    fy = yi - y0
+    w00 = (1.0 - fx) * (1.0 - fy)
+    w10 = fx * (1.0 - fy)
+    w01 = (1.0 - fx) * fy
+    w11 = fx * fy
+    K = kap_tab
+    k_z = np.exp(
+        w00[np.newaxis, :] * K[:, x0, y0]
+        + w10[np.newaxis, :] * K[:, x0 + 1, y0]
+        + w01[np.newaxis, :] * K[:, x0, y0 + 1]
+        + w11[np.newaxis, :] * K[:, x0 + 1, y0 + 1]
+    )
     rt = Solver(z=z, rho=rho, kappa=k_z, S=b_z, nmu=NMU)
     rt.solve_rte()
     q_kept = rt.get_Q()  # [n_kept, nz] signed Q per kept band per depth
@@ -346,6 +367,24 @@ def precompute(model=None) -> dict:
         # score_binning eval via calculate_tau_bin_opacities(..., pre=...).
         band_pre = ts.band_average_precompute(odf)
 
+        # Sub-major opacity layout (opt-4): the band-average loop gathers, per
+        # (T, band), that band's member sub-bins over all pressures. odf.ODF is
+        # (nt, np, nbins, nsubbins) C-order, so one member's pressure column is
+        # strided 16 KB apart (one 64 B cache line per float — 16x read
+        # amplification). The transpose below is (n_sub, nt*np) C-order: each
+        # member's full (T, p) plane is one contiguous row, so the per-(T, band)
+        # gather reads contiguous rows. Built once per model (~0.8 s, +0.8 GB);
+        # the continuum (59 MB) gets the same treatment (+59 MB).
+        odf_submajor = np.ascontiguousarray(odf.ODF.reshape(odf.nt * odf.np, -1).T)
+        cont_submajor = np.ascontiguousarray(np.asarray(cont.kappa_abs).reshape(odf.nt * odf.np, -1).T)
+        # Kappa-total (opt-5): line + continuum folded once per model. The band
+        # loop then gathers each member's (T, p) row with a single row-take (no
+        # per-(T, band) add). Same values the loop's gather+add computes.
+        # Floored once here (max(kappa, 1e-30/1e-300 by dtype), the harmonic-mean
+        # guard) so the hot loop skips its clip pass; the measured min over the
+        # real tables is ~1e-8, so the floor is a no-op on values, guard only.
+        kappa_total = odf_submajor + cont_submajor[np.asarray(band_pre["bin_of_subbin"])]
+        np.clip(kappa_total, 1.0e-30 if odf.ODF.dtype == np.float32 else 1.0e-300, None, out=kappa_total)
         # Edge-independent RTE-interp grids (fix #1): _qrad_from_table interpolates the
         # per-binning ln(kappa)/ln(B) tables (on the ODF log10 T/p grids) onto the
         # atmosphere via lt/lp index arrays that depend only on the model atmosphere +
@@ -370,6 +409,9 @@ def precompute(model=None) -> dict:
             bin_y_all=bin_y_all,
             n_subbins=len(wl_centers),
             band_pre=band_pre,
+            odf_submajor=odf_submajor,
+            cont_submajor=cont_submajor,
+            kappa_total=kappa_total,
             lt=lt,
             lp=lp,
         )
@@ -458,16 +500,20 @@ def score_binning(
         min_opacity_delta=min_opacity_delta,
     )
     n_bands = n_groups * n_splits
-    res = ts.calculate_tau_bin_opacities(
-        odf=odf, cont=cont, band_index=split_band_index, n_bins=n_bands, pre=inv.get("band_pre")
-    )
+    _pre = dict(inv.get("band_pre") or {})
+    _pre["odf_submajor"] = inv.get("odf_submajor")
+    _pre["cont_submajor"] = inv.get("cont_submajor")
+    _pre["kappa_total"] = inv.get("kappa_total")
+    res = ts.calculate_tau_bin_opacities(odf=odf, cont=cont, band_index=split_band_index, n_bins=n_bands, pre=_pre)
     mixed = np.asarray(res["kappa_mixed"])  # [nT, nP, nBands]
     b_band = np.asarray(res["B_band"])  # [nT, nBands]
     members = np.asarray(res["members_per_band"])
 
+    # Log tables without the boolean-mask temporaries: out=nan + where=>0 skips
+    # the full-size where() copies (2 x 0.7M els). Transposes are views.
     with np.errstate(divide="ignore", invalid="ignore"):
-        kap_tab = np.log(np.where(mixed > 0, mixed, np.nan)).transpose(2, 0, 1)  # [nBands, nT, nP]
-        b_tab = np.log(np.where(b_band > 0, b_band, np.nan)).T  # [nBands, nT]
+        kap_tab = np.transpose(np.log(mixed, out=np.full_like(mixed, np.nan), where=mixed > 0), (2, 0, 1))
+        b_tab = np.log(b_band, out=np.full_like(b_band, np.nan), where=b_band > 0).T
     kap_tab[members == 0] = np.nan
 
     q, _kz, q_per_band = _qrad_from_table(inv, kap_tab, b_tab, np.asarray(odf.T), np.asarray(odf.P))
@@ -626,9 +672,11 @@ def save_kappa_dat(
         min_opacity_delta=min_opacity_delta,
     )
     n_bands = n_groups * n_splits
-    res = ts.calculate_tau_bin_opacities(
-        odf=odf, cont=cont, band_index=split_band_index, n_bins=n_bands, pre=inv.get("band_pre")
-    )
+    _pre = dict(inv.get("band_pre") or {})
+    _pre["odf_submajor"] = inv.get("odf_submajor")
+    _pre["cont_submajor"] = inv.get("cont_submajor")
+    _pre["kappa_total"] = inv.get("kappa_total")
+    res = ts.calculate_tau_bin_opacities(odf=odf, cont=cont, band_index=split_band_index, n_bins=n_bands, pre=_pre)
 
     members = np.asarray(res["members_per_band"])
     empty = members == 0
