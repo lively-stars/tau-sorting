@@ -905,6 +905,195 @@ class TestBottomScan(unittest.TestCase):
         self.assertEqual(len(set(by_sync["bottom-lam"])), 1)
 
 
+class TestBottomAllocScan(unittest.TestCase):
+    """Data-free tests for the per-column tau-depth allocation scan (no ODF)."""
+
+    _TL = 3.83
+    _T1 = 1.02
+    _T2 = 2.09
+    _BASE = 1e8
+
+    @staticmethod
+    def _alloc_cost(target):
+        TL, T1, T2 = (float(v) for v in target)
+
+        def cost_tree(tree):
+            L, lo, hi = qo._bottom_alloc(tree)
+            if len(lo) == 2 and len(hi) == 0:  # depth stacked in the low-lambda column (the winner)
+                return 1e8 + 1e7 * ((L - TL) ** 2 + (lo[0] - T1) ** 2 + (lo[1] - T2) ** 2)
+            return 1e8 + 1e7 * 4.0  # symmetric / other allocations: high floor
+
+        return cost_tree
+
+    def _alloc_score_fn(self, target):
+        cost = self._alloc_cost(np.asarray(target, float))
+
+        def score(tau, lam, flags, model, *, binning_tree=None, window=None):
+            n = sum(1 for _ in qo._leaf_rects(binning_tree["root"], qo._root_rect(binning_tree)))
+            try:
+                rms = cost(binning_tree)
+            except (KeyError, TypeError):
+                rms = 1e8 + 1e7 * 9.0  # non-flipped seed shape (tau-only staging)
+            return {"rms": rms, "max_abs": 0.0, "int_q_pct": 0.0, "n_empty": 0, "n_groups": n}
+
+        return score
+
+    def test_alloc_tree_shape(self):
+        t = qo._bottom_alloc_tree([-0.63, 7.0], [3.0, 5.0], 4.37, 3.83, [1.02, 2.09], [])
+        root = t["root"]
+        self.assertEqual(root["axis"], "tau")
+        self.assertAlmostEqual(float(root["at"]), 4.37)
+        self.assertTrue(root["hi"].get("leaf"))  # deep leaf spans the full lambda width
+        bot = root["lo"]
+        self.assertEqual(bot["axis"], "lam")
+        self.assertAlmostEqual(float(bot["at"]), 3.83)
+        stack = bot["lo"]
+        self.assertEqual(stack["axis"], "tau")  # dense column holds the tau stack
+        self.assertAlmostEqual(float(stack["at"]), 1.02)
+        self.assertEqual(stack["hi"]["axis"], "tau")
+        self.assertAlmostEqual(float(stack["hi"]["at"]), 2.09)
+        self.assertTrue(bot["hi"].get("leaf"))  # sparse column undivided
+        self.assertEqual(qo._n_leaves(t), 5)
+        self.assertTrue(qo._tree_feasible(t, qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
+        L, lo, hi = qo._bottom_alloc(t)  # extractor round-trips the allocation
+        self.assertAlmostEqual(L, 3.83)
+        self.assertEqual((len(lo), len(hi)), (2, 0))
+
+    def test_scan_reaches_asymmetric_basin(self):
+        out = qo.scan_bottom_allocated(
+            64,
+            [-0.63, 7.0],
+            [3.0, 5.0],
+            4.37,
+            min_gap_tau=0.15,
+            min_gap_lam=0.10,
+            n_keep=3,
+            allocations=[(0, 2), (1, 1), (2, 0)],
+            cost_tree=self._alloc_cost([self._TL, self._T1, self._T2]),
+            rng=0,
+        )
+        self.assertTrue(1 <= len(out) <= 3)
+        costs = [c for c, _ in out]
+        self.assertEqual(costs, sorted(costs))  # best-first
+        self.assertLess(out[0][0], 1e8 + 2e7)  # well below the wrong-allocation floor
+        L, lo, hi = qo._bottom_alloc(out[0][1])
+        self.assertEqual((len(lo), len(hi)), (2, 0))  # winner is the asymmetric allocation
+        for c, t in out:
+            self.assertTrue(qo._tree_feasible(t, qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
+            self.assertEqual(qo._n_leaves(t), 5)
+
+    def test_coarse_grid_cannot_represent_winner_tau(self):
+        # The winner's tau1=1.02 is invisible to the coarse 0.5 grid (it skips 0.87 -> 1.37, so no
+        # point is within 0.1 of 1.02); the fine 0.1 grid has 0.97/1.07. This is the mechanism the
+        # staged-lambda fine scan fixes: the coarse scan literally cannot seed the winner's tau stack.
+        coarse = qo._grid_points(-0.63, 4.37, 0.5)[1:-1]
+        fine = qo._grid_points(-0.63, 4.37, 0.1)[1:-1]
+        self.assertGreater(min(abs(g - 1.02) for g in coarse), 0.1)
+        self.assertLess(min(abs(g - 1.02) for g in fine), 0.06)
+
+    def test_scan_needs_cost_tree(self):
+        with self.assertRaises(ValueError):
+            qo.scan_bottom_allocated(8, [-0.63, 7.0], [3.0, 5.0], 4.37, cost_tree=None)
+        self.assertEqual(qo.scan_bottom_allocated(0, [-0.63, 7.0], [3.0, 5.0], 4.37, cost_tree=lambda t: 1.0), [])
+
+    def test_staged_scan_allocation_reaches_winner_basin(self):
+        # Ablation: the bowl's global min sits at the asymmetric (2,0) allocation. The symmetric
+        # one-cut-per-column scan (scan_allocation=False) can only build the (1,1) floor, while
+        # scan_allocation=True seeds the winner directly -- no downstream topology cliff needed.
+        kw = dict(
+            flags=[True],
+            grow=False,
+            initial_tau_bins=3,
+            staged_lambda_scan=64,
+            max_groups=5,
+            score_fn=self._alloc_score_fn([self._TL, self._T1, self._T2]),
+            max_evals=5000,
+        )
+        sym = qo.optimize_qrad([-0.63, 7.0], [3.0, 5.0], scan_allocation=False, seed=0, **kw)
+        asym = qo.optimize_qrad([-0.63, 7.0], [3.0, 5.0], scan_allocation=True, seed=0, **kw)
+        self.assertLess(asym["rms"], sym["rms"])
+        self.assertLess(asym["rms"], 1e8 + 2e7)  # reached the asymmetric bowl, not the 4e7 floor
+        root = asym["binning_tree"]["root"]
+        self.assertEqual(root["axis"], "tau")
+        bot = root["lo"]
+        self.assertEqual(bot["axis"], "lam")
+        self.assertTrue(qo._is_leaf(bot["hi"]))  # sparse column undivided
+        self.assertEqual(bot["lo"]["axis"], "tau")  # dense column holds the stack
+        L, lo, hi = qo._bottom_alloc(asym["binning_tree"])
+        self.assertEqual((len(lo), len(hi)), (2, 0))
+        self.assertEqual(asym["n_leaves"], 5)
+        self.assertTrue(qo._tree_feasible(asym["binning_tree"], qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
+
+
+class TestDeterministicFineGrid(unittest.TestCase):
+    """Data-free tests for the deterministic photospheric fine-grid scan (no ODF)."""
+
+    _TL = 3.83
+    _T1 = 1.02
+    _T2 = 2.09
+
+    @staticmethod
+    def _alloc_cost(target):
+        TL, T1, T2 = (float(v) for v in target)
+
+        def cost_tree(tree):
+            L, lo, hi = qo._bottom_alloc(tree)
+            if len(lo) == 2 and len(hi) == 0:  # depth stacked in the low-lambda column (the winner)
+                return 1e8 + 1e7 * ((L - TL) ** 2 + (lo[0] - T1) ** 2 + (lo[1] - T2) ** 2)
+            return 1e8 + 1e7 * 4.0  # symmetric / other allocations: high floor
+
+        return cost_tree
+
+    def test_fine_grid_beats_coarse_position(self):
+        # The winner's tau1=1.02 falls between coarse-grid points (0.87/1.37), so the coarse
+        # winner sits >= 0.15 off in tau1; the fine grid (dtau=0.2 over [0.4, 2.2]) lands on 1.0.
+        cost = self._alloc_cost([self._TL, self._T1, self._T2])
+        coarse_tree = qo._bottom_alloc_tree([-0.63, 7.0], [3.0, 5.0], 4.37, 3.75, [0.87, 2.37], [])
+        coarse_cost = cost(coarse_tree)
+        out = qo.scan_bottom_fine_grid(
+            [-0.63, 7.0],
+            [3.0, 5.0],
+            4.37,
+            min_gap_tau=0.15,
+            min_gap_lam=0.10,
+            n_keep=3,
+            allocations=[(2, 0), (0, 2)],
+            cost_tree=cost,
+        )
+        self.assertTrue(1 <= len(out) <= 3)
+        costs = [c for c, _ in out]
+        self.assertEqual(costs, sorted(costs))  # best-first
+        self.assertLess(out[0][0], coarse_cost)  # the grid sampled inside the narrow well
+        L, lo, hi = qo._bottom_alloc(out[0][1])
+        self.assertEqual((len(lo), len(hi)), (2, 0))  # winner is the asymmetric allocation
+        self.assertLess(abs(L - self._TL), 0.06)
+        self.assertLess(abs(lo[0] - self._T1), 0.11)
+        for c, t in out:
+            self.assertTrue(qo._tree_feasible(t, qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
+            self.assertEqual(qo._n_leaves(t), 5)
+
+    def test_fine_grid_is_deterministic(self):
+        cost = self._alloc_cost([self._TL, self._T1, self._T2])
+        kw = dict(
+            tau_window=[-0.63, 7.0],
+            lam_window=[3.0, 5.0],
+            t_top=4.37,
+            min_gap_tau=0.15,
+            min_gap_lam=0.10,
+            n_keep=3,
+            allocations=[(2, 0), (0, 2)],
+            cost_tree=cost,
+        )
+        a = qo.scan_bottom_fine_grid(**kw)
+        b = qo.scan_bottom_fine_grid(**kw)
+        self.assertEqual([c for c, _ in a], [c for c, _ in b])  # no RNG anywhere
+        self.assertEqual([qo._tree_signature(t) for _, t in a], [qo._tree_signature(t) for _, t in b])
+
+    def test_fine_grid_needs_cost_tree(self):
+        with self.assertRaises(ValueError):
+            qo.scan_bottom_fine_grid([-0.63, 7.0], [3.0, 5.0], 4.37, cost_tree=None)
+
+
 class TestStagedPortfolio(unittest.TestCase):
     """Data-free tests for the multi-seed staged portfolio (no ODF)."""
 
