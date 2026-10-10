@@ -684,6 +684,10 @@ def save_kappa_dat(
         res[key][:, :, empty] = np.nan
 
     comparison = ts.build_kappa_band_comparison(res, odf)
+    # Splits mode normalizes to a guillotine tree above; name it with the same tree
+    # convention as an explicit binning_tree (splits callers pass flags=None, which the
+    # shared-flags fallthrough cannot name). Flags/per-tau/columns naming is unchanged.
+    name_tree = binning_tree if binning_tree is not None else (tree if splits is not None else None)
     name = _kappa_dat_name(
         tau_edges,
         lambda_edges,
@@ -692,7 +696,7 @@ def save_kappa_dat(
         clamped,
         n_bands,
         n_splits,
-        binning_tree=binning_tree,
+        binning_tree=name_tree,
         tau_per_lambda=tau_per_lambda,
     )
     written = str(path) if path is not None else name
