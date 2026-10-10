@@ -163,6 +163,36 @@ def resolve_flags(split_lambda, n_tau: int) -> list[bool]:
     return [True] * n_tau
 
 
+def parse_edge_list(spec: str) -> list[float]:
+    """Parse one comma/space-separated strictly-increasing edge list (>= 2 values)."""
+    edges = [float(t) for t in spec.replace(",", " ").split() if t]
+    if len(edges) < 2:
+        raise ValueError(f"edge list '{spec}' needs >= 2 edges")
+    if any(edges[i] >= edges[i + 1] for i in range(len(edges) - 1)):
+        raise ValueError(f"edge list '{spec}' must be strictly increasing")
+    return edges
+
+
+def parse_split_lambda_flags(spec: str) -> list[bool]:
+    """Parse a CLI --split-lambda spec (0/1 string or comma/space-separated booleans)."""
+    s = spec.strip()
+    if not s:
+        return []
+    tokens = s.replace(",", " ").split() if ("," in s or " " in s or "\t" in s) else list(s)
+    truthy = {"1", "t", "true", "y", "yes"}
+    falsy = {"0", "f", "false", "n", "no"}
+    out: list[bool] = []
+    for tok in tokens:
+        low = tok.lower()
+        if low in truthy:
+            out.append(True)
+        elif low in falsy:
+            out.append(False)
+        else:
+            raise ValueError(f"--split-lambda: cannot parse '{tok}' as a boolean")
+    return out
+
+
 def _bilin_interp(dat, x, y):
     nx, ny = dat.shape
     x = np.clip(x, 0, nx - 2)
@@ -436,6 +466,9 @@ def score_binning(
     binning_tree=None,
     window=None,
     min_opacity_delta=1.0,
+    split_lambda_spec=None,
+    lambda_per_tau_spec=None,
+    tau_per_lambda_spec=None,
 ) -> dict:
     """Map a binning to Q_rad + residual metrics against the full-ODF reference.
 
@@ -450,10 +483,26 @@ def score_binning(
         counts allowed, shared outer tau window).
       - per-tau-group lambda: pass `lambda_edges_per_tau` (one lambda-edge list per tau group).
       - shared lambda + flags (default): `flags` resolved (one bool per tau group).
+    CLI parity: the raw CLI specs may be passed instead — `split_lambda_spec` (0/1 string),
+    `lambda_per_tau_spec` / `tau_per_lambda_spec` (lists of comma-separated edge strings,
+    as in `tausort main --lambda-per-tau/--tau-per-lambda`). They normalize to the
+    list forms above; passing both a spec and its list form is an error.
 
     Returns raw full-length arrays (`q`, `resid`, `ltau`, `rho`, `q_full`, `q_gray`) plus
     scalar metrics and the descriptor/membership the binning diagram needs.
     """
+    if split_lambda_spec is not None:
+        if flags is not None:
+            raise ValueError("pass split_lambda_spec or flags, not both")
+        flags = parse_split_lambda_flags(split_lambda_spec)
+    if lambda_per_tau_spec is not None:
+        if lambda_edges_per_tau is not None:
+            raise ValueError("pass lambda_per_tau_spec or lambda_edges_per_tau, not both")
+        lambda_edges_per_tau = [parse_edge_list(s) for s in lambda_per_tau_spec]
+    if tau_per_lambda_spec is not None:
+        if tau_per_lambda is not None:
+            raise ValueError("pass tau_per_lambda_spec or tau_per_lambda, not both")
+        tau_per_lambda = [parse_edge_list(s) for s in tau_per_lambda_spec]
     inv = inv_for(model)
     odf, cont, atm = inv["odf"], inv["cont"], inv["atm"]
     ref = reference(model)
@@ -555,6 +604,11 @@ def score_binning(
         "group_tau_edges": group_tau_edges,
         "group_lam_edges": group_lam_edges,
         "q_per_band": q_per_band,
+        "binning_tree": {
+            "window_tau": [float(tw[0]), float(tw[1])],
+            "window_lam": [float(lw[0]), float(lw[1])],
+            "root": root,
+        },
     }
 
 
@@ -609,6 +663,9 @@ def save_kappa_dat(
     n_splits=3,
     path=None,
     min_opacity_delta=1.0,
+    split_lambda_spec=None,
+    lambda_per_tau_spec=None,
+    tau_per_lambda_spec=None,
 ):
     """Build the binning's C-format kappa table and write it to disk.
 
@@ -619,11 +676,26 @@ def save_kappa_dat(
     overrides the output path; otherwise a self-describing name is used (in the CWD). `model`
     selects the atmosphere the binning runs on (bare filename under models/; None -> default).
     Grouping precedence: `binning_tree` > `splits` > `tau_per_lambda` > `lambda_edges_per_tau` > flags.
+    Like `score_binning`, the raw CLI specs (`split_lambda_spec` / `lambda_per_tau_spec` /
+    `tau_per_lambda_spec`) normalize to the list forms; passing both is an error.
     """
+    if split_lambda_spec is not None:
+        if flags is not None:
+            raise ValueError("pass split_lambda_spec or flags, not both")
+        flags = parse_split_lambda_flags(split_lambda_spec)
+    if lambda_per_tau_spec is not None:
+        if lambda_edges_per_tau is not None:
+            raise ValueError("pass lambda_per_tau_spec or lambda_edges_per_tau, not both")
+        lambda_edges_per_tau = [parse_edge_list(s) for s in lambda_per_tau_spec]
+    if tau_per_lambda_spec is not None:
+        if tau_per_lambda is not None:
+            raise ValueError("pass tau_per_lambda_spec or tau_per_lambda, not both")
+        tau_per_lambda = [parse_edge_list(s) for s in tau_per_lambda_spec]
     inv = inv_for(model)
     odf, cont, atm = inv["odf"], inv["cont"], inv["atm"]
     clamped_top = float(-np.log10(inv["tau_ross"][inv["max_height_idx"]] + 0.2))
     clamped = None
+    clamped_cols = None
 
     # Normalize every input mode into a guillotine tree so the tree path is the single grouping
     # implementation. Precedence: explicit `binning_tree` > splits > columns > per-tau-lambda > shared-flags.
@@ -638,6 +710,14 @@ def save_kappa_dat(
             tree = qrad_optimize.tree_from_splits(tw2, lw2, splits)
         elif tau_per_lambda is not None:
             tree = qrad_optimize.tree_from_columns(list(lambda_edges), [list(x) for x in tau_per_lambda])
+            # Filename parity with tausort.main (which clamps each column's top edge
+            # to the atmosphere top before naming): the membership window stays raw,
+            # only the name carries the clamped top.
+            clamped_cols = []
+            for col in tau_per_lambda:
+                c = list(col)
+                c[0] = clamped_top
+                clamped_cols.append(c)
         elif lambda_edges_per_tau is not None:
             tree = qrad_optimize.tree_from_lpt(list(tau_edges), [list(x) for x in lambda_edges_per_tau])
             clamped = list(tau_edges)
@@ -697,8 +777,146 @@ def save_kappa_dat(
         n_bands,
         n_splits,
         binning_tree=name_tree,
-        tau_per_lambda=tau_per_lambda,
+        tau_per_lambda=(clamped_cols if tau_per_lambda is not None and name_tree is None else tau_per_lambda),
     )
     written = str(path) if path is not None else name
     ts.write_kappa_4_band_comparison(written, comparison)
+    return written, name
+
+
+def save_npy(
+    tau_edges,
+    lambda_edges,
+    flags,
+    model=None,
+    *,
+    lambda_edges_per_tau=None,
+    tau_per_lambda=None,
+    splits=None,
+    binning_tree=None,
+    n_splits=3,
+    path=None,
+    min_opacity_delta=1.0,
+    split_lambda_spec=None,
+    lambda_per_tau_spec=None,
+    tau_per_lambda_spec=None,
+):
+    """Build the binning's `.npy` opacity table (as `tausort main --tau-bin-output` writes it).
+
+    Same grouping + sort + band-average pipeline as `save_kappa_dat`, but packs the linear
+    planck/rosseland/mixed arrays with the authoritative group_tau/lam_edges descriptor via
+    `tausort.save_tau_bin_opacities_npy` instead of the C-format `.dat`. Returns (written, name);
+    the default name mirrors the `.dat` stem with a `.npy` suffix.
+    """
+    if split_lambda_spec is not None:
+        if flags is not None:
+            raise ValueError("pass split_lambda_spec or flags, not both")
+        flags = parse_split_lambda_flags(split_lambda_spec)
+    if lambda_per_tau_spec is not None:
+        if lambda_edges_per_tau is not None:
+            raise ValueError("pass lambda_per_tau_spec or lambda_edges_per_tau, not both")
+        lambda_edges_per_tau = [parse_edge_list(s) for s in lambda_per_tau_spec]
+    if tau_per_lambda_spec is not None:
+        if tau_per_lambda is not None:
+            raise ValueError("pass tau_per_lambda_spec or tau_per_lambda, not both")
+        tau_per_lambda = [parse_edge_list(s) for s in tau_per_lambda_spec]
+    inv = inv_for(model)
+    odf, cont, atm = inv["odf"], inv["cont"], inv["atm"]
+    clamped_top = float(-np.log10(inv["tau_ross"][inv["max_height_idx"]] + 0.2))
+    tree = binning_tree
+    if tree is None:
+        if splits is not None:
+            tw2 = [float(tau_edges[0]), float(tau_edges[1])]
+            lw2 = [float(lambda_edges[0]), float(lambda_edges[1])]
+            tree = qrad_optimize.tree_from_splits(tw2, lw2, splits)
+        elif tau_per_lambda is not None:
+            tree = qrad_optimize.tree_from_columns(list(lambda_edges), [list(x) for x in tau_per_lambda])
+        elif lambda_edges_per_tau is not None:
+            tree = qrad_optimize.tree_from_lpt(list(tau_edges), [list(x) for x in lambda_edges_per_tau])
+        else:
+            lpt = [list(lambda_edges) if bool(f) else [float(lambda_edges[0]), float(lambda_edges[-1])] for f in flags]
+            tree = qrad_optimize.tree_from_lpt(list(tau_edges), lpt)
+    tw, lw, root = tree["window_tau"], tree["window_lam"], tree["root"]
+    band_index = ts.assign_tree(inv["tau_at_lam1"], inv["wl_centers"], root, tw, lw)
+    group_tau_edges, group_lam_edges = ts.build_group_specs_tree(root, [clamped_top, float(tw[1])], lw)
+    n_groups = int(group_tau_edges.shape[0])
+    sorted_per_bin = ts.sort_weighted_opacity_per_tau_bin(
+        atm=atm,
+        odf=odf,
+        interpolated_opacity=inv["interpolated_opacity"],
+        tau_rosseland=inv["tau_ross"],
+        band_index=band_index,
+        group_tau_edges=group_tau_edges,
+        wavelength_grid_subbins_centers=inv["wl_centers"],
+        write_debug_json=False,
+        verbose=False,
+    )
+    split_band_index = ts.build_split_band_index(
+        sorted_per_bin,
+        n_subbin_points=len(band_index),
+        n_groups=n_groups,
+        n_splits=n_splits,
+        min_opacity_delta=min_opacity_delta,
+    )
+    n_bands = n_groups * n_splits
+    _pre = dict(inv.get("band_pre") or {})
+    _pre["odf_submajor"] = inv.get("odf_submajor")
+    _pre["cont_submajor"] = inv.get("cont_submajor")
+    _pre["kappa_total"] = inv.get("kappa_total")
+    res = ts.calculate_tau_bin_opacities(odf=odf, cont=cont, band_index=split_band_index, n_bins=n_bands, pre=_pre)
+    members = np.asarray(res["members_per_band"])
+    empty = members == 0
+    for key in ("kappa_planck", "kappa_rosseland", "kappa_mixed"):
+        res[key][:, :, empty] = np.nan
+    clamped = None
+    clamped_cols = None
+    if tau_per_lambda is not None:
+        clamped_cols = []
+        for col in tau_per_lambda:
+            c = list(col)
+            c[0] = clamped_top
+            clamped_cols.append(c)
+    elif lambda_edges_per_tau is not None:
+        clamped = list(tau_edges)
+        clamped[0] = clamped_top
+    elif flags is not None:
+        clamped = list(tau_edges)
+        clamped[0] = clamped_top
+    dat_name = _kappa_dat_name(
+        tau_edges,
+        lambda_edges,
+        flags,
+        lambda_edges_per_tau,
+        clamped,
+        n_bands,
+        n_splits,
+        binning_tree=(binning_tree if binning_tree is not None else (tree if splits is not None else None)),
+        tau_per_lambda=(clamped_cols if tau_per_lambda is not None else None),
+    )
+    stem = dat_name[:-4] if dat_name.endswith(".dat") else dat_name
+    name = stem + ".npy"
+    written = str(path) if path is not None else name
+    # Mode-descriptor inputs for the .npy encoding mirror tausort.main's save call.
+    lam_out = list(lw)
+    if lambda_edges_per_tau is not None:
+        lam_out = [lambda_edges_per_tau[0][0], lambda_edges_per_tau[0][-1]]
+    elif lambda_edges is not None:
+        lam_out = list(lambda_edges)
+    ts.save_tau_bin_opacities_npy(
+        Path(written),
+        {
+            "kappa_planck": res["kappa_planck"],
+            "kappa_rosseland": res["kappa_rosseland"],
+            "kappa_mixed": res["kappa_mixed"],
+            "members_per_band": members,
+        },
+        temperature_grid=np.power(10.0, odf.T),
+        pressure_grid=np.power(10.0, odf.P),
+        group_tau_edges=group_tau_edges,
+        group_lam_edges=group_lam_edges,
+        n_splits=n_splits,
+        lambda_bin_edges=lam_out,
+        tau_edges_per_lambda=([list(c) for c in tau_per_lambda] if tau_per_lambda is not None else None),
+        split_along_lambda=(list(flags) if flags is not None else None),
+    )
     return written, name

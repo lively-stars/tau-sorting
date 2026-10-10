@@ -85,6 +85,7 @@ _QOPT: dict = {
     "diagram": None,  # binning-diagram data of the current best (for the live top-plot preview)
     "plan": [],  # ordered stage-tag plan for the run (rendered upfront as a checklist)
     "stage": None,  # current plan stage tag (advances only on plan tags; sub-step noise ignored)
+    "seed_tree": None,  # seed binning tree of the running/finished job (for the save-plot before/after)
 }
 
 
@@ -95,6 +96,8 @@ def _run_plan(opt) -> list[str]:
     (tau groups, bottom-two lambda split), then grow -> polish -> topology."""
     if bool(opt.get("columns", False)):
         return ["start", "lambda-wiggle", "tau-groups", "joint-wiggle", "round"]
+    if bool(opt.get("grid_search", False)):
+        return ["start", "grid", "done"]
     plan = ["start"]
     if opt.get("initial_tau_bins"):
         if opt.get("initial_tau_scan"):
@@ -112,6 +115,9 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
 
     def on_eval(n, cost, r):
         _QOPT["n_evals"] = n
+        # First evaluation is the seed binning: keep its tree for the save-plot before/after.
+        if _QOPT.get("seed_tree") is None and r.get("binning_tree") is not None:
+            _QOPT["seed_tree"] = r["binning_tree"]
         _QOPT["groups"] = int(r.get("n_groups", 0))
         rms = float(r["rms"])
         if _QOPT["best"] is None or rms < _QOPT["best"]:
@@ -126,6 +132,16 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
                     "group_tau_edges": np.asarray(gte).tolist(),
                     "group_lam_edges": np.asarray(gle).tolist(),
                 }
+
+    def on_grid_improve(tree, r, n):
+        _QOPT["n_evals"] = int(n)
+        rms = float(r.get("rms", 0.0))
+        if _QOPT.get("seed_tree") is None:
+            _QOPT["seed_tree"] = tree
+            _QOPT["rms0"] = rms
+        if _QOPT["best"] is None or rms < _QOPT["best"]:
+            _QOPT["best"] = rms
+            _QOPT["groups"] = int(r.get("n_groups", 0))
 
     def on_progress(tag, value, groups, n):
         if tag == "start":
@@ -164,7 +180,20 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
         should_stop=lambda: _QOPT["cancel"],
     )
     try:
-        if columns:
+        if opt.get("grid_search"):
+            _QOPT["result"] = qopt.grid_search(
+                [float(tau_edges[0]), float(tau_edges[-1])],
+                [float(lambda_edges[0]), float(lambda_edges[-1])],
+                dtau=float(opt.get("dtau") or 0.5),
+                dlam=float(opt.get("dlam") or 0.25),
+                model=model,
+                max_groups=int(opt.get("max_groups") or 8),
+                min_opacity_delta=float(opt.get("min_opacity_delta") or 1.0),
+                window=opt.get("window"),
+                on_progress=on_progress,
+                on_improve=on_grid_improve,
+            )
+        elif columns:
             n_cols = len(lambda_edges) - 1
             tpl = opt.get("tau_per_lambda")
             cols_seed = (
@@ -199,12 +228,23 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
                 plateau_evals=opt["plateau_evals"],
                 plateau_rel=opt["plateau_rel"],
                 lambda_edges_per_tau=opt["lambda_edges_per_tau"],
+                lambda_per_tau_spec=opt.get("lambda_per_tau_spec"),
                 tau_per_lambda=opt.get("tau_per_lambda"),
+                tau_per_lambda_spec=opt.get("tau_per_lambda_spec"),
                 splits=opt.get("splits"),
                 tree=opt["tree"],
                 min_opacity_delta=opt["min_opacity_delta"],
                 initial_tau_bins=(opt.get("initial_tau_bins") or None),
                 initial_tau_scan=int(opt.get("initial_tau_scan") or 0),
+                staged_lambda_scan=int(opt.get("staged_lambda_scan") or 0),
+                staged_lambda_n_keep=int(opt.get("staged_lambda_n_keep") or 3),
+                scan_allocation=bool(opt.get("scan_allocation", False)),
+                staged_lambda_fine_scan=int(opt.get("staged_lambda_fine_scan") or 0),
+                deterministic_fine=bool(opt.get("deterministic_fine", False)),
+                seed=opt.get("seed"),
+                n_staged_seeds=int(opt.get("n_staged_seeds") or 1),
+                beam_leaves=int(opt.get("beam_leaves") or 4),
+                beam_positions=(tuple(opt["beam_positions"]) if opt.get("beam_positions") else (0.35, 0.5, 0.65)),
                 on_eval=on_eval,
                 on_progress=on_progress,
                 should_stop=lambda: _QOPT["cancel"],
@@ -227,6 +267,9 @@ def compute(
     binning_tree=None,
     window=None,
     min_opacity_delta=1.0,
+    split_lambda_spec=None,
+    lambda_per_tau_spec=None,
+    tau_per_lambda_spec=None,
 ):
     """Run the per-edge pipeline (via qrad_core) and shape the Q_rad curves + metrics for the UI.
 
@@ -235,7 +278,9 @@ def compute(
     Grouping (highest priority first): `binning_tree` (general 2D guillotine),
     then `splits` (ordered [{axis, tau, lam}] over the tau/lambda window pair),
     then `tau_per_lambda` (per-column tau), then `lambda_edges_per_tau` (per-tau-group lambda),
-    else the shared-lambda + split-flag model.
+    else the shared-lambda + split-flag model. The raw CLI specs (`split_lambda_spec` /
+    `lambda_per_tau_spec` / `tau_per_lambda_spec`, as in `tausort main`) are accepted
+    alongside their list forms and forwarded to `score_binning` for normalization.
     """
     with _LOCK:
         if binning_tree is not None:
@@ -252,30 +297,38 @@ def compute(
                 window=window,
                 min_opacity_delta=min_opacity_delta,
             )
-        elif tau_per_lambda is not None:
+        elif tau_per_lambda is not None or tau_per_lambda_spec is not None:
             r = qc.score_binning(
                 None,
                 lambda_edges,
                 None,
                 model,
                 tau_per_lambda=tau_per_lambda,
+                tau_per_lambda_spec=tau_per_lambda_spec,
                 window=window,
                 min_opacity_delta=min_opacity_delta,
             )
-        elif lambda_edges_per_tau is not None:
+        elif lambda_edges_per_tau is not None or lambda_per_tau_spec is not None:
             r = qc.score_binning(
                 tau_edges,
                 None,
                 None,
                 model,
                 lambda_edges_per_tau=lambda_edges_per_tau,
+                lambda_per_tau_spec=lambda_per_tau_spec,
                 window=window,
                 min_opacity_delta=min_opacity_delta,
             )
         else:
-            flags = qc.resolve_flags(split_lambda, len(tau_edges) - 1)
+            flags = None if split_lambda_spec is not None else qc.resolve_flags(split_lambda, len(tau_edges) - 1)
             r = qc.score_binning(
-                tau_edges, lambda_edges, flags, model, window=window, min_opacity_delta=min_opacity_delta
+                tau_edges,
+                lambda_edges,
+                flags,
+                model,
+                window=window,
+                min_opacity_delta=min_opacity_delta,
+                split_lambda_spec=split_lambda_spec,
             )
         inv = qc.inv_for(model)
 
@@ -415,29 +468,73 @@ class Handler(BaseHTTPRequestHandler):
                     }
                 ),
             )
+        elif urlparse(self.path).path == "/api/save_plot":
+            self._save_plot()
         else:
             self._send(404, json.dumps({"error": "not found"}))
+
+    def _save_plot(self):
+        """GET /api/save_plot — render the optimizer's before/after Q_rad PNG (seed vs best).
+        Mirrors `qrad_optimize --save-plot` via `_plot_before_after`; 404 when no finished
+        result is available. Query: ?model= (the seed is rebuilt from the stored request)."""
+        try:
+            q = parse_qs(urlparse(self.path).query)
+            result = _QOPT.get("result")
+            if not result or not result.get("binning_tree"):
+                self._send(404, json.dumps({"error": "no finished optimization result yet"}))
+                return
+            seed = _QOPT.get("seed_tree")
+            if seed is None:
+                self._send(404, json.dumps({"error": "seed binning not recorded for this run"}))
+                return
+            model = (_QOPT.get("model") or (q.get("model") or [None])[0]) or None
+            min_od = result.get("min_opacity_delta", None)
+            fd, tmp = tempfile.mkstemp(suffix=".png")
+            os.close(fd)
+            try:
+                qopt._plot_before_after(seed, result["binning_tree"], tmp, model, min_od)
+                data = Path(tmp).read_bytes()
+            finally:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Disposition", 'attachment; filename="qrad_before_after.png"')
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception as e:
+            traceback.print_exc()
+            self._send(400, json.dumps({"error": f"{type(e).__name__}: {e}"}))
 
     def do_POST(self):
         if self.path == "/api/optimize_qrad_cancel":
             _QOPT["cancel"] = True
             self._send(200, json.dumps({"cancelled": True}))
             return
-        if self.path not in ("/api/compute", "/api/optimize_qrad", "/api/kappa_dat"):
+        if self.path not in ("/api/compute", "/api/optimize_qrad", "/api/kappa_dat", "/api/npy"):
             self._send(404, json.dumps({"error": "not found"}))
             return
         try:
             n = int(self.headers.get("Content-Length", 0))
             req = json.loads(self.rfile.read(n) or b"{}")
-            tau_edges = [float(x) for x in req["tau_edges"]]
+            tau_edges = [float(x) for x in req["tau_edges"]] if "tau_edges" in req else None
             lambda_edges = [float(x) for x in req["lambda_edges"]]
             splits_req = req.get("splits") or None
-            if self.path in ("/api/compute", "/api/kappa_dat") and splits_req is not None:
+            tcols_spec_early = req.get("tau_per_lambda_spec") or None
+            tcols_early = req.get("tau_per_lambda") or None
+            if self.path in ("/api/compute", "/api/kappa_dat", "/api/npy") and splits_req is not None:
                 # Split-list mode: tau/lambda carry the outer windows (exactly 2 edges each).
-                if len(tau_edges) != 2 or len(lambda_edges) != 2:
+                if tau_edges is None or len(tau_edges) != 2 or len(lambda_edges) != 2:
                     raise ValueError("splits mode needs exactly 2 tau edges + 2 lambda edges (the outer windows)")
             else:
-                if len(tau_edges) < 2:
+                # Columns mode derives tau from per-column stacks, so tau_edges may be absent;
+                # every other mode needs >= 2 tau edges.
+                if tau_edges is None and tcols_early is None and tcols_spec_early is None:
+                    raise ValueError("need at least 2 tau edges")
+                if tau_edges is not None and len(tau_edges) < 2:
                     raise ValueError("need at least 2 tau edges")
                 if len(lambda_edges) < 2:
                     raise ValueError("need at least 2 lambda edges")
@@ -462,9 +559,15 @@ class Handler(BaseHTTPRequestHandler):
                         diagram=None,
                         plan=[],
                         stage=None,
+                        seed_tree=None,
                     )
                 try:
+                    split_spec = req.get("split_lambda_spec") or None
+                    lpt_spec = req.get("lambda_per_tau_spec") or None
+                    tpl_spec = req.get("tau_per_lambda_spec") or None
                     flags = qc.resolve_flags(req.get("split_lambda") or None, len(tau_edges) - 1)
+                    if split_spec is not None:
+                        flags = qc.parse_split_lambda_flags(split_spec)
                     qc.reference(model)  # warm the chosen model's reference before threading
                     metric = req.get("metric", "rms")
                     if metric not in ("rms", "maxabs", "int_q"):
@@ -479,8 +582,10 @@ class Handler(BaseHTTPRequestHandler):
                         "splits": req.get("splits") or None,
                         # per-column-tau warm start (re-running keeps refining the current cuts)
                         "tau_per_lambda": req.get("tau_per_lambda") or None,
-                        # per-group-lambda warm start (legacy)
+                        "tau_per_lambda_spec": tpl_spec,
+                        # per-group-lambda warm start (legacy + CLI spec form)
                         "lambda_edges_per_tau": req.get("lambda_edges_per_tau") or None,
+                        "lambda_per_tau_spec": lpt_spec,
                         # columns-constrained mode (own grow/polish path, stays in the column family)
                         "columns": bool(req.get("columns", False)),
                         # general 2D guillotine mode + warm start (a {window_tau, window_lam, root} tree)
@@ -488,12 +593,27 @@ class Handler(BaseHTTPRequestHandler):
                         "binning_tree": req.get("binning_tree") or None,
                         "metric": metric,
                         "beam_width": max(1, int(req.get("beam_width", 3) or 3)),  # 1 = greedy grow, >= 2 = beam
-                        "max_seconds": float(req.get("max_seconds", 300.0)),
-                        "max_evals": int(req.get("max_evals", 5000)),
+                        # Budget fallbacks match the CLI (`qrad_optimize main --help`):
+                        # batch runs get evals, interactive runs get the clock.
+                        "max_seconds": float(req.get("max_seconds", 1800.0)),
+                        "max_evals": int(req.get("max_evals", 400)),
                         # user may ask for fewer than the host ceiling, never more.
-                        "max_groups": max(2, min(MAX_GROUPS, int(req.get("max_groups", MAX_GROUPS)))),
-                        "initial_tau_bins": max(0, int(req.get("initial_tau_bins", 0) or 0)),
-                        "initial_tau_scan": max(0, int(req.get("initial_tau_scan", 0) or 0)),
+                        "max_groups": max(2, min(MAX_GROUPS, int(req.get("max_groups", 8)))),
+                        "initial_tau_bins": max(0, int(req.get("initial_tau_bins", 3) or 3)),
+                        "initial_tau_scan": max(0, int(req.get("initial_tau_scan", 64) or 64)),
+                        "staged_lambda_scan": max(0, int(req.get("staged_lambda_scan", 0) or 0)),
+                        "staged_lambda_n_keep": max(1, int(req.get("staged_lambda_n_keep", 3) or 3)),
+                        "scan_allocation": bool(req.get("scan_allocation", False)),
+                        "staged_lambda_fine_scan": max(0, int(req.get("staged_lambda_fine_scan", 0) or 0)),
+                        "deterministic_fine": bool(req.get("deterministic_fine", False)),
+                        "seed": (int(req["seed"]) if req.get("seed") not in (None, "") else None),
+                        "n_staged_seeds": max(1, int(req.get("n_staged_seeds", 1) or 1)),
+                        "beam_leaves": max(1, int(req.get("beam_leaves", 4) or 4)),
+                        "beam_positions": req.get("beam_positions") or None,
+                        "per_group_lambda": bool(req.get("per_group_lambda", False)),
+                        "grid_search": bool(req.get("grid_search", False)),
+                        "dtau": float(req.get("dtau", 0.5) or 0.5),
+                        "dlam": float(req.get("dlam", 0.25) or 0.25),
                         "window": _window(req),
                         "target_rms": (float(target) if target else None),
                         "plateau_evals": max(0, int(req.get("plateau_evals", 0) or 0)),
@@ -517,6 +637,9 @@ class Handler(BaseHTTPRequestHandler):
                 tcols = req.get("tau_per_lambda") or None
                 lpt = req.get("lambda_edges_per_tau") or None
                 btree = req.get("binning_tree") or None
+                tcols_spec = req.get("tau_per_lambda_spec") or None
+                lpt_spec = req.get("lambda_per_tau_spec") or None
+                sl_spec = req.get("split_lambda_spec") or None
                 min_od = float(req.get("min_opacity_delta", 1.0) or 1.0)
                 fd, tmp = tempfile.mkstemp(suffix=".dat")
                 os.close(fd)
@@ -536,30 +659,42 @@ class Handler(BaseHTTPRequestHandler):
                                 path=tmp,
                                 min_opacity_delta=min_od,
                             )
-                        elif tcols is not None:
+                        elif tcols is not None or tcols_spec is not None:
                             _w, name = qc.save_kappa_dat(
                                 None,
                                 lambda_edges,
                                 None,
                                 model,
                                 tau_per_lambda=tcols,
+                                tau_per_lambda_spec=tcols_spec,
                                 path=tmp,
                                 min_opacity_delta=min_od,
                             )
-                        elif lpt is not None:
+                        elif lpt is not None or lpt_spec is not None:
                             _w, name = qc.save_kappa_dat(
                                 tau_edges,
                                 None,
                                 None,
                                 model,
                                 lambda_edges_per_tau=lpt,
+                                lambda_per_tau_spec=lpt_spec,
                                 path=tmp,
                                 min_opacity_delta=min_od,
                             )
                         else:
-                            flags = qc.resolve_flags(req.get("split_lambda") or None, len(tau_edges) - 1)
+                            flags = (
+                                None
+                                if sl_spec is not None
+                                else qc.resolve_flags(req.get("split_lambda") or None, len(tau_edges) - 1)
+                            )
                             _w, name = qc.save_kappa_dat(
-                                tau_edges, lambda_edges, flags, model, path=tmp, min_opacity_delta=min_od
+                                tau_edges,
+                                lambda_edges,
+                                flags,
+                                model,
+                                path=tmp,
+                                min_opacity_delta=min_od,
+                                split_lambda_spec=sl_spec,
                             )
                         data = Path(tmp).read_bytes()
                 finally:
@@ -569,8 +704,81 @@ class Handler(BaseHTTPRequestHandler):
                         pass
                 self._send_download(data, name)
                 return
-            split_lambda = req.get("split_lambda") or None
+            if self.path == "/api/npy":
+                # Build the current binning's .npy opacity table (as tausort main
+                # --tau-bin-output writes it) and stream it back as a download.
+                tcols = req.get("tau_per_lambda") or None
+                lpt = req.get("lambda_edges_per_tau") or None
+                btree = req.get("binning_tree") or None
+                tcols_spec = req.get("tau_per_lambda_spec") or None
+                lpt_spec = req.get("lambda_per_tau_spec") or None
+                sl_spec = req.get("split_lambda_spec") or None
+                min_od = float(req.get("min_opacity_delta", 1.0) or 1.0)
+                fd, tmp = tempfile.mkstemp(suffix=".npy")
+                os.close(fd)
+                try:
+                    with _LOCK:
+                        if btree is not None:
+                            _w, name = qc.save_npy(
+                                None, None, None, model, binning_tree=btree, path=tmp, min_opacity_delta=min_od
+                            )
+                        elif splits_req is not None:
+                            _w, name = qc.save_npy(
+                                tau_edges,
+                                lambda_edges,
+                                None,
+                                model,
+                                splits=splits_req,
+                                path=tmp,
+                                min_opacity_delta=min_od,
+                            )
+                        elif tcols is not None or tcols_spec is not None:
+                            _w, name = qc.save_npy(
+                                None,
+                                lambda_edges,
+                                None,
+                                model,
+                                tau_per_lambda=tcols,
+                                tau_per_lambda_spec=tcols_spec,
+                                path=tmp,
+                                min_opacity_delta=min_od,
+                            )
+                        elif lpt is not None or lpt_spec is not None:
+                            _w, name = qc.save_npy(
+                                tau_edges,
+                                None,
+                                None,
+                                model,
+                                lambda_edges_per_tau=lpt,
+                                lambda_per_tau_spec=lpt_spec,
+                                path=tmp,
+                                min_opacity_delta=min_od,
+                            )
+                        else:
+                            flags = (
+                                None
+                                if sl_spec is not None
+                                else qc.resolve_flags(req.get("split_lambda") or None, len(tau_edges) - 1)
+                            )
+                            _w, name = qc.save_npy(
+                                tau_edges,
+                                lambda_edges,
+                                flags,
+                                model,
+                                path=tmp,
+                                min_opacity_delta=min_od,
+                                split_lambda_spec=sl_spec,
+                            )
+                        data = Path(tmp).read_bytes()
+                finally:
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
+                self._send_download(data, name)
+                return
             tcols = req.get("tau_per_lambda") or None
+            split_lambda = req.get("split_lambda") or None
             lpt = req.get("lambda_edges_per_tau") or None
             btree = req.get("binning_tree") or None
             out = compute(
@@ -584,6 +792,9 @@ class Handler(BaseHTTPRequestHandler):
                 binning_tree=btree,
                 window=_window(req),
                 min_opacity_delta=float(req.get("min_opacity_delta", 1.0) or 1.0),
+                split_lambda_spec=req.get("split_lambda_spec") or None,
+                lambda_per_tau_spec=req.get("lambda_per_tau_spec") or None,
+                tau_per_lambda_spec=req.get("tau_per_lambda_spec") or None,
             )
             out["elapsed"] = round(time.perf_counter() - t0, 2)
             self._send(200, json.dumps(out))

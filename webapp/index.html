@@ -124,6 +124,20 @@
     </div>
     <div class="hint" id="splitmode_hint"></div>
     <div id="splits_host"></div>
+    <details id="clibin">
+      <summary>CLI binning (tausort main flags)</summary>
+      <label>&tau; edges &nbsp;<span class="hint">(N edges, e.g. <code>-0.63, 0.35, 1.23, 2.89, 7</code>; blank = window)</span></label>
+      <input type="text" id="tauedges" placeholder="-0.63, 0.35, 1.23, 2.89, 7" />
+      <label>&lambda; edges &nbsp;<span class="hint">(N edges, e.g. <code>3, 3.8, 5</code>; blank = window)</span></label>
+      <input type="text" id="lamedges" placeholder="3, 3.8, 5" />
+      <label>--split-lambda &nbsp;<span class="hint">(0/1 per &tau; group, e.g. <code>1111</code>)</span></label>
+      <input type="text" id="splitflags" placeholder="1111" />
+      <label>--lambda-per-tau &nbsp;<span class="hint">(one edge list per &tau; group, <code>;</code>-separated, e.g. <code>3,3.8,5; 3,5</code>)</span></label>
+      <input type="text" id="lptspec" placeholder="3,3.8,5; 3,5" />
+      <label>--tau-per-lambda &nbsp;<span class="hint">(one edge list per &lambda; column, <code>;</code>-separated)</span></label>
+      <input type="text" id="tplspec" placeholder="-0.63,1,7; -0.63,2,7" />
+      <div class="hint" id="clibin_hint">Blank = click-to-split box above. Fill any row to use the CLI binning instead (highest: per-tau/per-column lists, then flags, then N-edge uniform).</div>
+    </details>
     <label>Min opacity split &nbsp;<span class="hint">(&Delta; ratio per &tau;-&lambda; group)</span></label>
     <div class="opt-row">
       <span class="opt-n">split a group into low/mid/high only if max/min &kappa; &ge;
@@ -146,10 +160,17 @@
     </div>
     <div class="opt-row">
       <button id="qopt" class="secondary">Optimize Q_rad &rarr;</button>
-      <span class="opt-n"><input type="number" id="qbudget" min="20" max="1800" value="180" /> s</span>
+      <span class="opt-n"><input type="number" id="qbudget" min="20" max="1800" value="1800" /> s</span>
     </div>
     <div class="opt-row">
       <button id="qoptcols" class="secondary">Optimize columns &rarr;</button>
+    </div>
+    <div class="opt-row">
+      <button id="qoptgrid" class="secondary">Grid search &rarr;</button>
+      <span class="opt-n">d&tau; <input type="number" id="qv_dtau" min="0.1" max="2" step="0.05" value="0.5" style="width:52px" /> d&lambda; <input type="number" id="qv_dlam" min="0.05" max="1" step="0.05" value="0.25" style="width:52px" /></span>
+    </div>
+    <div class="opt-row">
+      <button id="dlplot" class="secondary">&#x2913; Before/after plot (.png)</button>
     </div>
     <div id="qprog" class="qprog" title="elapsed / time budget"><div id="qprogbar"></div></div>
     <div id="qstatus" class="hint" style="margin-top:6px; min-height:1.2em"></div>
@@ -159,15 +180,25 @@
       <div class="adv-grid">
         <label>metric <select id="qv_metric"><option value="rms">rms</option><option value="maxabs">max |Δ|</option><option value="int_q">∫Q</option></select></label>
         <label>beam width <input type="number" id="qv_beamwidth" min="1" max="12" value="3" title="rival tree topologies kept in parallel each grow round (1 = greedy)" /></label>
-        <label>max &tau;-groups <input type="number" id="qv_maxgroups" min="2" max="8" value="5" /></label>
+        <label>max &tau;-groups <input type="number" id="qv_maxgroups" min="2" max="8" value="8" /></label>
         <label>initial &tau;-bins <input type="number" id="qv_initbins" min="0" max="8" value="3" title="staged seeding: N equally-spaced tau cuts, polish tau, lambda-split bottom two (0 = off)" /></label>
         <label>initial &tau;-scan <input type="number" id="qv_initscan" min="0" max="512" value="64" title="staged seeding: LHS-scan NUM tau-cut sets on the dtau grid, seed from the winner (0 = off)" /></label>
-        <label>max evals <input type="number" id="qv_maxevals" min="20" value="5000" /></label>
+        <label>max evals <input type="number" id="qv_maxevals" min="20" value="400" /></label>
         <label>target rms <input type="number" id="qv_targetrms" min="0" step="1000000" value="0" title="0 = off" /></label>
         <label>plateau evals <input type="number" id="qv_plateau" min="0" value="0" title="0 = off" /></label>
         <label>grow tol % <input type="number" id="qv_growtol" min="0" step="0.5" value="1" /></label>
         <label>min gap &tau; <input type="number" id="qv_gaptau" min="0.01" step="0.01" value="0.15" /></label>
         <label>min gap &lambda; <input type="number" id="qv_gaplam" min="0.01" step="0.01" value="0.10" /></label>
+        <label>staged &lambda;-scan <input type="number" id="qv_stagedlam" min="0" max="512" value="0" title="staged seeding: LHS-scan NUM (L, t_lo, t_hi) bottom-region triples after tau polish (0 = off)" /></label>
+        <label>bottom triples kept <input type="number" id="qv_nkeep" min="1" max="10" value="3" title="staged lambda step: survivors polished + returned best-first" /></label>
+        <label class="flag"><input type="checkbox" id="qv_alloc"> scan allocation</label>
+        <label>fine scan <input type="number" id="qv_finescan" min="0" max="512" value="0" title="with scan allocation: re-scan asymmetric allocations at fine resolution (0 = off)" /></label>
+        <label class="flag"><input type="checkbox" id="qv_detfine"> deterministic fine</label>
+        <label>seed <input type="number" id="qv_seed" step="1" placeholder="random" title="RNG seed for the staged LHS scans (blank = fresh entropy)" /></label>
+        <label>staged seeds <input type="number" id="qv_nseeds" min="1" max="8" value="1" title="run the stage pipeline K times under the shared budget, keep the best" /></label>
+        <label>beam leaves <input type="number" id="qv_beamleaves" min="1" max="12" value="4" title="widest leaves considered for splitting, per beam tree" /></label>
+        <label>beam positions <input type="text" id="qv_beampos" placeholder="0.35, 0.5, 0.65" title="split-position fractions tried per leaf and axis (blank = default)" /></label>
+        <label class="flag"><input type="checkbox" id="qv_pgl"> per-group-&lambda; seed</label>
       </div>
       <div class="hint" style="margin-top:6px">Stops: time (right of the button), max evals, target rms, or plateau
          (rms stalled N evals). <code>0</code> = that stop is off. <b>∫Q</b> metric ignores the τ-window.</div>
@@ -196,6 +227,9 @@
     <button id="dl" class="secondary" style="margin-top:12px">&#x2913; Download kappa table (.dat)</button>
     <div class="hint">Writes the current binning's C-format kappa table (`kappa_&lt;…&gt;.dat`). After an
        optimize run this is the optimized table.</div>
+    <button id="dlnpy" class="secondary" style="margin-top:8px">&#x2913; Download opacities (.npy)</button>
+    <div class="hint">Writes the current binning's <code>tau_bin_opacities</code>-style table
+       (linear planck/rosseland/mixed + group descriptors, as <code>tausort main --tau-bin-output</code>).</div>
     <div class="opt-row" style="margin-top:8px">
       <button id="dltree" class="secondary">&#x2913; Download tree (.json)</button>
       <label class="secondary" for="uptree" style="cursor:pointer" title="Load a saved tree JSON as the warm start">Upload tree…</label>
@@ -205,8 +239,7 @@
        (round-trip exact via the CLI <code>--save-tree/--load-tree</code>).</div>
   </div>
 
-  <div class="gutter" id="gutter" title="Drag to resize the controls panel"></div>
-
+  <div class="gutter" id="gutter"></div>
   <div class="panel plot">
     <div class="tabs">
       <button class="tab active" data-tab="qrad">Q<sub>rad</sub></button>
@@ -341,9 +374,41 @@ async function init() {
 function setStatus(msg, err=false){ const s=$('status'); s.textContent=msg; s.className=err?'err':''; }
 // Optimizer status line, shown under the Optimize Q_rad button + progress bar (not the global status).
 function setQStatus(msg, err=false){ const e=$('qstatus'); e.textContent=msg; e.style.color = err ? 'var(--bad)' : ''; }
+// CLI binning fieldset (tausort main flags): blank rows are omitted; `;` splits the
+// repeated --lambda-per-tau / --tau-per-lambda entries. Returns {body, cli:bool} or
+// {error} when a filled row is malformed or mutually exclusive rows collide.
+function cliBinningBody() {
+  const txt = id => ($(id).value || '').trim();
+  const tauedges = txt('tauedges'), lamedges = txt('lamedges'), flags = txt('splitflags');
+  const lpt = txt('lptspec'), tpl = txt('tplspec');
+  if (!tauedges && !lamedges && !flags && !lpt && !tpl) return {body: {}, cli: false};
+  const body = {};
+  const numlist = s => s.split(/[,\s]+/).filter(Boolean).map(Number);
+  if (tauedges) {
+    const e = numlist(tauedges);
+    if (e.length < 2 || !e.every(Number.isFinite) || e.some((v, i) => i && v <= e[i - 1]))
+      return {error: 'τ edges need ≥2 strictly increasing numbers'};
+    body.tau_edges = e;
+  }
+  if (lamedges) {
+    const e = numlist(lamedges);
+    if (e.length < 2 || !e.every(Number.isFinite) || e.some((v, i) => i && v <= e[i - 1]))
+      return {error: 'λ edges need ≥2 strictly increasing numbers'};
+    body.lambda_edges = e;
+  }
+  if (flags) body.split_lambda_spec = flags;
+  const splitRows = s => s.split(';').map(r => r.trim()).filter(Boolean);
+  if (lpt) body.lambda_per_tau_spec = splitRows(lpt);
+  if (tpl) body.tau_per_lambda_spec = splitRows(tpl);
+  if ((lpt || tpl) && flags) return {error: 'use --split-lambda or the per-group lists, not both'};
+  if (lpt && tpl) return {error: 'use --lambda-per-tau or --tau-per-lambda, not both'};
+  return {body, cli: true};
+}
 
 async function compute() {
   clearTimeout(_editTimer);  // cancel any pending debounced auto-compute
+  const cli = cliBinningBody();
+  if (cli.error) return setStatus(cli.error, true);
   let tauwin, lam;
   try { tauwin = parseEdges($('tauwin').value); lam = parseEdges($('lam').value); }
   catch(e){ return setStatus('could not parse edges', true); }
@@ -352,7 +417,16 @@ async function compute() {
   const body = {tau_edges:tauwin, lambda_edges:lam, splits:SPLITS, model:$('model').value,
                 window_lo:+$('win_lo').value, window_hi:+$('win_hi').value,
                 min_opacity_delta: parseFloat($('min_opacity_delta').value) || 1};
-  if (BINNING_TREE) body.binning_tree = BINNING_TREE;
+  if (cli.cli) {
+    // CLI binning (tausort main flags) replaces the click-to-split box: explicit edges
+    // override the windows, splits are dropped (the CLI modes don't use them).
+    if (cli.body.tau_edges) body.tau_edges = cli.body.tau_edges;
+    if (cli.body.lambda_edges) body.lambda_edges = cli.body.lambda_edges;
+    if (cli.body.split_lambda_spec) body.split_lambda_spec = cli.body.split_lambda_spec;
+    if (cli.body.lambda_per_tau_spec) body.lambda_per_tau_spec = cli.body.lambda_per_tau_spec;
+    if (cli.body.tau_per_lambda_spec) body.tau_per_lambda_spec = cli.body.tau_per_lambda_spec;
+    delete body.splits;
+  }
   $('go').disabled = true; setStatus('computing… (binning + radiative transfer)');
   try {
     const r = await fetch('/api/compute', {method:'POST', headers:{'Content-Type':'application/json'},
@@ -387,7 +461,9 @@ function stopQBar(){
   setTimeout(() => { if (!QANIM){ $('qprog').classList.remove('on'); $('qprogbar').style.width = '0%'; } }, 500);
 }
 
-async function qoptStart(columnsMode=false) {
+async function qoptStart(columnsMode=false, gridMode=false) {
+  const cli = cliBinningBody();
+  if (cli.error) return setQStatus(cli.error, true);
   let tauwin, lam;
   try { tauwin = parseEdges($('tauwin').value); lam = parseEdges($('lam').value); }
   catch(e){ return setQStatus('could not parse edges', true); }
@@ -398,7 +474,7 @@ async function qoptStart(columnsMode=false) {
     opt_tau: $('qv_tau').checked, opt_lambda: $('qv_lam').checked,
     grow: $('qv_grow').checked,
     tree: true,
-    max_seconds: Math.max(20, Math.min(1800, parseInt($('qbudget').value,10)||180)),
+    max_seconds: Math.max(20, Math.min(1800, parseInt($('qbudget').value,10)||1800)),
     window_lo: +$('win_lo').value, window_hi: +$('win_hi').value,
     metric: $('qv_metric').value,
     beam_width: parseInt($('qv_beamwidth').value,10) || 3,
@@ -412,18 +488,44 @@ async function qoptStart(columnsMode=false) {
     min_gap_tau: parseFloat($('qv_gaptau').value) || undefined,
     min_gap_lam: parseFloat($('qv_gaplam').value) || undefined,
     min_opacity_delta: parseFloat($('min_opacity_delta').value) || 1,
+    staged_lambda_scan: parseInt($('qv_stagedlam').value,10) || 0,
+    staged_lambda_n_keep: parseInt($('qv_nkeep').value,10) || 3,
+    scan_allocation: $('qv_alloc').checked,
+    staged_lambda_fine_scan: parseInt($('qv_finescan').value,10) || 0,
+    deterministic_fine: $('qv_detfine').checked,
+    seed: ($('qv_seed').value.trim() === '' ? undefined : parseInt($('qv_seed').value,10)),
+    n_staged_seeds: parseInt($('qv_nseeds').value,10) || 1,
+    beam_leaves: parseInt($('qv_beamleaves').value,10) || 4,
+    beam_positions: ($('qv_beampos').value.trim() === '' ? undefined : $('qv_beampos').value.trim().split(/[,\s]+/).map(Number)),
+    per_group_lambda: $('qv_pgl').checked,
   };
   // warm-start a re-run from the manual split list (never a tree overlay); the optimizer
   // result below loads as an explicit tree, kept until the next box/split edit.
-  if (columnsMode) {
+  // A filled CLI fieldset replaces the split warm-start with the CLI binning
+  // (edges + specs travel as the seed; the optimizer still reshapes the tree freely).
+  if (cli.cli) {
+    if (cli.body.tau_edges) body.tau_edges = cli.body.tau_edges;
+    if (cli.body.lambda_edges) body.lambda_edges = cli.body.lambda_edges;
+    if (cli.body.split_lambda_spec) body.split_lambda = cli.body.split_lambda_spec;
+    if (cli.body.lambda_per_tau_spec) body.lambda_edges_per_tau = cli.body.lambda_per_tau_spec;
+    if (cli.body.tau_per_lambda_spec) body.tau_per_lambda = cli.body.tau_per_lambda_spec;
+    delete body.splits;
+  }
+  if (gridMode) {
+    body.grid_search = true;
+    body.dtau = parseFloat($('qv_dtau').value) || 0.5;
+    body.dlam = parseFloat($('qv_dlam').value) || 0.25;
+    delete body.splits;
+  }
+  else if (columnsMode) {
     body.columns = true;
     body.tree = false;
     body.tau_per_lambda = null;
     body.splits = SPLITS;
   }
   else if (BINNING_TREE) body.binning_tree = BINNING_TREE;
-  else body.splits = SPLITS;
-  qoptBusy(true); setQStatus(columnsMode ? 'starting columns optimization…' : 'starting Q_rad optimization…'); QLASTDIAG = null;
+  else if (!cli.cli && !gridMode) body.splits = SPLITS;
+  qoptBusy(true); setQStatus(gridMode ? 'starting grid search…' : columnsMode ? 'starting columns optimization…' : 'starting Q_rad optimization…'); QLASTDIAG = null;
   QPLAN = predictPlan(body);
   renderSteps([], true, QPLAN);
   try {
@@ -435,9 +537,9 @@ async function qoptStart(columnsMode=false) {
   } catch(e){ setQStatus(e.message, true); qoptBusy(false); stopQBar(); }
 }
 // Mirror of server _run_plan: ordered stage tags for this request, so the full checklist
-// renders upfront and polls only flip todo -> active -> done.
 function predictPlan(body) {
   if (body.columns) return ['start', 'lambda-wiggle', 'tau-groups', 'joint-wiggle', 'round'];
+  if (body.grid_search) return ['start', 'grid', 'done'];
   const plan = ['start'];
   if (body.initial_tau_bins) {
     if (body.initial_tau_scan) plan.push('tau-scan');
@@ -454,6 +556,8 @@ function predictPlan(body) {
 const QSTEP_LABELS = {
   'start': 'seed binning scored',
   'tau-scan': 'tau seed scan (LHS) done',
+  'grid': 'grid tilings enumerated',
+  'done': 'grid optimum found',
   'staged-tau': 'tau groups placed + positioned',
   'staged-lambda': 'bottom-two groups lambda-split + positioned',
   'lambda': 'lambda cuts positioned',
@@ -483,7 +587,6 @@ function renderSteps(history, running, plan, stage) {
   for (const h of history || []) if (!seen.includes(h.tag)) seen.push(h.tag);
   // upfront checklist: plan order fixed; explicit server stage decides states, so sub-step
   // noise (tree sweeps, per-column reports) never appends bullets or steals the active slot.
-  // Stages before the current one are done, the current one is active, later ones todo.
   const order = (plan && plan.length ? plan : seen).filter((t, i, a) => a.indexOf(t) === i);
   if (!order.length) { host.classList.remove('on'); host.innerHTML = ''; return; }
   host.classList.add('on');
@@ -500,7 +603,7 @@ async function qoptPoll() {
   catch(e){ return; }  // transient network hiccup; keep polling
   if (d.error) { setQStatus('optimize error: ' + d.error, true); return qoptFinish(null); }
   if (!d.running) return qoptFinish(d.result);
-  if (!QANIM) startQBar(+$('qbudget').value || 180);          // resume (e.g. after a page reload)
+  if (!QANIM) startQBar(+$('qbudget').value || 1800);          // resume (e.g. after a page reload)
   if (typeof d.elapsed === 'number') QT0 = Date.now() - d.elapsed * 1000;  // resync to server elapsed
   if (d.diagram && d.diagram.rms !== QLASTDIAG) { QLASTDIAG = d.diagram.rms; liveBinning(d.diagram); }  // live top-plot preview
   const imp = (d.rms0 && d.best) ? ` (−${(100*(d.rms0-d.best)/d.rms0).toFixed(1)}%)` : '';
@@ -524,6 +627,20 @@ function qoptFinish(result) {
   const what = result.columns ? 'Columns optimized' : 'Q_rad optimized';
   setQStatus(`${what}: rms ${result.rms0.toExponential(2)} → ${result.rms.toExponential(2)} (−${imp}%)${why} · ${result.n_evals} evals`);
   compute();
+}
+
+async function downloadSavePlot() {
+  setStatus('rendering before/after plot…');
+  try {
+    const r = await fetch('/api/save_plot?model=' + encodeURIComponent($('model').value));
+    if (!r.ok) { let m='plot failed'; try { m=(await r.json()).error||m; } catch(_){} throw new Error(m); }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'qrad_before_after.png';
+    document.body.appendChild(a); a.click();
+    a.remove(); URL.revokeObjectURL(url);
+    setStatus('downloaded qrad_before_after.png');
+  } catch(e){ setStatus(e.message, true); }
 }
 
 async function downloadKappa() {
@@ -551,8 +668,42 @@ async function downloadKappa() {
   finally { $('dl').disabled = false; }
 }
 
+async function downloadNpy() {
+  const cli = cliBinningBody();
+  if (cli.error) return setStatus(cli.error, true);
+  let tauwin, lam;
+  try { tauwin = parseEdges($('tauwin').value); lam = parseEdges($('lam').value); }
+  catch(e){ return setStatus('could not parse edges', true); }
+  if (!edgesValid(tauwin)) return setStatus('τ window needs exactly 2 increasing edges', true);
+  if (!edgesValid(lam)) return setStatus('λ window needs exactly 2 increasing edges', true);
+  const body = {tau_edges:tauwin, lambda_edges:lam, splits:SPLITS, model:$('model').value,
+                min_opacity_delta: parseFloat($('min_opacity_delta').value) || 1};
+  if (BINNING_TREE) body.binning_tree = BINNING_TREE;
+  if (cli.cli) {
+    if (cli.body.tau_edges) body.tau_edges = cli.body.tau_edges;
+    if (cli.body.lambda_edges) body.lambda_edges = cli.body.lambda_edges;
+    if (cli.body.split_lambda_spec) body.split_lambda_spec = cli.body.split_lambda_spec;
+    if (cli.body.lambda_per_tau_spec) body.lambda_per_tau_spec = cli.body.lambda_per_tau_spec;
+    if (cli.body.tau_per_lambda_spec) body.tau_per_lambda_spec = cli.body.tau_per_lambda_spec;
+    delete body.splits;
+  }
+  $('dlnpy').disabled = true; setStatus('building .npy table…');
+  try {
+    const r = await fetch('/api/npy', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    if (!r.ok) { let m='download failed'; try { m=(await r.json()).error||m; } catch(_){} throw new Error(m); }
+    const blob = await r.blob();
+    const cd = r.headers.get('Content-Disposition') || '';
+    const mm = cd.match(/filename="([^"]+)"/);
+    const name = mm ? mm[1] : 'tau_bin_opacities.npy';
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click();
+    a.remove(); URL.revokeObjectURL(url);
+    setStatus('downloaded ' + name);
+  } catch(e){ setStatus(e.message, true); }
+  finally { $('dlnpy').disabled = false; }
+}
+
 function downloadTree() {
-  if (!BINNING_TREE) return setStatus('no optimizer tree to save yet — run an optimization first', true);
   const blob = new Blob([JSON.stringify(BINNING_TREE, null, 2) + '\n'], {type: 'application/json'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a'); a.href = url; a.download = 'binning_tree.json';
@@ -924,6 +1075,8 @@ function renderAtm(d){
   Plotly.react('atmchart', data, layout, {responsive:true, displayModeBar:true, displaylogo:false, modeBarButtonsToRemove:['lasso2d','select2d']});
 }
 
+document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.tab)));
+
 function switchTab(tab){
   if (tab === ACTIVE_TAB) return;
   ACTIVE_TAB = tab;
@@ -951,8 +1104,11 @@ window.addEventListener('keydown', e => { if (e.key === 'Escape' && SPLIT_MODE) 
 $('go').addEventListener('click', compute);
 $('qopt').addEventListener('click', () => qoptStart(false));
 $('qoptcols').addEventListener('click', () => qoptStart(true));
+$('qoptgrid').addEventListener('click', () => qoptStart(false, true));
+$('dlplot').addEventListener('click', downloadSavePlot);
 $('qcancel').addEventListener('click', qoptCancel);
 $('dl').addEventListener('click', downloadKappa);
+$('dlnpy').addEventListener('click', downloadNpy);
 $('dltree').addEventListener('click', downloadTree);
 $('uptree').addEventListener('change', e => uploadTree(e.target.files[0]));
 $('refresh').addEventListener('click', refreshModels);

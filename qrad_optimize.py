@@ -1907,11 +1907,14 @@ def optimize_qrad(
     plateau_rel=0.005,  # plateau "improvement" threshold (fraction of the reference rms)
     per_group_lambda=False,
     lambda_edges_per_tau=None,  # per-group-lambda warm start (one lambda-edge list per tau group)
+    lambda_per_tau_spec=None,  # CLI spec form (list of comma-separated edge strings, as in tausort main)
     tau_per_lambda=None,  # columns warm start (one tau-edge list per lambda column)
+    tau_per_lambda_spec=None,  # CLI spec form (list of comma-separated edge strings)
     splits=None,  # split-list warm start (ordered [{axis, tau, lam}] over the 2-edge windows)
-    tree=False,  # general 2D guillotine mode (both tau and lambda locally free)
+    tree=False,  # DEPRECATED (inert): tree-only since the tree path became the single grouping
+    # implementation; kept for CLI/API compat (webapp sends it). binning_tree is the warm start.
     binning_tree=None,  # guillotine-tree warm start {window_tau, window_lam, root}
-    beam_width=3,  # rival tree topologies kept in parallel each round
+    beam_width=3,  # rival tree topologies kept in parallel each grow round
     beam_positions=(0.35, 0.5, 0.65),  # split-position fractions tried per (leaf, axis)
     beam_leaves=4,  # widest leaves considered for splitting, per beam tree
     explore=0.05,  # early exploration: adopt non-improving grow rounds within this cost fraction
@@ -1922,7 +1925,6 @@ def optimize_qrad(
     staged_lambda_scan=0,  # staged seeding: LHS-scan this many (L, t_lo, t_hi) bottom triples (0 = off, keep sync path)
     staged_lambda_n_keep=3,  # bottom-triple scan: survivors polished + returned best-first
     scan_allocation=False,  # staged lambda step: scan the per-column tau-depth allocation (2,0)/(1,1)/(0,2)
-    #   instead of the symmetric one-cut-per-column bottom triples -- seeds the depth-where-density basin directly
     staged_lambda_fine_scan=0,  # staged lambda step: after the coarse allocation scan, re-scan the asymmetric
     #   allocations (depth all in one column) at fine resolution (dtau=0.1, dlam=0.05) -- the winner's
     #   (lambda, tau1, tau2) well is narrower than the coarse 0.5/0.25 grid can represent (0 = off)
@@ -2004,8 +2006,24 @@ def optimize_qrad(
         if len(tau_edges) != 2 or len(lambda_edges) != 2:
             raise ValueError("splits mode needs exactly 2 tau edges + 2 lambda edges (the outer windows)")
         btree = tree_from_splits(tau_edges, lambda_edges, splits)
-    elif lambda_edges_per_tau is not None:
-        btree = tree_from_lpt(tau_edges, [list(x) for x in lambda_edges_per_tau])
+    elif tau_per_lambda is not None or tau_per_lambda_spec is not None:
+        if tau_per_lambda is not None and tau_per_lambda_spec is not None:
+            raise ValueError("pass tau_per_lambda or tau_per_lambda_spec, not both")
+        cols = (
+            [list(x) for x in tau_per_lambda]
+            if tau_per_lambda is not None
+            else [qrad_core.parse_edge_list(s) for s in tau_per_lambda_spec]
+        )
+        btree = tree_from_columns(list(lambda_edges), cols)
+    elif lambda_edges_per_tau is not None or lambda_per_tau_spec is not None:
+        if lambda_edges_per_tau is not None and lambda_per_tau_spec is not None:
+            raise ValueError("pass lambda_edges_per_tau or lambda_per_tau_spec, not both")
+        lpt0 = (
+            [list(x) for x in lambda_edges_per_tau]
+            if lambda_edges_per_tau is not None
+            else [qrad_core.parse_edge_list(s) for s in lambda_per_tau_spec]
+        )
+        btree = tree_from_lpt(tau_edges, lpt0)
         if grow and _n_leaves(btree) >= max_groups:
             # The per-group-lambda warm start can already meet/exceed the leaf cap (the webapp's
             # default is 4 tau-groups x 2 lambda-cells = 8 leaves == MAX_GROUPS). With the cap
