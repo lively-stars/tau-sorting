@@ -108,6 +108,35 @@ def piecewise_linear_breaks_tails(
     step_tail = max(1, int(round(step_tail_frac * n)))
     min_mid = max(1, int(round(min_mid_frac * n)))
 
+    # Closed-form linear-regression SSE over contiguous windows. The break search fits a
+    # line to each candidate segment hundreds of times per group; np.polyfit (SVD/lstsq) per
+    # candidate was the hot spot. For an inclusive window [i, j] the least-squares line and its
+    # residual sum of squares have an O(1) closed form from prefix sums, giving the same
+    # breakpoints with far less work (for y = a + b*x, SSE = Syy - a*Sy - b*Sxy).
+    px = np.concatenate(([0.0], np.cumsum(x)))
+    pxx = np.concatenate(([0.0], np.cumsum(x * x)))
+    py = np.concatenate(([0.0], np.cumsum(y)))
+    pxy = np.concatenate(([0.0], np.cumsum(x * y)))
+    pyy = np.concatenate(([0.0], np.cumsum(y * y)))
+
+    def seg_sse(i: int, j: int) -> float:
+        # SSE of the least-squares line over the inclusive window [i, j].
+        m = j - i + 1
+        sx = px[j + 1] - px[i]
+        sxx = pxx[j + 1] - pxx[i]
+        sy = py[j + 1] - py[i]
+        sxy = pxy[j + 1] - pxy[i]
+        syy = pyy[j + 1] - pyy[i]
+        denom = m * sxx - sx * sx
+        if denom > 0.0:
+            slope = (m * sxy - sx * sy) / denom
+            intercept = (sy - slope * sx) / m
+        else:
+            # Degenerate window (single point or constant x): zero residual about the mean.
+            slope = 0.0
+            intercept = sy / m
+        return syy - intercept * sy - slope * sxy
+
     best_sse = np.inf
     best = None  # will hold (b1, b2, low_len, high_len)
 
@@ -120,23 +149,8 @@ def piecewise_linear_breaks_tails(
             b1 = low_len - 1
             b2 = n - high_len
 
-            # segment 1: [0 .. b1]
-            x1, y1 = x[: b1 + 1], y[: b1 + 1]
-            c1 = np.polyfit(x1, y1, 1)
-            y1_fit = np.polyval(c1, x1)
-            sse = np.sum((y1 - y1_fit) ** 2)
-
-            # segment 2: [b1 .. b2]
-            x2, y2 = x[b1 : b2 + 1], y[b1 : b2 + 1]
-            c2 = np.polyfit(x2, y2, 1)
-            y2_fit = np.polyval(c2, x2)
-            sse += np.sum((y2 - y2_fit) ** 2)
-
-            # segment 3: [b2 .. n-1]
-            x3, y3 = x[b2:], y[b2:]
-            c3 = np.polyfit(x3, y3, 1)
-            y3_fit = np.polyval(c3, x3)
-            sse += np.sum((y3 - y3_fit) ** 2)
+            # segment 1: [0 .. b1] + segment 2: [b1 .. b2] + segment 3: [b2 .. n-1]
+            sse = seg_sse(0, b1) + seg_sse(b1, b2) + seg_sse(b2, n - 1)
 
             if sse < best_sse:
                 best_sse = sse
