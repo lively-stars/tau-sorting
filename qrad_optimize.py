@@ -3272,6 +3272,11 @@ def main(
                 0 if loaded_tree is not None else (staged_lambda_scan if staged_lambda_scan and initial_tau_bins else 0)
             ),
             scan_allocation=scan_allocation and initial_tau_bins > 0,
+            staged_lambda_fine_scan=(
+                0
+                if loaded_tree is not None or not scan_allocation
+                else (staged_lambda_fine_scan if staged_lambda_fine_scan and initial_tau_bins else 0)
+            ),
             deterministic_fine=deterministic_fine if scan_allocation and initial_tau_bins else False,
             seed=seed,
             n_staged_seeds=(1 if loaded_tree is not None or not initial_tau_bins else n_staged_seeds),
