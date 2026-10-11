@@ -3105,6 +3105,8 @@ def main(
     report = qrad_core.validate_model_file(qrad_core.MODELS_DIR / model_name)
     if not report["ok"]:
         raise typer.BadParameter(f"model models/{model_name} is not valid: {report['error']}")
+    if plot_every and not plot.strip():
+        raise typer.BadParameter("--plot-every requires --plot (no directory to write frames to).")
 
     print("[startup] precomputing invariants (reads the ODF; ~10-30s)...")
     try:
