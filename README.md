@@ -136,8 +136,7 @@ stacked panels:
 **Optimize for Q_rad** runs the direct optimizer (§2c) as a background job, warm-started from
 the current binning: tick which of τ / λ / grow-N to vary, set a time budget, and watch the rms tick
 down live (with a **cancel** that keeps the best binning found so far). When it finishes it loads the
-optimized binning and recomputes. **Optimize columns** runs the columns-constrained variant instead
-(λ-cut count fixed, per-column τ stacks) — same budgets, same result handling. Both minimize the
+optimized binning and recomputes. It minimizes the
 residual *directly* — a full RTE solve per step (~2.5 s). Under
 **Advanced** set the **beam width** (`1` = greedy grow, `≥ 2` = non-greedy beam search over
 rival tree topologies — the default), plus `max τ-groups`, the `metric`, and the stopping
@@ -159,13 +158,11 @@ Pure stdlib server (no extra dependencies).
 This optimizer **minimizes the Q_rad rms residual directly** — the metric that actually matters —
 by searching over a **guillotine-tree** binning of the (−log₁₀ τ, log₁₀ λ) plane on the chosen
 atmosphere (`models/G2_1D.dat` by default; `--model <file>` picks another validated model). The
-general-2D path below refines one tree via seed → grow → polish → topo: its leaves are the (τ, λ)
+general-2D tree below refines one tree via seed → grow → polish → topo: its leaves are the (τ, λ)
 groups, and a τ cut and a λ cut can nest arbitrarily, so it can express
 any rectangular tiling (the "general 2D" the webapp loads after a run). Every input shape —
-shared-tau + `--split-lambda` flags, `--per-group-lambda`, or an explicit tree — is normalized to
-one tree and refined via that single path. The columns-constrained variant (`--columns`,
-`optimize_columns`) is documented after the examples: fixed λ-cut count, per-column τ stacks,
-coordinate descent that never leaves the column family.
+shared-tau + `--split-lambda` flags, `--per-group-lambda`, per-column-τ, or an explicit tree — is
+normalized to one tree and refined via that single path.
 
 ```bash
 # greedy grow (--beam-width 1): seed from 4 τ-groups, grow up to --max-groups leaves
@@ -174,23 +171,16 @@ uv run python qrad_optimize.py \
     --lambda-bin-edges 3 --lambda-bin-edges 3.8 --lambda-bin-edges 5 \
     --grow --beam-width 1 --max-seconds 1500 --save-plot plots/qrad_before_after.png
 
-# non-greedy beam search over tree topologies (--tree --beam-width 3, the default width): keeps rival tilings alive
+# non-greedy beam search over tree topologies (--beam-width 3, the default width): keeps rival tilings alive
 uv run python qrad_optimize.py \
     --tau-bin-edges=-0.63 --tau-bin-edges=0.35 --tau-bin-edges=1.23 --tau-bin-edges=2.885 --tau-bin-edges=7 \
     --lambda-bin-edges 3 --lambda-bin-edges 3.8 --lambda-bin-edges 5 \
-    --tree --beam-width 3 --max-seconds 1800 --save-dat
+    --beam-width 3 --max-seconds 1800 --save-dat
 
 # seed from a per-τ-group λ layout, then let the grow/polish reshape the tree freely
 uv run python qrad_optimize.py \
     --tau-bin-edges=-0.63 --tau-bin-edges=0.35 --tau-bin-edges=1.23 --tau-bin-edges=2.885 --tau-bin-edges=7 \
     --lambda-bin-edges 3 --lambda-bin-edges 5 --per-group-lambda --max-seconds 300
-
-# columns-constrained (--columns): λ-cut count fixed, each λ column keeps its own τ stack.
-# Optimizes cut positions + per-column grow/prune without ever leaving the column family:
-uv run python qrad_optimize.py --columns \
-    --lambda-bin-edges 3 --lambda-bin-edges 3.8 --lambda-bin-edges 5 \
-    --tau-per-lambda=-0.63,0.1,1.0,3.2,7 --tau-per-lambda=-0.63,0.8,1.6,2.5,7 \
-    --max-seconds 1800 --save-dat
 ```
 
 The optimizer first seeds a tree from the inputs, then **grows** it — as a non-greedy
