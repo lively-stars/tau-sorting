@@ -117,6 +117,7 @@ def make_evaluator(
     on_eval=None,
     window=None,
     min_opacity_delta=None,
+    smooth_window=None,
 ):
     """Return (evaluate, state). `evaluate(*, binning_tree) -> (cost, raw_dict)`.
 
@@ -136,6 +137,8 @@ def make_evaluator(
     _kw = {} if window is None else {"window": (float(window[0]), float(window[1]))}
     if min_opacity_delta is not None:
         _kw["min_opacity_delta"] = float(min_opacity_delta)
+    if smooth_window is not None:
+        _kw["smooth_window"] = int(smooth_window)
 
     def evaluate(*, binning_tree):
         # Tree-only: the optimizer always calls this with a guillotine tree. The positional
@@ -1392,6 +1395,7 @@ def _new_search_context(
     on_eval,
     window,
     min_opacity_delta,
+    smooth_window,
     max_evals,
     max_seconds,
     t0,
@@ -1424,6 +1428,7 @@ def _new_search_context(
         on_eval=_record_on_eval,
         window=window,
         min_opacity_delta=min_opacity_delta,
+        smooth_window=smooth_window,
     )
     budget = _Budget(
         max_evals=max_evals,
@@ -1502,8 +1507,10 @@ def optimize_qrad(
     explore=0.05,  # early exploration: adopt non-improving grow rounds within this cost fraction
     explore_rounds=2,  # how many such jumps allowed before the grow bar goes strict
     min_opacity_delta=None,  # min bottom-opacity max/min ratio to split a group (None -> score default)
+    smooth_window=None,  # tail-break smoothing window (None -> score default 15)
     initial_tau_bins=None,  # staged seeding: N equally-spaced tau cuts, tau-only polish, fine-grid lambda split
     initial_tau_scan=0,  # staged seeding: LHS-scan this many tau-cut sets first, seed from the winner (0 = off)
+    freeze_top=True,  # staged seeding: freeze the top tau cut after tau polish (later phases never move/remove it)
     staged_lambda_n_keep=3,  # staged lambda step: fine-grid survivors polished + returned best-first
     seed=None,  # RNG seed for the tau-cut scan (None = fresh entropy; same seed = reproducible run)
     score_fn=None,
@@ -1550,6 +1557,7 @@ def optimize_qrad(
         on_eval=on_eval,
         window=window,
         min_opacity_delta=min_opacity_delta,
+        smooth_window=smooth_window,
         max_evals=max_evals,
         max_seconds=max_seconds,
         t0=t0,
@@ -1685,7 +1693,8 @@ def optimize_qrad(
                 # (depth stacked in one lambda column, the other undivided), take the winner
                 # and checkpoint staged-lambda.
                 _top = max(_tau_cuts_sorted(btree), default=float(tau_edges[-1]))
-                freeze_tau_cuts(btree, top_only=True)
+                if freeze_top:
+                    freeze_tau_cuts(btree, top_only=True)
                 _n_cuts = int(max_groups) - 3  # deep leaf (1) + 2 column floors (2) + cuts = max_groups
                 seeds = scan_bottom_fine_grid(
                     [tau_edges[0], tau_edges[-1]],
@@ -1701,7 +1710,8 @@ def optimize_qrad(
                 if seeds:
                     btree, _best_cost = seeds[0][1], seeds[0][0]
                     checkpoint("staged-lambda", evaluate(binning_tree=btree)[1])
-            freeze_tau_cuts(btree, top_only=True)  # top seed cut fixed: later phases never move/remove it
+            if freeze_top:  # top seed cut fixed: later phases never move/remove it
+                freeze_tau_cuts(btree, top_only=True)
     else:
         rms0_r = evaluate(binning_tree=btree)[1]  # rms of the user's seed binning
         rms0 = float(rms0_r["rms"])
@@ -1839,6 +1849,11 @@ def main(
         "--min-opacity-delta",
         help="Only split a group into low/mid/high when its bottom opacity max/min >= this (1 = always split).",
     ),
+    smooth_window: int = typer.Option(
+        15,
+        "--smooth-window",
+        help="Tail-break smoothing window for the split segmentation (default 15; 7 = old behaviour).",
+    ),
     max_groups: int = typer.Option(8, "--max-groups"),
     initial_tau_bins: int = typer.Option(
         3,
@@ -1854,6 +1869,11 @@ def main(
         None,
         "--seed",
         help="RNG seed for the staged tau-cut scan (same seed = reproducible run; omit = fresh entropy).",
+    ),
+    freeze_top: bool = typer.Option(
+        True,
+        "--freeze-top/--no-freeze-top",
+        help="Staged seeding: freeze the top tau cut after tau polish (later phases never move/remove it).",
     ),
     max_evals: int = typer.Option(400, "--max-evals"),
     max_seconds: float = typer.Option(1800.0, "--max-seconds"),
@@ -2017,12 +2037,14 @@ def main(
         beam_positions=tuple(beam_positions),
         beam_leaves=beam_leaves,
         min_opacity_delta=min_opacity_delta,
+        smooth_window=smooth_window,
         binning_tree=loaded_tree,
         initial_tau_bins=None if loaded_tree is not None else (initial_tau_bins if initial_tau_bins else None),
         initial_tau_scan=(
             0 if loaded_tree is not None else (initial_tau_scan if initial_tau_scan and initial_tau_bins else 0)
         ),
         seed=seed,
+        freeze_top=freeze_top,
         on_progress=_progress,
         on_eval=_on_eval_frame if plot_dir and plot_every else None,
         on_improve=_on_improve if plot_dir else None,
@@ -2060,6 +2082,7 @@ def main(
             save_plot,
             model_name,
             min_opacity_delta=min_opacity_delta,
+            smooth_window=smooth_window,
         )
         print(f"  before/after plot -> {save_plot}")
 
@@ -2071,6 +2094,7 @@ def main(
             model_name,
             binning_tree=result["binning_tree"],
             min_opacity_delta=min_opacity_delta,
+            smooth_window=smooth_window,
         )
         print(f"  kappa table -> {written}")
 
@@ -2089,13 +2113,15 @@ def _tree_bands_str(tree) -> str:
     return "\n    ".join(f"tau[{tlo:.3f},{thi:.3f}] lam[{llo:.3f},{lhi:.3f}]" for tlo, thi, llo, lhi in rects)
 
 
-def _plot_before_after(before_tree, after_tree, path, model=None, min_opacity_delta=None):
+def _plot_before_after(before_tree, after_tree, path, model=None, min_opacity_delta=None, smooth_window=None):
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     _kw = {} if min_opacity_delta is None else {"min_opacity_delta": min_opacity_delta}
+    if smooth_window is not None:
+        _kw["smooth_window"] = smooth_window
     a = qrad_core.score_binning(None, None, None, model, binning_tree=before_tree, **_kw)
     b = qrad_core.score_binning(None, None, None, model, binning_tree=after_tree, **_kw)
     ltau, rho = a["ltau"], a["rho"]

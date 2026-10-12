@@ -466,6 +466,7 @@ def score_binning(
     binning_tree=None,
     window=None,
     min_opacity_delta=1.0,
+    smooth_window=15,
     split_lambda_spec=None,
     lambda_per_tau_spec=None,
     tau_per_lambda_spec=None,
@@ -546,6 +547,7 @@ def score_binning(
         n_subbin_points=len(band_index),
         n_groups=n_groups,
         n_splits=n_splits,
+        smooth_window=smooth_window,
         min_opacity_delta=min_opacity_delta,
     )
     n_bands = n_groups * n_splits
@@ -663,6 +665,7 @@ def save_kappa_dat(
     n_splits=3,
     path=None,
     min_opacity_delta=1.0,
+    smooth_window=15,
     split_lambda_spec=None,
     lambda_per_tau_spec=None,
     tau_per_lambda_spec=None,
@@ -749,6 +752,7 @@ def save_kappa_dat(
         n_subbin_points=len(band_index),
         n_groups=n_groups,
         n_splits=n_splits,
+        smooth_window=smooth_window,
         min_opacity_delta=min_opacity_delta,
     )
     n_bands = n_groups * n_splits
@@ -797,6 +801,7 @@ def save_npy(
     n_splits=3,
     path=None,
     min_opacity_delta=1.0,
+    smooth_window=15,
     split_lambda_spec=None,
     lambda_per_tau_spec=None,
     tau_per_lambda_spec=None,
@@ -856,6 +861,7 @@ def save_npy(
         n_subbin_points=len(band_index),
         n_groups=n_groups,
         n_splits=n_splits,
+        smooth_window=smooth_window,
         min_opacity_delta=min_opacity_delta,
     )
     n_bands = n_groups * n_splits

@@ -2089,7 +2089,7 @@ def _segment_defs(
 
 def _tail_breaks_vectorized(
     s_bot: NDArray[np.float64],
-    smooth_window: int = 7,
+    smooth_window: int = 15,
     max_tail_frac_high: float = 0.1,
 ) -> dict:
     """Vectorized equivalent of ``analyze_group(s, refine_mid=False)``.
@@ -2281,7 +2281,7 @@ def build_split_band_index(
     n_subbin_points: int,
     n_groups: int,
     n_splits: int = 3,
-    smooth_window: int = 7,
+    smooth_window: int = 15,
     min_opacity_delta: float = 1.0,
 ) -> NDArray[np.int32]:
     """

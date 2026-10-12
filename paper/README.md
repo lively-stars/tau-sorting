@@ -19,20 +19,21 @@ Built on the method in `qrad_optimize.py` / `qrad_core.py`, with the RT solver
 
 ## Build
 
-Needs a TeX distribution (TeX Live / MacTeX) — none is installed on this machine
-yet, so build on [Overleaf](https://www.overleaf.com) (upload this folder) or
-after installing TeX:
+Needs a TeX distribution (TeX Live / MacTeX). `aa.cls` requires `cuted.sty` /
+`flushend.sty` (the `sttools` bundle), vendored in this folder because minimal
+TeX installations omit them; `latexmk` picks them up automatically:
+
+```bash
+latexmk -pdf ms
+```
+
+or step by step:
 
 ```bash
 pdflatex ms
 bibtex   ms
 pdflatex ms
 pdflatex ms
-```
-
-or, with `latexmk`:
-```bash
-latexmk -pdf ms
 ```
 
 ## Pre-submission TODOs (flagged in `ms.tex` with `% TODO:`)

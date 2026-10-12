@@ -46,32 +46,48 @@
     represented by a Planck- or Rosseland-mean opacity \citep{nordlund1982,ludwig1992,vogler2004}.
     The placement of the bin edges is the central degree of freedom of the
     method and is conventionally chosen by hand using physical heuristics.}
-   {We aim to find a more optimal partition of the
-    $(\tau,\lambda)$ plane --- one that minimizes the error in the
+   {We aim to find the partition of the
+    $(\tau,\lambda)$ plane that minimizes the error in the
     simulated radiative heating rate $Q_\mathrm{rad}$ with respect to the
-    full line-by-line reference, rather than proxies such as the flatness
-    of the sorted-opacity curve.}
+    full line-by-line reference, and to learn which ingredients of the
+    search actually matter: which stages find the good tilings, and which
+    variants fail.}
    {We recast opacity binning as a partition of the
     $(-\log_{10}\tau,\,\log_{10}\lambda)$ plane into rectangular groups,
     the leaves of a guillotine tree, and optimize that partition directly
-    against the $Q_\mathrm{rad}$ residual obtained from a 1D
+    against the $Q_\mathrm{rad}$ residual from a 1D
     short-characteristics radiative-transfer solve per candidate binning.
-    The search is a non-greedy beam search over tree topologies (grow)
-    followed by a per-cut position polish; every input shape (shared
-    $\tau$ edges with wavelength-split flags, per-$\tau$-group
-    wavelength edges, or a free two-dimensional tree) is normalized to a
-    single tree before refinement.}
-   {At fixed band budget, wavelength-resolved binnings reduce the
-    rms $Q_\mathrm{rad}$ residual by about a factor of $2.5$ relative to
-    $\tau$-depth-only binning. The tree optimizer recovers this accuracy
-    with $\sim\!40\%$ fewer bands, and improves further on hand-placed
-    edges. The benefit is localized: spending wavelength resolution in
-    the single sub-photospheric $\tau$-group in which the photospheric
-    cooling peak forms is sufficient.}
-   {Minimizing the radiative-transfer residual directly, rather than
-    an edge-position proxy, yields markedly better opacity tables at equal
-    or lower cost. The guillotine-tree formulation automates the search
-    and exposes where wavelength resolution is actually needed.}
+    The pipeline is staged seeding (3 $\tau$ cuts, a 64-sample
+    Latin-hypercube $\tau$ scan, $\tau$ polish, then a flipped
+    bottom-region fine-grid scan with the top cut frozen), followed by
+    beam-3 grow, position polish, and a topology search over
+    SPLIT, TRANSPLANT and REALLOC moves. The leaf cap is 5 groups at a
+    budget of 800 evaluations. The setup is the solar-like model
+    G2 on a $300\times150$ $(T,p)$ ODF grid with 328 wavelength bins of
+    12 sub-bins each, scored by the rms $Q_\mathrm{rad}$ residual times an
+    empty-band penalty.}
+   {Across 25 seeds the early checkpoints tie ($\tau$ scan near
+    $1.318\times10^{8}$, staged $\tau$ near $1.242\times10^{8}$), the
+    staged-$\lambda$ checkpoint fans out from $1.01$ to
+    $1.48\times10^{8}$, and the finals scatter from $7.9\times10^{7}$ to
+    $1.2\times10^{8}$. One seed reached $4.87\times10^{7}$, about 63\%
+    below its seed rms, through a REALLOC cliff late in the run; a
+    re-run of seeds 0 to 4 on the final code gave finals of 4.92, 4.37,
+    4.71, 4.71 and $4.71\times10^{7}$, with $4.37\times10^{7}$ the best
+    residual recorded. An ablation on the winner shows the within-group
+    low/mid/high opacity split carries roughly four-fifths of the
+    accuracy: disabling it degrades $4.87\times10^{7}$ to
+    $2.42\times10^{8}$, and collapsing a single group already costs a
+    third. Staging selects the basin and downstream search
+    cannot leave it; early-selection portfolios, column-constrained
+    tilings and grid search all failed to reach the optimum and were
+    removed.}
+   {Minimizing the transfer residual directly, with staged seeding plus
+    beam grow plus topology REALLOC, finds tilings far better than
+    hand-placed edges at the same band count. The open problem is basin
+    selection: nothing cheap predicts which staging will refine well, so
+    future work must address late selection, wider transplant reach,
+    basin diversity in the beam, or objective shaping.}
 
    \keywords{radiative transfer --
              methods: numerical --
@@ -92,7 +108,7 @@
    binning} \citep{nordlund1982,ludwig1992,ludwig1994,skartlien2000,vogler2004}: the
    monochromatic opacity distribution function (ODF) is sorted into a
    modest number of groups, and each group is represented by a single
-   mean opacity -- a Planck mean where the gas is optically thin and a
+   mean opacity (a Planck mean where the gas is optically thin and a
    Rosseland mean where it is optically thick, blended smoothly between
    the two regimes \citep[Eq.~12]{vogler2004}. The resulting handful of
    opacities then replaces the full spectrum in the radiative-transfer
@@ -106,24 +122,27 @@
    optionally subdivides some groups in wavelength \citep{vogler2004}.
    The quality of a binning is judged by how well the binned calculation
    reproduces the radiative heating rate $Q_\mathrm{rad}$ of the full,
-   line-by-line calculation -- but the edges themselves are rarely chosen
+   line-by-line calculation, but the edges themselves are rarely chosen
    by optimizing that quantity directly.
 
    Here we take the partition to be an optimization variable. We
    represent the binning as a guillotine tree that tiles the
    $(-\log_{10}\tau,\,\log_{10}\lambda)$ plane into rectangular
-   $(\tau,\lambda)$ groups, and we drive a non-greedy (beam) search over tree topologies
-   and cut positions with the actual $Q_\mathrm{rad}$ residual computed
-   from a radiative-transfer solve for every candidate binning. The
-   question we address is simple and practical: for a given number of
+   $(\tau,\lambda)$ groups, and we drive a staged non-greedy search over
+   tree topologies and cut positions with the actual $Q_\mathrm{rad}$
+   residual computed from a radiative-transfer solve for every candidate
+   binning. The question we address is practical: for a given number of
    bands, which $(\tau,\lambda)$ tiling best reproduces the full-ODF
-   heating rate, and how much better is it than the hand-placed
-   alternatives?
+   heating rate, which stages of the search find it, and which plausible
+   shortcuts fail. The campaign we report used a leaf cap of 5 groups
+   and a budget of 800 evaluations per run, repeated over 25 seeds.
 
    Section~\ref{sec:method} reviews opacity binning and introduces the
    tree partition, the objective, and the search algorithm.
    Section~\ref{sec:setup} describes the validation setup.
-   Section~\ref{sec:results} presents the results, which we discuss in
+   Section~\ref{sec:results} presents the results, including the best
+   tiling found. Section~\ref{sec:negative} reports the variants that
+   failed, which we discuss in
    Sect.~\ref{sec:discussion}. Section~\ref{sec:conclusions} concludes.
 
 % =====================================================================
@@ -134,7 +153,8 @@
 \subsection{Opacity binning}
 \label{sec:binning}
 
-   We adopt the formulation of \citet{vogler2004}. The ODF supplies, on a
+   We adopt the formulation of \citet{vogler2004} (Eqs.~6, 11, 12, 16
+   and 17 in that paper). The ODF supplies, on a
    grid of temperatures and pressures, a line opacity for each of
    $N_\mathrm{bin}$ wavelength intervals (\emph{bins}), each subdivided
    into $N_\mathrm{sub}$ \emph{sub-bins} carrying a fractional width. The
@@ -145,7 +165,7 @@
    steps into $\tau$-groups.
 
    For a group $l$, the band-integrated Planck source and the Planck-mean
-   opacity are \citep[Eqs.~16--17]{vogler2004}
+   opacity are \citep[Eqs.~16 and 17]{vogler2004}
    \begin{align}
       B_l      &= \sum_i \Delta\nu_i\, B_{\Delta\nu_i}
                   \sum_{j(i,l)} w_{j(i,l)}, \label{eq:Bl}\\
@@ -179,23 +199,28 @@
    partition of the $(-\log_{10}\tau,\,\log_{10}\lambda)$ plane into
    rectangles. We represent any such partition as a \emph{guillotine
    tree}: starting from the bounding window, each interior node applies a
-   single cut -- either along $\tau$ (a horizontal line) or along
-   $\lambda$ (a vertical line) -- recursing on the two children until the
+   single cut, either along $\tau$ (a horizontal line) or along
+   $\lambda$ (a vertical line), recursing on the two children until the
    leaves are the $(\tau,\lambda)$ groups (Fig.~\ref{fig:binning}).
-   Because $\tau$ and $\lambda$ cuts may nest arbitrarily, this
-   representation can express any rectangular tiling, including -- as
-   special, restricted cases -- the layouts used in earlier work: a single
+   representation can express any rectangular tiling, including, as
+   special, restricted cases, the layouts used in earlier work: a single
    $\tau$ partition (one $\lambda$ cell), a shared $\tau$ partition with a
    per-group wavelength-split flag, and a per-$\tau$-group wavelength
    edge. We adopt the guillotine tree as the single internal
    representation and number its leaves in $\tau$-major depth-first order.
 
    Within each group, the sub-bins are further segmented along the
-   sorted-opacity axis into three opacity segments -- low, mid, high --
+   sorted-opacity axis into three opacity segments (low, mid, high),
    so that the final band count is $N_\mathrm{bands} =
    N_\mathrm{splits}\,N_\mathrm{groups}$ with
    $N_\mathrm{splits}=3$; a group whose bottom-of-atmosphere
-   weighted-opacity dynamic range is below a threshold is left unsplit.
+   weighted-opacity dynamic range falls below the
+   min-opacity-delta threshold is left unsplit and keeps a single band
+   (Fig.~\ref{fig:sorted}). The split is the dominant accuracy lever in
+   our setup: disabling it on the winning tiling degrades the rms from
+   $4.87\times10^{7}$ to $2.42\times10^{8}$ (Sect.~\ref{sec:split}), so
+   roughly four-fifths of the winner's accuracy comes from the opacity
+   split and one-fifth from the $(\tau,\lambda)$ tiling.
 
    \begin{figure}[t]
       \includegraphics[width=\hsize]{figures/fig1_binning_diagram.jpg}
@@ -211,6 +236,16 @@
       \label{fig:binning}
    \end{figure}
 
+   \begin{figure}[t]
+      \includegraphics[width=\hsize]{figures/fig4_sorted_opacity.jpg}
+      \caption{Sorted weighted opacity per $\tau$ group, the basis of the
+               low, mid and high opacity segmentation. Each group is split
+               into three bands unless its bottom weighted-opacity
+               dynamic range is below the min-opacity-delta threshold, in
+               which case it stays one band.}
+      \label{fig:sorted}
+   \end{figure}
+
 % ---------------------------------------------------------------------
 \subsection{Objective: the radiative heating-rate residual}
 \label{sec:objective}
@@ -218,7 +253,7 @@
    We judge a binning by the quantity of interest: how well the binned
    opacities reproduce the radiative heating rate of the full ODF. For a
    given binning we build the group-mean opacities
-   (Eqs.~\ref{eq:Bl}--\ref{eq:blend}), interpolate them onto the
+   (Eqs.~\ref{eq:Bl} and \ref{eq:blend}), interpolate them onto the
    atmospheric grid, solve the 1D radiative-transfer equation per band by
    short characteristics \citep{kunasz1988,bruls1999}, and sum the
    per-band heating rate into $Q_\mathrm{rad}^{\mathrm{bin}}$. The
@@ -238,35 +273,54 @@
         - Q_\mathrm{rad}^{\mathrm{full}}\bigr)/\rho\right],
       \label{eq:objective}
    \end{equation}
-   over a window $W$ of the Rosseland optical-depth axis. Alternative
+   over the window $W=[-5,\,3]$ of the Rosseland optical-depth axis.
+   Alternative
    metrics (maximum absolute residual, integral of $|Q|$) are available
-   but we use the rms throughout.
+   but we use the rms throughout. The score the search minimizes
+   multiplies this rms by $(1 + 0.75\,n_\mathrm{empty})$, where
+   $n_\mathrm{empty}$ counts bands containing no ODF steps, so the search
+   cannot collapse groups into empty bands for a spurious gain.
 
 % ---------------------------------------------------------------------
-\subsection{Search: seed, grow, polish}
+\subsection{Search: staged seeding, grow, polish, topology}
 \label{sec:search}
 
-   We minimize $\mathcal{R}$ over guillotine trees in three stages.
-   \emph{Seed}: an initial tree is constructed from the user-supplied
-   edges (any of the restricted layouts of Sect.~\ref{sec:tree}, or an
-   explicit tree). \emph{Grow}: the tree is expanded by splitting leaves,
-   using a non-greedy \emph{beam search} -- up to $B$ rival topologies are
+   We minimize the penalized $\mathcal{R}$ over guillotine trees in a
+   staged pipeline. \emph{Seed}: the tree starts from 3 equally spaced
+   $\tau$ cuts over the outer window (full $\lambda$ width, no
+   $\lambda$ cuts). A Latin-hypercube scan of 64 $\tau$-cut sets
+   replaces the uniform seed with its winner. \emph{$\tau$ polish}: the
+   $\tau$-only tree is position polished. \emph{Flipped bottom-region
+   scan}: the top (root $\tau$) cut is frozen, and a deterministic
+   fine-grid scan over the photospheric region enumerates
+   wavelength-cut and per-column $\tau$-cut combinations with asymmetric
+   allocations (the $\tau$ depth stacked inside one $\lambda$ column,
+   the other column left undivided). The winner becomes the staged
+   seed, and the frozen top cut is never moved or removed again.
+   \emph{Grow}: the tree is expanded by splitting leaves, using a
+   non-greedy \emph{beam search}: up to 3 rival topologies are
    kept in parallel, several split positions are tried per candidate leaf
    and axis, and topologies are de-duplicated by their leaf-rectangle
-   signature. The greedy limit $B=1$ splits the widest leaf at its
-   midpoint and commits a split only if $\mathcal{R}$ improves. Each
+   signature. The greedy limit (beam width 1) splits the widest leaf at
+   its midpoint and commits a split only if $\mathcal{R}$ improves. Each
    candidate split is one full evaluation of Eq.~\ref{eq:objective}.
-   \emph{Polish}: every cut position in the best tree is swept, a
-   fixed-point refinement iterating until no single cut moves.
+   \emph{Polish}: every unfrozen cut position is swept to a fixed point.
+   \emph{Topology}: a structural pass tries SPLIT (cut a leaf on either
+   axis under the cap), TRANSPLANT (move $\tau$ depth across a shared
+   $\lambda$ cut: collapse a $\tau$ cut inside one column and re-cut the
+   other, with the shared $\lambda$ cut jointly polished), and REALLOC
+   (drop a collapsible cut and re-cut a leaf, typically on the other
+   axis, for a different topology under the same leaf budget). Each
+   candidate move is polished to its position optimum before scoring.
 
    Two guardrails keep the search well-posed: cut positions must remain
-   strictly increasing and separated by a per-axis minimum gap, and an
-   empty-band penalty prevents the search from collapsing groups that
-   contain few ODF steps. The leaf count is capped at
-   $N_\mathrm{groups}^{\max}$ (default 8). Each evaluation costs a
-   complete radiative-transfer solve (a few seconds here), so the search
-   is run as a bounded batch job, terminated by an evaluation or
-   wall-time budget or by convergence of the best residual
+   strictly increasing and separated by a per-axis minimum gap, and the
+   empty-band penalty of Sect.~\ref{sec:objective} stops the search from
+   collapsing groups. The leaf count is capped at 5 groups. Each
+   evaluation costs a complete radiative-transfer solve (about 1.5 s
+   here), so the search runs as a bounded batch job of at most 800
+   evaluations. Progress is recorded at the checkpoints start,
+   tau-scan, staged-tau, staged-lambda, grow, blocks and topo
    (Appendix~\ref{app:search}).
 
 % =====================================================================
@@ -282,16 +336,12 @@
    same transfer solver with the ungrouped opacities, and a grey
    (single Rosseland-mean) calculation provides a one-band baseline.
 
-   We compare four binnings at controlled band budgets:
-   (i) a $\tau$-only binning with eight $\tau$-groups and no wavelength
-   split ($8\times1$, 24 bands);
-   (ii) a wavelength-resolved binning with four $\tau$-groups, every
-   group split in $\lambda$ at $\log_{10}\lambda[\!\mbox{\AA}]=3.8$
-   ($4\times2$, 24 bands);
-   (iii) the same four $\tau$-groups with only the first (sub-photospheric)
-   group split in $\lambda$ (15 bands);
-   and (iv) the tree-optimized partition from Sect.~\ref{sec:search},
-   warm-started from the same edges.
+   The campaign ran the staged pipeline of Sect.~\ref{sec:search} at leaf
+   cap 5 and budget 800 over 25 seeds (seeds 0 to 4 plus sweep seeds 5 to
+   24), logging the rms at every checkpoint. After dead code paths were
+   cut from the optimizer (Sect.~\ref{sec:negative}), seeds 0 to 4 were
+   re-run on the final code for verification. A separate run at leaf cap
+   8 tested whether the group count binds.
 
 % =====================================================================
 \section{Results}
@@ -301,62 +351,204 @@
       \includegraphics[width=\hsize]{figures/fig2_qrad_comparison.png}
       \caption{Radiative heating rate $Q_\mathrm{rad}/\rho$ (top) and
                residual against the full-ODF reference (bottom) versus
-               $\log_{10}\tau_\mathrm{Ross}$ for the binnings of
-               Sect.~\ref{sec:setup}. All binnings reproduce the
+               $\log_{10}\tau_\mathrm{Ross}$ for the full-ODF reference,
+               the grey baseline and the binned tables of
+               Table~\ref{tab:results}. All binned tables reproduce the
                photospheric cooling peak; the residual panel is what
-               distinguishes them.}
+               distinguishes them.
+               % TODO: regenerate fig2 from the present tables before submission.
+               }
       \label{fig:qrad}
    \end{figure}
 
-   Figure~\ref{fig:qrad} compares the binnings and Table~\ref{tab:results}
-   the rms residuals. Two results stand out. First, at the same 24-band
-   budget, spending the resolution on wavelength (the $4\times2$ layout)
-   reduces the rms residual by a factor of $\sim\!2.5$ relative to
-   spending it on $\tau$-depth (the $8\times1$ layout). Second, the
-   benefit of the wavelength split is localized: splitting only the
-   sub-photospheric $\tau$-group (15 bands) recovers essentially the same
-   residual as splitting all of them (24 bands). The optimizer (iv)
-   rediscovers this structure automatically and tightens the residual
-   further beyond the hand-placed seed (Fig.~\ref{fig:beforeafter}).
+   The checkpoints tell a consistent story across the 25 seeds
+   (Table~\ref{tab:results}). The $\tau$ scan ties near
+   $1.318\times10^{8}$ for every seed, and the staged-$\tau$ checkpoint
+   ties near $1.242\times10^{8}$. The staged-$\lambda$ scan is where the
+   runs diverge: its winners fan out from $1.01$ to
+   $1.48\times10^{8}$. Grow, polish and topology only refine within the
+   basin the staging selected, and the finals scatter from
+   $7.9\times10^{7}$ to $1.2\times10^{8}$. Only one seed out of 25 broke
+   through: seed 3 reached $4.87\times10^{7}$, about 63\% below its seed
+   rms, with seed 7 next at $7.88\times10^{7}$.
 
+   The winning tiling (search coordinates: $\tau$ window $-0.63$ to
+   $7.0$, $\log_{10}\lambda$ window $3.0$ to $5.0$) is a root $\tau$ cut
+   at $4.37$, frozen after staging, whose upper leaf spans the full
+   $\lambda$ width. The bottom region splits at $\log_{10}\lambda = 3.83$:
+   the dense column carries a three-deep $\tau$ stack at $1.02$ and
+   $2.09$, while the sparse side stays one undivided leaf. Five leaves in
+   all, at the cap. The run did not glide there: the residual dropped in
+   a REALLOC cliff between evaluations 570 and 676, not through gradual
+   polish. A control re-run from the seed-3 staging reproduces
+   $4.87\times10^{7}$ exactly.
+
+   Re-running seeds 0 to 4 on the final code, after the dead paths were
+   cut, gave finals of $4.92\times10^{7}$, $4.37\times10^{7}$,
+   $4.71\times10^{7}$, $4.71\times10^{7}$ and $4.71\times10^{7}$.
+   Every one of these beats every October-8 final for the same seeds
+   ($1.02\times10^{8}$, $9.22\times10^{7}$, $8.58\times10^{7}$,
+   $4.87\times10^{7}$ and $9.32\times10^{7}$). The October-8 logs predate
+   the deterministic fine-grid staged-$\lambda$ scan, which accounts for
+   the shift. Seed 1 at $4.37\times10^{7}$ is the best rms recorded on
+   this setup.
+
+\subsection{How much of the win is the opacity split?}
+\label{sec:split}
+
+   The results above entangle two choices: the $(\tau,\lambda)$ tiling
+   and the within-group low/mid/high opacity split. Re-scoring the fixed
+   winning tiling with the split progressively disabled separates them.
+   Collapsing one group (the smallest dynamic range, $7.9\times10^{2}$)
+   to a single band costs a third ($4.87\times10^{7}$ to
+   $6.50\times10^{7}$); collapsing two costs a factor of two
+   ($9.88\times10^{7}$); collapsing three or more saturates near
+   $2.3\times10^{8}$, and disabling the split everywhere gives
+   $2.42\times10^{8}$, a factor of $5.0$ above the winner
+   (Fig.~\ref{fig:split}). The per-group dynamic ranges span
+   $7.9\times10^{2}$ to $1.3\times10^{8}$, so the default threshold
+   splits every group and coincides with a threshold of $20$ on this
+   tiling. The tiling search matters, but the split does most of the
+   work.
+
+   The split boundaries come from a least-squares piecewise-linear fit
+   to the log-sorted opacity curve after a moving-average smoothing;
+   fixed-fraction alternatives (equal-count, equal-log-width, two or
+   four segments) all score $8.9\times10^{7}$ to $2.5\times10^{8}$ on
+   the winner, and the same fitted machinery on a raw-$\kappa$ rank
+   scores $8.9\times10^{7}$ against $4.87\times10^{7}$, so the power
+   lies in the fit to the Planck-weighted rank, not the segment count.
+   Widening the smoothing window from 7 to 15 members gains a further
+   4.7\% on the winner ($4.87\times10^{7}$ to $4.64\times10^{7}$) by
+   moving only the high-tail cut of one group; re-scoring all five seed
+   tilings at both windows never regresses by more than 0.2\%, and
+   scoring every full-search final under both windows favors 15 on five
+   of six tilings, including the campaign best
+   ($4.51\times10^{7}$). Full searches at both settings confirm the gain
+   survives the search: window 15 escapes a dead basin the default
+   stalls in ($8.44\times10^{7}$ to $5.05\times10^{7}$ on one seed). The
+   one deficit is search luck, a missed basin the scorer itself rates
+   better, so 15 is now the default.
+
+   \begin{figure}[t]
+      \includegraphics[width=\hsize]{figures/fig5_split_ablation.pdf}
+      \caption{Rms residual of the fixed winning tiling as groups are
+               collapsed from three opacity segments to one, in order of
+               increasing dynamic range. Losing the first group costs a
+               third; losing three saturates near $2.3\times10^{8}$.
+               Disabling the split everywhere (rightmost point) is a
+               factor of $5.0$ above the full-split winner (leftmost).}
+      \label{fig:split}
+   \end{figure}
+
+   \begin{figure}[t]
+      \includegraphics[width=\hsize]{figures/fig6_smooth_window.pdf}
+      \caption{Why smoothing window 15 beats 7 on the winner's group 0
+               (431 members). Left: the log-sorted opacity curve with
+               both smoothings and the fitted low break (dashed, rank
+               59 under both). Right: the high tail. The stronger
+               smoothing moves the high break from rank 419 to 415,
+               admitting 4 more members into the high band (12 to 16),
+               which lowers the rms from $4.87\times10^{7}$ to
+               $4.64\times10^{7}$.}
+      \label{fig:smooth}
+   \end{figure}
    \begin{table}[t]
-      \caption[]{Rms $Q_\mathrm{rad}$ residual versus the full-ODF
-                 reference. Lower is better. \emph{Values are indicative
-                 (see text) and the relative ordering is what is
-                 robust.}}
+      \caption[]{Measured rms $Q_\mathrm{rad}$ residuals versus the
+                 full-ODF reference. Lower is better. All values are rms
+                 of $(Q_\mathrm{rad}^\mathrm{bin} -
+                 Q_\mathrm{rad}^\mathrm{full})/\rho$ over
+                 $\log_{10}\tau_\mathrm{Ross}$ in $[-5,\,3]$, from the
+                 25-seed campaign and the verification re-runs
+                 (Sect.~\ref{sec:setup}).}
       \label{tab:results}
       \vspace{2mm}
-      \begin{tabular}{lcc}
+      \begin{tabular}{lc}
          \hline\hline
-         binning                       & bands & rms $\Delta(Q/\rho)$ \\
+         checkpoint / run & rms $\Delta(Q/\rho)$ \\
          \hline
-         grey (1 Rosseland mean)       & 1     & $6.9\times10^{8}$ \\
-         12-band reference             & 12    & $2.8\times10^{8}$ \\
-         $8\times1$ ($\tau$-only)      & 24    & $2.1\times10^{8}$ \\
-         $4\times2$ (all $\lambda$)    & 24    & $\mathbf{8.0\times10^{7}}$ \\
-         $4\times(\lambda,\dots)$, group~0 only & 15 & $8.3\times10^{7}$ \\
-         tree-optimized                & --    & $\le$ seed$^{\mathrm{a}}$ \\
+         $\tau$-scan winner (all 25 seeds tie) & $1.318\times10^{8}$ \\
+         staged-$\tau$ (all seeds, narrow tier) & $\sim\!1.242\times10^{8}$ \\
+         staged-$\lambda$ winner (25-seed span) & $1.01$ to $1.48\times10^{8}$ \\
+         final, full 25-seed span & $7.9\times10^{7}$ to $1.2\times10^{8}$ \\
+         final, seed 3 (sweep best) & $\mathbf{4.87\times10^{7}}$ \\
+         final, seed 7 (sweep second) & $7.88\times10^{7}$ \\
+         \hline
+         verification seed 0 & $4.92\times10^{7}$ \\
+         verification seed 1 (best ever) & $\mathbf{4.37\times10^{7}}$ \\
+         verification seeds 2, 3, 4 & $4.71\times10^{7}$ each \\
+         \hline
+         8-group run floor & $\sim\!9.6\times10^{7}$ \\
+         columns path floor (path deleted) & $\sim\!1.0\times10^{8}$ \\
+         grid search (deleted) & $1.64\times10^{8}$ \\
+         portfolio pick $\to$ final (seed 3) & $1.1014\times10^{8} \to 1.10\times10^{8}$ \\
+         portfolio rejected member (seed 3) & $1.1069\times10^{8} \to 4.87\times10^{7}$ \\
+         \hline
+         winner, 1 group collapsed & $6.50\times10^{7}$ \\
+         winner, 2 groups collapsed & $9.88\times10^{7}$ \\
+         winner, split disabled & $2.42\times10^{8}$ \\
          \hline
       \end{tabular}
       \par\medskip
       \footnotesize
-      $^{\mathrm{a}}$The optimizer never increases the residual relative
-      to its seed; the exact value depends on the budget. \\
-      \emph{Note.} The absolute rms values were obtained during
-      development; re-run on the present model atmosphere for the final
-      figures (Sect.~\ref{sec:setup}). The ordering is
-      atmosphere-robust.
+      % TODO: re-score the grey single-mean baseline on this setup before submission.
    \end{table}
 
    \begin{figure}[t]
       \includegraphics[width=\hsize]{figures/fig3_qrad_before_after.png}
-      \caption{The residual before and after the tree optimizer, starting
-               from a hand-placed seed. The grow and polish stages move
-               edges and add wavelength cuts where the cooling peak forms,
-               reducing $\mathcal{R}$ without increasing the band count
-               beyond the cap.}
+      \caption{The residual before and after the full pipeline, starting
+               from a hand-placed seed. Staged seeding picks the basin;
+               grow and polish refine within it; the topology REALLOC
+               move produced the winning tiling in a late cliff rather
+               than a gradual descent (see text).}
       \label{fig:beforeafter}
    \end{figure}
+
+% =====================================================================
+\section{Negative results}
+\label{sec:negative}
+
+   Three findings shaped the final pipeline by killing plausible
+   alternatives. First, staging selects the basin and downstream search
+   cannot leave it. Grow, polish and topology only refine within-basin: a
+   seed-0 control run moved from $1.48\times10^{8}$ to $1.02\times10^{8}$
+   and stalled at the pre-transplant level, while the seed-3 control
+   reproduces $4.87\times10^{7}$ exactly. The missing move is a
+   cross-column depth reallocation (remove a $\tau$ cut from inside one
+   $\lambda$ column, insert it into the other, jointly polish the shared
+   cut). We implemented it as TRANSPLANT, with a regression test on an
+   analytic bowl, but the seed-0 control shows it does not rescue far
+   stagings on real data: its reach is one collapse plus recut plus a
+   short joint walk.
+
+   Second, a staged portfolio with early selection picks the wrong
+   winner. Running staging five times and keeping the best
+   staged-$\lambda$ checkpoint put all five portfolio runs at
+   $1.01$ to $1.13\times10^{8}$, worse than the singles, and seed 3 lost
+   its basin ($1.10\times10^{8}$ against $4.87\times10^{7}$ for the
+   single). The logs show why: the portfolio reproduced the winning
+   staging (member 0 at $1.1069\times10^{8}$) but selected member 1
+   ($1.1014\times10^{8}$, marginally better raw) whose basin is dead.
+   Raw staged-$\lambda$ rms anti-predicts the post-topology outcome
+   ($1.1014\times10^{8} \to 1.10\times10^{8}$ versus $1.1069\times10^{8}
+   \to 4.87\times10^{7}$). Selection fires before the property that
+   matters is visible. Late selection, refining every member through
+   topology, would cost about five full budgets. The portfolio option
+   and its tests were deleted.
+
+   Third, the group count is not the binding constraint; the allocation
+   is. An 8-group run floors near $9.6\times10^{7}$, with three paths
+   stalling within 0.1\%, far above seed 3 at 5 groups. What distinguishes
+   the winning basin is where the depth resolution sits (stacked where
+   the sub-bin density lives, sparse regions whole), and no cheap proxy
+   for that transplantability exists: the optimizer cannot rank basins
+   without refining them.
+
+   Two more paths were deleted. The columns-constrained optimizer never
+   broke about $1.0\times10^{8}$, and the winning tiling (a root $\tau$
+   cut with an asymmetric $\lambda$-column stack) is not expressible in
+   the column family. Grid search reached only $1.64\times10^{8}$. Both
+   were removed from the code along with the portfolio machinery.
 
 % =====================================================================
 \section{Discussion}
@@ -369,10 +561,12 @@
    wavelength range there smears the Planck mean. Splitting that one
    $\tau$-group in wavelength removes most of the error, while splitting
    the optically thin or thick groups adds bands but little accuracy
-   (Fig.~\ref{fig:qrad}). This is precisely the structure the beam search
-   converges to when seeded from a uniform grid, which is the practical
-   value of optimizing the partition directly rather than by edge-position
-   proxy.
+   (Fig.~\ref{fig:qrad}). The winning tiling of Sect.~\ref{sec:results}
+   is this idea in its asymmetric form: depth resolution stacked in the
+   dense column, the sparse side left whole. The beam search plus
+   topology REALLOC found it from a frozen staged skeleton, which is the
+   practical value of optimizing the partition directly rather than by
+   edge-position proxy.
 
    Two caveats bound the present results. First, the transfer is 1D and
    the validation uses a single model atmosphere; the relative ordering
@@ -382,6 +576,19 @@
    so the search is a run-and-wait batch job; for a 3D-RHD context the
    optimized table would be produced once offline and read by the
    simulation, exactly as a hand-binned table is today.
+
+   The deeper caveat is the basin-selection problem of
+   Sect.~\ref{sec:negative}: the staged-$\lambda$ rms available at
+   selection time does not predict the post-topology outcome, and nothing
+   else cheap does either. Four directions remain open as future work:
+   (a) late-selection portfolios that refine each member through topology
+   before picking, correct but at about five times the budget; (b) wider
+   transplant reach through multi-round chains, larger joint walks, or
+   transplants across rather than inside columns; (c) basin diversity in
+   the beam, keeping topologically distinct rather than just
+   cost-distinct members so the deep-stack allocation survives grow; and
+   (d) objective shaping that rewards depth resolution where the sub-bin
+   density lives, at the risk of biasing the physics.
 
    The guillotine-tree representation is deliberately general: it
    subsumes the restricted layouts of earlier work as special cases and
@@ -397,14 +604,31 @@
 
    We have recast the opacity-binning partition as a guillotine-tree
    tiling of the $(-\log_{10}\tau,\log_{10}\lambda)$ plane and optimized
-   it directly, by a non-greedy beam search, against the radiative heating-rate residual from a full
-   transfer solve. At equal band budget, a wavelength-resolved,
-   optimizer-found tiling reduces the rms $Q_\mathrm{rad}$ residual by a
-   factor of several relative to a $\tau$-depth-only binning, and the
-   benefit is recovered with substantially fewer bands by concentrating
-   wavelength resolution in the sub-photospheric $\tau$-group. The
-   method is automatic, generalizes previous binning layouts, and
-   optimizes the quantity that is ultimately wanted.
+   it directly, by staged seeding plus non-greedy beam grow plus topology
+   search, against the radiative heating-rate residual from a full
+   transfer solve. On the solar-like G2 setup at a cap of 5 groups, the
+   campaign over 25 seeds reaches $4.87\times10^{7}$ through a late
+   REALLOC cliff, and verification re-runs reach $4.37\times10^{7}$,
+   each far below the $1.318\times10^{8}$ seed tier. The winning tiling
+   stacks $\tau$ depth in the dense $\lambda$ column (cuts at 1.02 and
+   2.09 under a frozen root cut at 4.37 and a $\lambda$ cut at 3.83) and
+   leaves the sparse side whole.
+
+   What works is the combination: staged seeding finds candidate basins,
+   beam grow refines them without early lock-in, and topology REALLOC
+   escapes to the asymmetric allocation. The within-group opacity split
+   deserves equal billing: it carries roughly four-fifths of the
+   winner's accuracy, and its per-group dynamic ranges ($7.9\times10^{2}$
+   to $1.3\times10^{8}$) explain why every group splits. What does not
+   work is choosing between basins early: raw staged rms anti-predicts
+   the refined outcome, portfolios with early selection lose the winning
+   basin, column-constrained tilings cannot express it, and extra groups
+   do not substitute for putting the depth where the density lives.
+   Basin selection is the open problem, with late selection, wider
+   transplants, beam diversity and objective shaping as the candidate
+   answers. The split scheme itself is the next lever: unequal segment
+   fractions or integral-preserving quadrature may buy further accuracy
+   at the same band count.
 
 % =====================================================================
 \begin{appendix}
@@ -420,16 +644,30 @@
    the canonical band order
    $\mathrm{band}=\mathrm{group}\cdot N_\mathrm{splits}+\mathrm{segment}$.
 
-   In the grow stage, for each tree on the beam the $K$ widest leaves are
-   considered for splitting; for each, several split fractions
-   (default $0.35,0.50,0.65$ of the leaf extent) are tried on each axis,
+   Staged seeding starts from 3 equally spaced $\tau$ cuts over the
+   outer window. The Latin-hypercube scan samples 64 cut sets, scores
+   each raw on a $\tau$-only tree, and keeps pairwise-separated winners
+   for a light polish. The $\tau$-only polish is a coordinate-wise sweep
+   to a fixed point. The flipped bottom-region scan then freezes the top
+   seed cut and exhaustively enumerates wavelength-cut and per-column
+   $\tau$-cut combinations over the photospheric region under the two
+   asymmetric allocations (all spare cuts in the low-$\lambda$ column or
+   all in the high-$\lambda$ column), keeping the best.
+
+   In the grow stage, for each tree on the beam the 4 widest leaves are
+   considered for splitting; for each, the split fractions 0.35, 0.50
+   and 0.65 of the leaf extent are tried on each axis,
    the resulting child trees are scored with Eq.~\ref{eq:objective}, and
-   the best $B$ distinct trees (by leaf-rectangle signature) are kept for
+   the best 3 distinct trees (by leaf-rectangle signature) are kept for
    the next round. Growth stops at the leaf cap
-   $N_\mathrm{groups}^{\max}$ or when no trial split improves the
+   of 5 or when no trial split improves the
    residual beyond a relative threshold. The polish stage then performs a
-   coordinate-wise sweep of every cut position to a fixed point. The
-   entire search is bounded by a maximum number of evaluations or a
+   coordinate-wise sweep of every unfrozen cut position to a fixed point.
+   Frozen staged cuts are never moved or removed by any later phase. The
+   topology pass tries SPLIT, TRANSPLANT and REALLOC moves in turn, each
+   polished to its position optimum and adopted only on strict
+   improvement. The
+   entire search is bounded by 800 evaluations or a
    wall-clock budget and can be interrupted, returning the best tree
    found.
 

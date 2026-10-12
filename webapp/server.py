@@ -176,6 +176,7 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
             initial_tau_scan=int(opt.get("initial_tau_scan") or 0),
             staged_lambda_n_keep=int(opt.get("staged_lambda_n_keep") or 3),
             seed=opt.get("seed"),
+            freeze_top=bool(opt.get("freeze_top", True)),
             beam_leaves=int(opt.get("beam_leaves") or 4),
             beam_positions=(tuple(opt["beam_positions"]) if opt.get("beam_positions") else (0.35, 0.5, 0.65)),
             on_eval=on_eval,
