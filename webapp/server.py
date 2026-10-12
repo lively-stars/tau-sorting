@@ -93,7 +93,7 @@ def _run_plan(opt) -> list[str]:
     """Ordered stage-tag plan for an optimize run (rendered upfront as a checklist).
     Columns path: seed -> lambda wiggle -> per-column tau grow -> joint wiggle, repeating
     per round (shown once; repeats collapse in the UI). General path: optional staged seed
-    (tau groups, bottom-two lambda split), then grow -> polish -> topology."""
+    (tau groups, fine-grid lambda split), then grow -> polish -> topology."""
     if bool(opt.get("columns", False)):
         return ["start", "lambda-wiggle", "tau-groups", "joint-wiggle", "round"]
     if bool(opt.get("grid_search", False)):

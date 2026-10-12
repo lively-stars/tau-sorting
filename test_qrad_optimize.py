@@ -625,8 +625,8 @@ class TestBeamSearch(unittest.TestCase):
         self.assertEqual(res["n_leaves"], 5)  # coarsened to 4, then beam grew to the cap (was 8, stuck)
         self.assertTrue(qo._tree_feasible(res["binning_tree"], qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
 
-    def test_staged_seeding_splits_bottom_two(self):
-        # Staged seeding: N=3 equally-spaced tau cuts -> tau polish -> fine-grid lambda step
+    def test_staged_seeding_runs_fine_grid(self):
+        # Staged seeding: N=3 tau cuts -> tau polish -> fine-grid lambda step
         # (flipped allocation tree at the max-groups cap) -> normal path. The leaf-count bowl
         # rewards leaves, so the grid winner must sit at the cap.
         res = qo.optimize_qrad(
@@ -647,10 +647,10 @@ class TestBeamSearch(unittest.TestCase):
         self.assertIn("staged-tau", tags)
         self.assertIn("staged-lambda", tags)
 
-    def test_hard_sync_survives_grow_and_polish(self):
-        # Synced bottom-two lambda cuts must stay equal through grow + polish, not just staging.
-        # The fine grid normally wins the staged lambda step (no synced cuts then), so force
-        # the sync fallback by emptying the grid: this covers the kept grid-yields-nothing path.
+    def test_staged_lambda_step_skips_when_grid_yields_nothing(self):
+        # When the fine grid yields nothing, the staged lambda step is skipped: the tau-only
+        # staging stands as-is (no staged-lambda checkpoint) and the run still completes
+        # through grow/polish/topo.
         _orig = qo.scan_bottom_fine_grid
         qo.scan_bottom_fine_grid = lambda *a, **k: []
         try:
@@ -667,20 +667,10 @@ class TestBeamSearch(unittest.TestCase):
             )
         finally:
             qo.scan_bottom_fine_grid = _orig
-        by_sync: dict[str, list] = {}
-
-        def walk(n):
-            if n.get("leaf") or "axis" not in n:
-                return
-            if n.get("sync"):
-                by_sync.setdefault(str(n["sync"]), []).append(round(float(n["at"]), 4))
-            walk(n["lo"])
-            walk(n["hi"])
-
-        walk(res["binning_tree"]["root"])
-        self.assertTrue(by_sync, "expected surviving synced cuts")
-        for sid, ats in by_sync.items():
-            self.assertEqual(len(set(ats)), 1, f"sync group {sid} desynced: {ats}")
+        tags = [h["tag"] for h in res["history"]]
+        self.assertIn("staged-tau", tags)
+        self.assertNotIn("staged-lambda", tags)
+        self.assertTrue(qo._tree_feasible(res["binning_tree"], qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
 
 
 class TestTauScan(unittest.TestCase):
@@ -1359,10 +1349,6 @@ class TestTopologyTransplant(unittest.TestCase):
         for path, _rect, freed in got:
             node = qo._node_at_path(seed["root"], path)
             self.assertEqual(qo._count_leaves(node) - 1, freed)
-        both = self._symmetric_seed()
-        both["root"]["lo"]["sync"] = "s"
-        both["root"]["hi"]["sync"] = "s"
-        self.assertEqual(list(qo._iter_removable_with_path(both["root"], qo._root_rect(both))), [])
 
     def test_transplant_respects_guards_and_cap(self):
         def never(cand, new_path, joint_paths):
@@ -1372,10 +1358,6 @@ class TestTopologyTransplant(unittest.TestCase):
         frozen["root"]["lo"]["frozen"] = True
         frozen["root"]["hi"]["frozen"] = True
         self.assertFalse(qo._try_transplant(frozen, adopt=never, **self._transplant_kwargs(lambda t: 1.0)))
-        synced = self._symmetric_seed()
-        synced["root"]["lo"]["sync"] = "s"
-        synced["root"]["hi"]["sync"] = "s"
-        self.assertFalse(qo._try_transplant(synced, adopt=never, **self._transplant_kwargs(lambda t: 1.0)))
         capped = self._symmetric_seed()
         self.assertFalse(  # 4 leaves, collapse frees 1, re-cut spends 1 -> 4 > 3: no room
             qo._try_transplant(capped, adopt=never, **self._transplant_kwargs(lambda t: 1.0, max_groups=3))

@@ -308,8 +308,6 @@ def _round_tree(tree) -> dict:
             "lo": rec(node["lo"]),
             "hi": rec(node["hi"]),
         }
-        if node.get("sync") is not None:
-            out["sync"] = node["sync"]
         if node.get("frozen"):
             out["frozen"] = True
         return out
@@ -362,8 +360,6 @@ def _round_tree_save(tree) -> dict:
         if _is_leaf(node):
             return {"leaf": True}
         out = {"axis": node["axis"], "at": round(float(node["at"]), 6), "lo": rec(node["lo"]), "hi": rec(node["hi"])}
-        if node.get("sync") is not None:
-            out["sync"] = node["sync"]
         if node.get("frozen"):
             out["frozen"] = True
         return out
@@ -556,52 +552,35 @@ def tree_from_lpt(tau_edges, lambda_edges_per_tau) -> dict:
     return {"window_tau": [tau[0], tau[-1]], "window_lam": [lmin, lmax], "root": node}
 
 
-def _synced_groups(tree) -> dict[str, list]:
-    """Map sync id -> member internal nodes (nodes sharing a `sync` id move as one cut)."""
-    groups: dict[str, list] = {}
-    for node, _lo, _hi in _iter_internal(tree["root"], _root_rect(tree)):
-        if node.get("sync"):
-            groups.setdefault(str(node["sync"]), []).append(node)
-    return groups
-
-
 def _tree_position_search(tree, cost_tree, *, cfg, budget, min_gap_tau, min_gap_lam):
     """Gauss-Seidel coordinate descent on every internal cut's position. Each candidate must
     stay in its node's axis span (per-axis min gap) and keep the whole tree feasible; the best
     strict improvement per node is committed in place."""
     best = cost_tree(tree)
-    synced = _synced_groups(tree)  # sync id -> members; joint moves keep them equal
     for _ in range(cfg.max_sweeps):
         improved = False
         spans = {id(n): (lo, hi) for n, lo, hi in _iter_internal(tree["root"], _root_rect(tree))}
         for node, _span_lo, _span_hi in list(_iter_internal(tree["root"], _root_rect(tree))):
             if node.get("frozen"):
                 continue  # staged seed cut: position fixed, never wiggled again
-            members = synced.get(str(node.get("sync", "")), None) if node.get("sync") else None
-            if members is not None and len(members) > 1 and members[0] is not node:
-                continue  # moved jointly with the group's first node
-            group = members if members and len(members) > 1 else [node]
             mg = min_gap_tau if node["axis"] == "tau" else min_gap_lam
             old = float(node["at"])
             best_at, best_c = old, best
             for step in cfg.adjust_steps:
                 for d in (-1.0, +1.0):
                     if budget.exhausted():
-                        for m in group:
-                            m["at"] = best_at
+                        node["at"] = best_at
                         return tree, best_c
                     cand = old + d * step
-                    if any(cand <= spans[id(m)][0] + mg - 1e-12 or cand >= spans[id(m)][1] - mg + 1e-12 for m in group):
+                    if cand <= spans[id(node)][0] + mg - 1e-12 or cand >= spans[id(node)][1] - mg + 1e-12:
                         continue
-                    for m in group:
-                        m["at"] = cand
+                    node["at"] = cand
                     if not _tree_feasible(tree, min_gap_tau, min_gap_lam):
                         continue
                     c = cost_tree(tree)
                     if c < best_c - 1e-12:
                         best_c, best_at = c, cand
-            for m in group:
-                m["at"] = best_at
+            node["at"] = best_at
             if best_c < best - 1e-12:
                 best, improved = best_c, True
         if not improved:
@@ -630,10 +609,8 @@ def _refine_node(tree, path, cost_tree, *, cfg, budget, min_gap_tau, min_gap_lam
     node = _node_at_path(tree["root"], path)
     if node.get("frozen"):
         return tree, best if best is not None else cost_tree(tree)  # staged seed cut: fixed
-    group = _synced_groups(tree).get(str(node.get("sync", "")), [node]) if node.get("sync") else [node]
-    group = [m for m in group if "at" in m] or [node]
     spans = {id(n): (lo, hi) for n, lo, hi in _iter_internal(tree["root"], _root_rect(tree))}
-    if any(id(m) not in spans for m in group):
+    if id(node) not in spans:
         return tree, best if best is not None else cost_tree(tree)
     mg = min_gap_tau if node["axis"] == "tau" else min_gap_lam
     best_c = best if best is not None else cost_tree(tree)
@@ -642,21 +619,18 @@ def _refine_node(tree, path, cost_tree, *, cfg, budget, min_gap_tau, min_gap_lam
         old = best_at
         for d in (-1.0, +1.0):
             if budget.exhausted():
-                for m in group:
-                    m["at"] = best_at
+                node["at"] = best_at
                 return tree, best_c
             cand = old + d * step
-            if any(cand <= spans[id(m)][0] + mg - 1e-12 or cand >= spans[id(m)][1] - mg + 1e-12 for m in group):
+            if cand <= spans[id(node)][0] + mg - 1e-12 or cand >= spans[id(node)][1] - mg + 1e-12:
                 continue
-            for m in group:
-                m["at"] = cand
+            node["at"] = cand
             if not _tree_feasible(tree, min_gap_tau, min_gap_lam):
                 continue
             c = cost_tree(tree)
             if c < best_c - 1e-12:
                 best_c, best_at = c, cand
-    for m in group:
-        m["at"] = best_at
+    node["at"] = best_at
     return tree, best_c
 
 
@@ -813,16 +787,16 @@ def _beam_grow_tree(
 def _remove_node_at_path(root, path):
     """Collapse the internal node at `path` into a leaf (its whole subtree merges into one group,
     freeing ``leaves - 1`` slots). Callers must only pass paths yielded by
-    `_iter_removable_with_path` (never frozen/sync-covering)."""
+    `_iter_removable_with_path` (never frozen-covering)."""
     n = _node_at_path(root, path)
     n.clear()
     n["leaf"] = True
 
 
 def _subtree_guarded(node) -> bool:
-    """True when `node` or any descendant carries a frozen/sync flag -- collapsing such a subtree
-    would touch the fixed skeleton or half-remove a sync pair."""
-    if node.get("frozen") or node.get("sync"):
+    """True when `node` or any descendant carries a frozen flag -- collapsing such a subtree
+    would touch the fixed skeleton."""
+    if node.get("frozen"):
         return True
     if _is_leaf(node):
         return False
@@ -833,7 +807,7 @@ def _iter_removable_with_path(node, rect, path=()):
     """Collapsible internal nodes, cheapest first. Collapsing the node at `path` into a leaf frees
     ``_count_leaves(subtree) - 1`` leaf slots. Yields (path, rect, freed): the two-leaf fast path
     (freed == 1) first in DFS order, then nested collapses (freed > 1, ascending). Nodes carrying
-    -- or covering -- frozen/sync flags are never yielded."""
+    -- or covering -- frozen flags are never yielded."""
     found: list = []
 
     def walk(n, r, p):
@@ -1036,8 +1010,6 @@ def _topology_search(tree, cost_tree, *, cfg, budget, max_groups, min_gap_tau, m
         for rmpath, _rr, _freed in list(_iter_removable_with_path(state["tree"]["root"], _root_rect(state["tree"]))):
             if budget.exhausted():
                 break
-            if _node_at_path(state["tree"]["root"], rmpath).get("sync"):
-                continue  # hard sync: never remove one synced cut without the other
             if _node_at_path(state["tree"]["root"], rmpath).get("frozen"):
                 continue  # staged seed cut: never remove the fixed skeleton
             base = copy.deepcopy(state["tree"])
@@ -1393,8 +1365,8 @@ def scan_bottom_fine_grid(
 def freeze_tau_cuts(tree, *, top_only=True) -> dict:
     """Mark staged seed tau cuts `frozen`: their positions are fixed and later grow/polish/
     topology phases must neither move nor remove them. With `top_only` (default) only the
-    top seed cut (highest `at`, the top bin's lower boundary) freezes -- the bottom-two
-    groups stay live for the synced lambda wiggle. New cuts from grow stay unfrozen.
+    top seed cut (highest `at`, the top bin's lower boundary) freezes. New cuts from grow
+    stay unfrozen.
     Idempotent."""
     tau_nodes = [node for node, _lo, _hi in _iter_internal(tree["root"], _root_rect(tree)) if node.get("axis") == "tau"]
     if top_only:
@@ -1402,101 +1374,6 @@ def freeze_tau_cuts(tree, *, top_only=True) -> dict:
     for node in tau_nodes:
         node["frozen"] = True
     return tree
-
-
-def split_bottom_two_tau_groups(tree, lam_at, *, min_gap_tau=MIN_GAP_TAU, min_gap_lam=MIN_GAP_LAM) -> dict:
-    """Lambda-split the bottom two tau groups of a tau-only tree at `lam_at` (each bottom leaf
-    cut into lo/hi lambda halves). Bottom = lowest -log10 tau (first two leaves in DFS order).
-    The two lambda cuts share one `sync` id so the staged wiggle moves them as a single
-    synchronized cut (plus the two tau cuts) instead of drifting apart. Raises ValueError
-    when the tree has < 2 leaves or the cut violates the lambda min gap."""
-    out = copy.deepcopy(tree)
-    leaves = list(_iter_leaves_with_path(out["root"], _root_rect(out)))
-    if len(leaves) < 2:
-        raise ValueError(f"need >= 2 tau groups to split the bottom two, got {len(leaves)}")
-    lam_at = float(lam_at)
-    for path, (_tlo, _thi, llo, lhi) in leaves[:2]:
-        if lam_at - llo < min_gap_lam - 1e-12 or lhi - lam_at < min_gap_lam - 1e-12:
-            raise ValueError(f"lambda cut at {lam_at} is within min_gap ({min_gap_lam}) of [{llo}, {lhi}]")
-        leaf = _node_at_path(out["root"], path)
-        leaf.clear()
-        leaf.update({"axis": "lam", "at": lam_at, "lo": {"leaf": True}, "hi": {"leaf": True}, "sync": "bottom-lam"})
-    if not _tree_feasible(out, min_gap_tau, min_gap_lam):
-        raise ValueError("bottom-two lambda split violates the tau min gap")
-    return out
-
-
-def _synced_wiggle(tree, cost_tree, *, cfg, budget, min_gap_tau, min_gap_lam):
-    """Coordinate descent over synced cut groups: nodes sharing a `sync` id move together as
-    one cut (each candidate sets all members, feasibility + cost on the joint move), then all
-    tau-axis cuts get an individual pass. Returns (tree, best). Used by the staged
-    bottom-two step: the shared lambda cut and/or the two tau cuts move in sync."""
-    best = cost_tree(tree)
-    groups: dict[str, list] = {}
-    for node, _lo, _hi in _iter_internal(tree["root"], _root_rect(tree)):
-        if node.get("sync"):
-            groups.setdefault(str(node["sync"]), []).append(node)
-    for _ in range(cfg.max_sweeps):
-        improved = False
-        internals = list(_iter_internal(tree["root"], _root_rect(tree)))
-        spans = {(id(n)): (lo, hi) for n, lo, hi in internals}
-        for _sid, members in groups.items():
-            mg = min_gap_lam if members[0]["axis"] == "lam" else min_gap_tau
-            old = float(members[0]["at"])
-            best_at, best_c = old, best
-            for step in cfg.adjust_steps:
-                for d in (-1.0, +1.0):
-                    if budget.exhausted():
-                        for m in members:
-                            m["at"] = best_at
-                        return tree, best_c
-                    cand = old + d * step
-                    ok = True
-                    for m in members:
-                        lo, hi = spans[id(m)]
-                        if cand <= lo + mg - 1e-12 or cand >= hi - mg + 1e-12:
-                            ok = False
-                            break
-                    if not ok:
-                        continue
-                    for m in members:
-                        m["at"] = cand
-                    if not _tree_feasible(tree, min_gap_tau, min_gap_lam):
-                        continue
-                    c = cost_tree(tree)
-                    if c < best_c - 1e-12:
-                        best_c, best_at = c, cand
-            for m in members:
-                m["at"] = best_at
-            if best_c < best - 1e-12:
-                best, improved = best_c, True
-        # individual tau-cut pass (the two tau splits around the synced lambda cut)
-        for node, span_lo, span_hi in list(_iter_internal(tree["root"], _root_rect(tree))):
-            if node["axis"] != "tau":
-                continue
-            mg = min_gap_tau
-            old = float(node["at"])
-            best_at, best_c = old, best
-            for step in cfg.adjust_steps:
-                for d in (-1.0, +1.0):
-                    if budget.exhausted():
-                        node["at"] = best_at
-                        return tree, best_c
-                    cand = old + d * step
-                    if cand <= span_lo + mg - 1e-12 or cand >= span_hi - mg + 1e-12:
-                        continue
-                    node["at"] = cand
-                    if not _tree_feasible(tree, min_gap_tau, min_gap_lam):
-                        continue
-                    c = cost_tree(tree)
-                    if c < best_c - 1e-12:
-                        best_c, best_at = c, cand
-            node["at"] = best_at
-            if best_c < best - 1e-12:
-                best, improved = best_c, True
-        if not improved:
-            break
-    return tree, best
 
 
 # --- shared search scaffolding (both optimizers) --------------------------------------
@@ -1754,9 +1631,9 @@ def optimize_qrad(
     _n_members = max(1, int(n_staged_seeds)) if staged else 1
     if staged:
         # Staged seeding overrides every other seed shape: N equally-spaced tau cuts over the
-        # outer tau window, tau-only position polish, then a lambda split of the bottom two tau
-        # groups (at the lambda-window midpoint), then joint position polish — then the normal
-        # grow/polish/topology path below.
+        # outer tau window, tau-only position polish, then the deterministic fine-grid lambda
+        # step -- then the normal grow/polish/topology path below. When the grid cannot run
+        # (leaf cap full, budget exhausted) or yields nothing, the tau-only tree stands as-is.
         if int(initial_tau_bins) > max_groups:
             raise ValueError(f"--initial-tau-bins={initial_tau_bins} needs room under --max-groups={max_groups}")
         _one = _n_members == 1
@@ -1788,18 +1665,17 @@ def optimize_qrad(
             )
 
         def _member_lambda_step(tree, m, tag_suffix):
-            """Lambda step of the staged pipeline on `tree` (fine grid or sync path).
-            Returns (tree, penalized cost at the staged-lambda checkpoint)."""
+            """Lambda step of the staged pipeline on `tree` (fine grid, else skip).
+            Returns (tree, penalized cost at the staged-lambda checkpoint). When the grid
+            cannot run (leaf cap full, budget exhausted) or yields nothing, the tau-only
+            tree stands as-is with no extra checkpoint."""
             del m  # the fine grid is deterministic: every member stages the same grid winner
-            lam_mid = 0.5 * (float(lambda_edges[0]) + float(lambda_edges[-1]))
-            _did_lambda_scan = False
             _best = cost_tree(tree)
             if _n_leaves(tree) + 2 <= max_groups and not budget.exhausted():
                 # Flipped bottom-region scan: freeze the top cut, exhaustively enumerate the
                 # (L, tau-cut combinations) photospheric grid over the asymmetric allocations
-                # (depth stacked in one lambda column, the other undivided), take the winner,
-                # checkpoint staged-lambda, and skip the mid-window split_bottom_two_tau_groups +
-                # _synced_wiggle path. Falls back to the sync path when the grid yields nothing.
+                # (depth stacked in one lambda column, the other undivided), take the winner
+                # and checkpoint staged-lambda.
                 _top = max(_tau_cuts_sorted(tree), default=float(tau_edges[-1]))
                 freeze_tau_cuts(tree, top_only=True)
                 _n_cuts = int(max_groups) - 3  # deep leaf (1) + 2 column floors (2) + cuts = max_groups
@@ -1816,25 +1692,6 @@ def optimize_qrad(
                 )
                 if seeds:
                     tree, _best = seeds[0][1], seeds[0][0]
-                    checkpoint(f"staged-lambda{tag_suffix}", evaluate(binning_tree=tree)[1])
-                    _did_lambda_scan = True
-            if not _did_lambda_scan and _n_leaves(tree) + 2 <= max_groups and not budget.exhausted():
-                try:
-                    tree = split_bottom_two_tau_groups(tree, lam_mid, min_gap_tau=min_gap_tau, min_gap_lam=min_gap_lam)
-                except ValueError:
-                    pass  # lambda window too narrow for the cut: keep the tau-only staging
-                else:
-                    _best = cost_tree(tree)
-                    # Synced wiggle: the shared bottom-two lambda cut moves as one cut, then the
-                    # two tau cuts get an individual pass (all accepted on joint improvement only).
-                    tree, _best = _synced_wiggle(
-                        tree,
-                        cost_tree,
-                        cfg=cfg,
-                        budget=budget,
-                        min_gap_tau=min_gap_tau,
-                        min_gap_lam=min_gap_lam,
-                    )
                     checkpoint(f"staged-lambda{tag_suffix}", evaluate(binning_tree=tree)[1])
             return tree, _best
 
@@ -1853,7 +1710,7 @@ def optimize_qrad(
             if _did_scan:
                 # Tau-scan winner already scored in the scan: reuse, no extra eval.
                 checkpoint(f"tau-scan{_tag}", evaluate(binning_tree=_member)[1])
-            # (2) tau-only polish of the N-bin seed, then (3) lambda step + joint position polish.
+            # (2) tau-only polish of the N-bin seed, then (3) the fine-grid lambda step.
             _member, _ = _block_fixed_point_tree(
                 _member,
                 cost_tree,
@@ -1866,9 +1723,8 @@ def optimize_qrad(
             checkpoint(f"staged-tau{_tag}", evaluate(binning_tree=_member)[1])
             _member, _mcost = _member_lambda_step(_member, _m, _tag)
             freeze_tau_cuts(_member, top_only=True)  # top seed cut fixed: later phases never move/remove it
-            # The staged-lambda checkpoint cost selects the winner: the lambda step always
-            # checkpoints (scan path, or sync path when the leaf cap / budget / window allows);
-            # when neither fired, the staged-tau tree stands in for the member.
+            # The lambda-step cost selects the winner: the grid checkpoints staged-lambda on
+            # success; when it cannot run or yields nothing, the staged-tau cost stands in.
             _winners.append((_mcost, _member))
             if budget.exhausted():
                 break
@@ -2633,9 +2489,8 @@ def main(
     max_groups: int = typer.Option(8, "--max-groups"),
     initial_tau_bins: int = typer.Option(
         3,
-        "--initial-tau-bins",
         help="Staged seeding: start from N equally-spaced tau cuts (0 = off), polish tau positions, "
-        "lambda-split the bottom two tau groups, then run the normal grow/polish path.",
+        "run the fine-grid lambda step, then run the normal grow/polish path.",
     ),
     initial_tau_scan: int = typer.Option(
         64,
