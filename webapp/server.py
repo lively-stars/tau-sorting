@@ -91,13 +91,8 @@ _QOPT: dict = {
 
 def _run_plan(opt) -> list[str]:
     """Ordered stage-tag plan for an optimize run (rendered upfront as a checklist).
-    Columns path: seed -> lambda wiggle -> per-column tau grow -> joint wiggle, repeating
-    per round (shown once; repeats collapse in the UI). General path: optional staged seed
-    (tau groups, fine-grid lambda split), then grow -> polish -> topology."""
-    if bool(opt.get("columns", False)):
-        return ["start", "lambda-wiggle", "tau-groups", "joint-wiggle", "round"]
-    if bool(opt.get("grid_search", False)):
-        return ["start", "grid", "done"]
+    General path: optional staged seed (tau groups, fine-grid lambda split),
+    then grow -> polish -> topology."""
     plan = ["start"]
     if opt.get("initial_tau_bins"):
         if opt.get("initial_tau_scan"):
@@ -134,16 +129,6 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
                     "group_lam_edges": np.asarray(gle).tolist(),
                 }
 
-    def on_grid_improve(tree, r, n):
-        _QOPT["n_evals"] = int(n)
-        rms = float(r.get("rms", 0.0))
-        if _QOPT.get("seed_tree") is None:
-            _QOPT["seed_tree"] = tree
-            _QOPT["rms0"] = rms
-        if _QOPT["best"] is None or rms < _QOPT["best"]:
-            _QOPT["best"] = rms
-            _QOPT["groups"] = int(r.get("n_groups", 0))
-
     def on_progress(tag, value, groups, n):
         if tag == "start":
             _QOPT["rms0"] = float(value)
@@ -156,97 +141,47 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
                 "t": round(time.perf_counter() - _QOPT["t0"], 1),
             }
         )
-        # Advance the checklist stage only on plan tags; sub-step noise (tree sweeps,
-        # per-column tau-col/split/merge reports) must not move or append bullets.
+        # Advance the checklist stage only on plan tags; sub-step noise (tree sweeps)
+        # must not move or append bullets.
         if tag in _QOPT.get("plan", []):
             _QOPT["stage"] = tag
 
-    columns = bool(opt.get("columns", False))
-    common = dict(
-        model=model,
-        metric=opt["metric"],
-        max_seconds=opt["max_seconds"],
-        max_evals=opt["max_evals"],
-        max_groups=opt["max_groups"],
-        min_gap_tau=opt["min_gap_tau"],
-        min_gap_lam=opt["min_gap_lam"],
-        grow_tol_rel=opt["grow_tol_rel"],
-        window=opt["window"],
-        target_rms=opt["target_rms"],
-        plateau_evals=opt["plateau_evals"],
-        plateau_rel=opt["plateau_rel"],
-        min_opacity_delta=opt["min_opacity_delta"],
-        on_eval=on_eval,
-        on_progress=on_progress,
-        should_stop=lambda: _QOPT["cancel"],
-    )
     try:
-        if opt.get("grid_search"):
-            _QOPT["result"] = qopt.grid_search(
-                [float(tau_edges[0]), float(tau_edges[-1])],
-                [float(lambda_edges[0]), float(lambda_edges[-1])],
-                dtau=float(opt.get("dtau") or 0.5),
-                dlam=float(opt.get("dlam") or 0.25),
-                model=model,
-                max_groups=int(opt.get("max_groups") or 8),
-                min_opacity_delta=float(opt.get("min_opacity_delta") or 1.0),
-                window=opt.get("window"),
-                on_progress=on_progress,
-                on_improve=on_grid_improve,
-            )
-        elif columns:
-            n_cols = len(lambda_edges) - 1
-            tpl = opt.get("tau_per_lambda")
-            cols_seed = (
-                [list(map(float, c)) for c in tpl] if tpl else [list(map(float, tau_edges)) for _ in range(n_cols)]
-            )
-            _QOPT["result"] = qopt.optimize_columns(
-                lambda_edges,
-                cols_seed,
-                grow=opt["grow"],
-                **common,
-            )
-        else:
-            _QOPT["result"] = qopt.optimize_qrad(
-                tau_edges,
-                lambda_edges,
-                flags=flags,
-                model=model,
-                opt_tau=opt["opt_tau"],
-                opt_lambda=opt["opt_lambda"],
-                opt_flags=opt["opt_flags"],
-                grow=opt["grow"],
-                topo=(None if opt.get("topo") is None else bool(opt["topo"])),
-                metric=opt["metric"],
-                beam_width=opt["beam_width"],
-                max_seconds=opt["max_seconds"],
-                max_evals=opt["max_evals"],
-                max_groups=opt["max_groups"],
-                min_gap_tau=opt["min_gap_tau"],
-                min_gap_lam=opt["min_gap_lam"],
-                grow_tol_rel=opt["grow_tol_rel"],
-                window=opt["window"],
-                target_rms=opt["target_rms"],
-                plateau_evals=opt["plateau_evals"],
-                plateau_rel=opt["plateau_rel"],
-                lambda_edges_per_tau=opt["lambda_edges_per_tau"],
-                lambda_per_tau_spec=opt.get("lambda_per_tau_spec"),
-                tau_per_lambda=opt.get("tau_per_lambda"),
-                tau_per_lambda_spec=opt.get("tau_per_lambda_spec"),
-                splits=opt.get("splits"),
-                tree=opt["tree"],
-                min_opacity_delta=opt["min_opacity_delta"],
-                initial_tau_bins=(opt.get("initial_tau_bins") or None),
-                initial_tau_scan=int(opt.get("initial_tau_scan") or 0),
-                staged_lambda_n_keep=int(opt.get("staged_lambda_n_keep") or 3),
-                seed=opt.get("seed"),
-                n_staged_seeds=int(opt.get("n_staged_seeds") or 1),
-                beam_leaves=int(opt.get("beam_leaves") or 4),
-                beam_positions=(tuple(opt["beam_positions"]) if opt.get("beam_positions") else (0.35, 0.5, 0.65)),
-                on_eval=on_eval,
-                on_progress=on_progress,
-                should_stop=lambda: _QOPT["cancel"],
-            )
+        _QOPT["result"] = qopt.optimize_qrad(
+            tau_edges,
+            lambda_edges,
+            flags=flags,
+            model=model,
+            grow=opt["grow"],
+            topo=(None if opt.get("topo") is None else bool(opt["topo"])),
+            metric=opt["metric"],
+            beam_width=opt["beam_width"],
+            max_seconds=opt["max_seconds"],
+            max_evals=opt["max_evals"],
+            max_groups=opt["max_groups"],
+            min_gap_tau=opt["min_gap_tau"],
+            min_gap_lam=opt["min_gap_lam"],
+            grow_tol_rel=opt["grow_tol_rel"],
+            window=opt["window"],
+            target_rms=opt["target_rms"],
+            plateau_evals=opt["plateau_evals"],
+            plateau_rel=opt["plateau_rel"],
+            lambda_edges_per_tau=opt["lambda_edges_per_tau"],
+            lambda_per_tau_spec=opt.get("lambda_per_tau_spec"),
+            tau_per_lambda=opt.get("tau_per_lambda"),
+            tau_per_lambda_spec=opt.get("tau_per_lambda_spec"),
+            splits=opt.get("splits"),
+            min_opacity_delta=opt["min_opacity_delta"],
+            initial_tau_bins=(opt.get("initial_tau_bins") or None),
+            initial_tau_scan=int(opt.get("initial_tau_scan") or 0),
+            staged_lambda_n_keep=int(opt.get("staged_lambda_n_keep") or 3),
+            seed=opt.get("seed"),
+            beam_leaves=int(opt.get("beam_leaves") or 4),
+            beam_positions=(tuple(opt["beam_positions"]) if opt.get("beam_positions") else (0.35, 0.5, 0.65)),
+            on_eval=on_eval,
+            on_progress=on_progress,
+            should_stop=lambda: _QOPT["cancel"],
+        )
     except Exception as e:
         traceback.print_exc()
         _QOPT["error"] = f"{type(e).__name__}: {e}"
@@ -572,9 +507,6 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError(f"metric must be rms|maxabs|int_q, got {metric!r}")
                     target = req.get("target_rms")
                     opt = {
-                        "opt_tau": bool(req.get("opt_tau", True)),
-                        "opt_lambda": bool(req.get("opt_lambda", True)),
-                        "opt_flags": bool(req.get("opt_flags", True)),
                         "grow": bool(req.get("grow", True)),
                         "topo": (None if req.get("topo") is None else bool(req.get("topo"))),
                         # manual split-list warm start (box + ordered splits seed the tree)
@@ -585,10 +517,6 @@ class Handler(BaseHTTPRequestHandler):
                         # per-group-lambda warm start (legacy + CLI spec form)
                         "lambda_edges_per_tau": req.get("lambda_edges_per_tau") or None,
                         "lambda_per_tau_spec": lpt_spec,
-                        # columns-constrained mode (own grow/polish path, stays in the column family)
-                        "columns": bool(req.get("columns", False)),
-                        # general 2D guillotine mode + warm start (a {window_tau, window_lam, root} tree)
-                        "tree": bool(req.get("tree", False)),
                         "binning_tree": req.get("binning_tree") or None,
                         "metric": metric,
                         "beam_width": max(1, int(req.get("beam_width", 3) or 3)),  # 1 = greedy grow, >= 2 = beam
@@ -602,13 +530,9 @@ class Handler(BaseHTTPRequestHandler):
                         "initial_tau_scan": max(0, int(req.get("initial_tau_scan", 64) or 64)),
                         "staged_lambda_n_keep": max(1, int(req.get("staged_lambda_n_keep", 3) or 3)),
                         "seed": (int(req["seed"]) if req.get("seed") not in (None, "") else None),
-                        "n_staged_seeds": max(1, int(req.get("n_staged_seeds", 1) or 1)),
                         "beam_leaves": max(1, int(req.get("beam_leaves", 4) or 4)),
                         "beam_positions": req.get("beam_positions") or None,
                         "per_group_lambda": bool(req.get("per_group_lambda", False)),
-                        "grid_search": bool(req.get("grid_search", False)),
-                        "dtau": float(req.get("dtau", 0.5) or 0.5),
-                        "dlam": float(req.get("dlam", 0.25) or 0.25),
                         "window": _window(req),
                         "target_rms": (float(target) if target else None),
                         "plateau_evals": max(0, int(req.get("plateau_evals", 0) or 0)),

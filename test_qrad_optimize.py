@@ -179,8 +179,6 @@ class TestStoppingAndWindow(unittest.TestCase):
             [3.0, 5.0],
             flags=[True] * 4,
             target_rms=6e7,
-            opt_lambda=False,
-            opt_flags=False,
             grow=False,
             score_fn=self._flat(5e7),
             max_evals=1000,
@@ -196,8 +194,6 @@ class TestStoppingAndWindow(unittest.TestCase):
             [3.0, 5.0],
             flags=[True] * 4,
             plateau_evals=5,
-            opt_lambda=False,
-            opt_flags=False,
             grow=False,
             score_fn=self._flat(5e7),
             max_evals=1000,
@@ -232,9 +228,6 @@ class TestStoppingAndWindow(unittest.TestCase):
             [3.0, 5.0],
             flags=[True] * 4,
             window=(-2.0, 2.0),
-            opt_tau=False,
-            opt_lambda=False,
-            opt_flags=False,
             grow=False,
             score_fn=score,
             max_evals=20,
@@ -314,7 +307,6 @@ class TestTreeOptimizer(unittest.TestCase):
             [-0.63, 0.5, 7.0],
             [3.0, 3.4, 5.0],
             flags=[True, True],
-            tree=True,
             grow=False,
             score_fn=_tree_dev_score(),
             max_evals=5000,
@@ -339,7 +331,6 @@ class TestTreeOptimizer(unittest.TestCase):
             [-0.63, 7.0],
             [3.0, 5.0],
             flags=[True],
-            tree=True,
             grow=True,
             max_groups=5,
             score_fn=_tree_leafcount_score(),
@@ -355,7 +346,6 @@ class TestTreeOptimizer(unittest.TestCase):
             [-0.63, 0.5, 7.0],
             [3.0, 3.4, 5.0],
             flags=[True, True],
-            tree=True,
             grow=True,
             max_groups=6,
             score_fn=_tree_dev_score(),
@@ -498,7 +488,6 @@ class TestBeamSearch(unittest.TestCase):
             [0.0, 4.0],
             [0.0, 4.0],
             flags=[True],
-            tree=True,
             grow=True,
             grow_tol=0.0,  # isolate topology (midpoint-only) from the grow bar: accept any win
             beam_width=1,
@@ -510,7 +499,6 @@ class TestBeamSearch(unittest.TestCase):
             [0.0, 4.0],
             [0.0, 4.0],
             flags=[True],
-            tree=True,
             grow=True,
             beam_width=3,
             max_groups=4,
@@ -548,7 +536,6 @@ class TestBeamSearch(unittest.TestCase):
             [-0.63, 7.0],
             [3.0, 5.0],
             flags=[True],
-            tree=True,
             grow=True,
             beam_width=3,
             max_groups=5,
@@ -565,7 +552,6 @@ class TestBeamSearch(unittest.TestCase):
             [-0.63, 0.5, 7.0],
             [3.0, 3.4, 5.0],
             flags=[True, True],
-            tree=True,
             grow=True,
             beam_width=3,
             max_groups=6,
@@ -580,7 +566,6 @@ class TestBeamSearch(unittest.TestCase):
             [-0.63, 0.5, 7.0],
             [3.0, 3.4, 5.0],
             flags=[True, True],
-            tree=True,
             grow=True,
             beam_width=3,
             max_groups=5,
@@ -591,7 +576,6 @@ class TestBeamSearch(unittest.TestCase):
             [-0.63, 0.5, 7.0],
             [3.0, 3.4, 5.0],
             flags=[True, True],
-            tree=True,
             grow=True,
             beam_width=3,
             max_groups=5,
@@ -613,7 +597,6 @@ class TestBeamSearch(unittest.TestCase):
             [-0.63, 0.3488, 1.2275, 2.885, 7.0],
             [3.0, 5.0],
             flags=[True, True, True, True],
-            tree=True,
             grow=True,
             beam_width=3,
             max_groups=5,
@@ -894,63 +877,6 @@ class TestDeterministicFineGrid(unittest.TestCase):
         self.assertTrue(qo._tree_feasible(res["binning_tree"], qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
 
 
-class TestStagedPortfolio(unittest.TestCase):
-    """Data-free tests for the multi-seed staged portfolio (no ODF)."""
-
-    @staticmethod
-    def _bowl_score(target):
-        target = np.asarray(target, float)
-
-        def cost_tree(tree):
-            cuts = np.asarray(qo._tau_cuts_sorted(tree), float)
-            n = min(len(cuts), len(target))
-            return float(1e8 + 1e7 * np.sum((cuts[:n] - target[:n]) ** 2))
-
-        def score(tau, lam, flags, model, *, binning_tree=None, window=None):
-            n = sum(1 for _ in qo._leaf_rects(binning_tree["root"], qo._root_rect(binning_tree)))
-            return {"rms": cost_tree(binning_tree), "max_abs": 0.0, "int_q_pct": 0.0, "n_empty": 0, "n_groups": n}
-
-        return score
-
-    def _run(self, **kw):
-        base = dict(
-            flags=[True],
-            grow=False,
-            beam_width=1,
-            initial_tau_bins=3,
-            initial_tau_scan=32,
-            max_groups=8,
-            score_fn=self._bowl_score([1.0, 3.0]),
-            max_evals=5000,
-        )
-        base.update(kw)
-        return qo.optimize_qrad([-0.63, 7.0], [3.0, 5.0], **base)
-
-    def test_single_seed_matches_default(self):
-        # n_staged_seeds=1 must reproduce today's single-seed path: same tags, same rms, same tree.
-        a = self._run(seed=3)
-        b = self._run(seed=3, n_staged_seeds=1)
-        self.assertEqual([h["tag"] for h in a["history"]], [h["tag"] for h in b["history"]])
-        self.assertEqual(a["rms"], b["rms"])
-        self.assertEqual(qo._tree_signature(a["binning_tree"]), qo._tree_signature(b["binning_tree"]))
-
-    def test_portfolio_never_loses(self):
-        # Best-of-K over distinct rng streams must beat-or-tie any single stream on the same bowl.
-        singles = [self._run(seed=s)["rms"] for s in range(5)]
-        port = self._run(seed=0, n_staged_seeds=5)
-        self.assertLessEqual(port["rms"], min(singles))
-        tags = [h["tag"] for h in port["history"]]
-        self.assertIn("staged-tau:0", tags)
-        self.assertIn("staged-lambda:0", tags)
-
-    def test_single_basin_signature_equal(self):
-        # One global basin (tau scan off): every member stages the same fixed seed tree plus the
-        # deterministic fine grid, so the winner's signature equals the single-seed result.
-        a = self._run(seed=3, initial_tau_scan=0)
-        b = self._run(seed=3, initial_tau_scan=0, n_staged_seeds=3)
-        self.assertEqual(qo._tree_signature(a["binning_tree"]), qo._tree_signature(b["binning_tree"]))
-
-
 class TestMainGroupingDispatch(unittest.TestCase):
     """Regression guard for the main() rewrite (P3): every CLI grouping mode resolves to the
     per-tau-group lambda-edge list (``lpt``) feeding the single guillotine-tree IR, and the tree
@@ -1053,11 +979,10 @@ class TestMainGroupingDispatch(unittest.TestCase):
 
 class TestFlatParamShim(unittest.TestCase):
     """The flat-input params (flags / per_group_lambda) no longer drive separate optimizers —
-    they seed a guillotine tree (the shim in optimize_qrad). Calling optimize_qrad WITHOUT
-    tree=True must still return a tree result whose leaf rectangles match tree_from_lpt of the
-    equivalent flat inputs. grow is off so the structure is exactly the seed; a constant
-    tree-aware score_fn means the polish never moves a cut (no strict improvement), so the
-    seed rectangles are preserved verbatim."""
+    they seed a guillotine tree (the shim in optimize_qrad). The result is always a tree whose
+    leaf rectangles match tree_from_lpt of the equivalent flat inputs. grow is off so the
+    structure is exactly the seed; a constant tree-aware score_fn means the polish never moves
+    a cut (no strict improvement), so the seed rectangles are preserved verbatim."""
 
     @staticmethod
     def _const_score(tau, lam, flags, model, *, binning_tree=None, window=None):
@@ -1082,9 +1007,6 @@ class TestFlatParamShim(unittest.TestCase):
             lam,
             flags=flags,
             grow=False,
-            opt_tau=False,
-            opt_lambda=False,
-            opt_flags=False,
             beam_width=1,
             score_fn=self._const_score,
             max_evals=200,
@@ -1103,9 +1025,6 @@ class TestFlatParamShim(unittest.TestCase):
             flags=[True] * (len(tau) - 1),
             per_group_lambda=True,
             grow=False,
-            opt_tau=False,
-            opt_lambda=False,
-            opt_flags=False,
             beam_width=1,
             score_fn=self._const_score,
             max_evals=200,
