@@ -159,7 +159,7 @@ Pure stdlib server (no extra dependencies).
 This optimizer **minimizes the Q_rad rms residual directly** — the metric that actually matters —
 by searching over a **guillotine-tree** binning of the (−log₁₀ τ, log₁₀ λ) plane on the chosen
 atmosphere (`models/G2_1D.dat` by default; `--model <file>` picks another validated model). The
-general-2D path below refines one tree via seed → grow → polish: its leaves are the (τ, λ)
+general-2D path below refines one tree via seed → grow → polish → topo: its leaves are the (τ, λ)
 groups, and a τ cut and a λ cut can nest arbitrarily, so it can express
 any rectangular tiling (the "general 2D" the webapp loads after a run). Every input shape —
 shared-tau + `--split-lambda` flags, `--per-group-lambda`, or an explicit tree — is normalized to
@@ -197,14 +197,18 @@ The optimizer first seeds a tree from the inputs, then **grows** it — as a non
 **beam search** by default (`--beam-width 3`: up to 3 rival topologies kept in parallel,
 several split positions tried per leaf, deduped by leaf-rectangle signature), or greedily
 (`--beam-width 1`: one midpoint split of the widest leaf per round, committed only if rms improves) —
-and finally **polishes** every cut position. Each evaluation is a full RTE solve (~2.5 s via the
+then **polishes** every cut position, then runs the **topology search** (SPLIT/TRANSPLANT/REALLOC,
+each polished to its position optimum; count-neutral under `--max-groups` except SPLIT below the
+cap). Each evaluation is a full RTE solve (~2.5 s via the
 shared `qrad_core.score_binning`), so it is a **run-and-wait / batch tool**, bounded by `--max-evals`
 / `--max-seconds`; it logs progress and prints the before/after rms and the resulting tree's leaf
 bands. Guardrails keep edges strictly increasing and above a per-axis min-gap, and an empty-band
 penalty stops the search from collapsing groups. `--split-lambda`, `--per-group-lambda`, and
-`--lambda-bin-edges` are **seed shapes** (not optimizer modes): once seeded, the grow/polish
+`--lambda-bin-edges` are **seed shapes** (not optimizer modes): once seeded, the grow/polish/topo
 reshapes the tree freely. Pick the objective with `--metric rms|maxabs|int_q` and the grow
 strategy with `--beam-width` (1 = greedy, ≥ 2 = beam); cap the leaf count with `--max-groups`.
+`--topo/--no-topo` runs the topology search independently of grow (default follows `--grow`), so
+`--no-grow --topo` restructures without beam growth.
 
 Add `--save-dat` to write the optimized binning's **kappa `.dat` table** when the run finishes
 (`qrad_core.save_kappa_dat` → `tausort.build_kappa_band_comparison` /

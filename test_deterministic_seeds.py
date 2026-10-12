@@ -1,12 +1,11 @@
-"""Data-gated regression tests: the deterministic fine-grid scan must reach the
+"""Data-gated regression tests: the staged fine-grid scan must reach the
 Q_rad winner basin (~4.87e7) on seeds that historically missed it.
 
 Seeds 0 and 7 are documented losers under the old optimizer (scattered 7.9e7-1.2e8;
 only seed 3 of 25 ever hit 4.87e7), plus seed 5 as a third non-3 scatter seed. Each
-test runs `optimize_qrad` with `scan_allocation=True, deterministic_fine=True` on a
-reduced budget (`initial_tau_scan=0`, `grow=False`, `max_evals` just above the ~540
-raw grid evals + polish) and asserts the winner basin (rms <= 6.5e7, cleanly below
-the old-loser floor of >= 7.9e7).
+test runs `optimize_qrad` on a reduced budget (`initial_tau_scan=0`, `grow=False`,
+`max_evals` just above the ~540 raw grid evals + polish) and asserts the winner
+basin (rms <= 6.5e7, cleanly below the old-loser floor of >= 7.9e7).
 
 Slow (~10 min/seed at ~1.3 s/eval): kept in this separate file so the data-free
 `test_qrad_optimize` suite stays fast. Gated on `qrad_core.check_data_files()` (which
@@ -27,7 +26,7 @@ def _data_missing() -> list[str]:
 
 
 class TestDeterministicFineSeeds(unittest.TestCase):
-    """Deterministic fine-grid scan reaches the winner basin on historic miss seeds."""
+    """Staged fine-grid scan reaches the winner basin on historic miss seeds."""
 
     _SEEDS = (0, 7, 5)
     _RMS_BASIN = 6.5e7  # winner ~4.87e7; old losers scattered >= 7.9e7
@@ -41,9 +40,6 @@ class TestDeterministicFineSeeds(unittest.TestCase):
             grow=False,
             initial_tau_bins=3,
             initial_tau_scan=0,
-            staged_lambda_scan=8,  # > 0 arms the scan_allocation + deterministic-fine path
-            scan_allocation=True,
-            deterministic_fine=True,
             max_groups=5,
             seed=seed,
             max_evals=900,  # ~540 grid + staged-tau/polish headroom; no beam/topo with grow=False

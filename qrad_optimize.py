@@ -1194,155 +1194,6 @@ def scan_tau_seeds(
     return final
 
 
-def _bottom_columns_tree(tau_window, lam_window, t_top, lam_at, t_lo, t_hi) -> dict:
-    """Flipped bottom-region tree: tau@`t_top` root (top leaf spans the full lambda width),
-    bottom region lam@`lam_at` with a per-column tau cut (`t_lo` / `t_hi`) -- 5 leaves.
-    Explicit nested dict (no point location); the caller checks `_tree_feasible`."""
-    tlo, thi = float(tau_window[0]), float(tau_window[1])
-    llo, lhi = float(lam_window[0]), float(lam_window[1])
-    return {
-        "window_tau": [tlo, thi],
-        "window_lam": [llo, lhi],
-        "root": {
-            "axis": "tau",
-            "at": float(t_top),
-            "lo": {
-                "axis": "lam",
-                "at": float(lam_at),
-                "lo": {"axis": "tau", "at": float(t_lo), "lo": {"leaf": True}, "hi": {"leaf": True}},
-                "hi": {"axis": "tau", "at": float(t_hi), "lo": {"leaf": True}, "hi": {"leaf": True}},
-            },
-            "hi": {"leaf": True},
-        },
-    }
-
-
-def _bottom_triple(tree) -> tuple:
-    """(L, t_lo, t_hi) of a `_bottom_columns_tree` tiling (polish preserves the topology)."""
-    bot = tree["root"]["lo"]
-    return (float(bot["at"]), float(bot["lo"]["at"]), float(bot["hi"]["at"]))
-
-
-def scan_bottom_columns(
-    n,
-    tau_window,
-    lam_window,
-    t_top,
-    *,
-    min_gap_tau=MIN_GAP_TAU,
-    min_gap_lam=MIN_GAP_LAM,
-    dtau=0.5,
-    dlam=0.25,
-    n_keep=3,
-    cost_tree,
-    budget=None,
-    rng=None,
-) -> list:
-    """Latin-hypercube scan over flipped bottom-region tilings.
-
-    LHS-samples `n` (L, t_lo, t_hi) triples -- L on the `dlam` interior grid of
-    `lam_window`, t_lo/t_hi on the `dtau` interior grid of [tlo_outer, `t_top`] -- scores
-    each raw via `cost_tree` on the 5-leaf flipped tree (`_bottom_columns_tree`), keeps the
-    best `n_keep` OR-separated (separated iff dL >= min_gap_lam OR d_tlo >= min_gap_tau OR
-    d_thi >= min_gap_tau from every kept triple), light-polishes each kept triple with a
-    single-round `_block_fixed_point_tree` (the winner is fully polished downstream) with
-    the top cut frozen, and returns [(cost, tree)] best-first. Scoring is fully via the
-    injected `cost_tree`, so this is data-free testable with an analytic objective.
-    """
-    n, n_keep = int(n), int(n_keep)
-    if n <= 0 or n_keep <= 0:
-        return []
-    if cost_tree is None:
-        raise ValueError("scan_bottom_columns needs cost_tree(tree) -> cost")
-    tlo, thi = float(tau_window[0]), float(tau_window[1])
-    llo, lhi = float(lam_window[0]), float(lam_window[1])
-    t_top = float(t_top)
-    mg_tau, mg_lam = float(min_gap_tau), float(min_gap_lam)
-    lam_grid = _grid_points(llo, lhi, float(dlam))[1:-1]
-    tau_grid = _grid_points(tlo, t_top, float(dtau))[1:-1] if t_top > tlo else []
-    if not lam_grid or not tau_grid:
-        return []
-    if (t_top - tlo) < mg_tau - 1e-12 or (thi - t_top) < mg_tau - 1e-12:
-        return []  # top cut itself infeasible: every triple would be
-    if (lhi - llo) < 2 * mg_lam - 1e-12:
-        return []
-
-    def _feasible(triple) -> bool:
-        L, a, b = triple
-        return (
-            L - llo >= mg_lam - 1e-12
-            and lhi - L >= mg_lam - 1e-12
-            and a - tlo >= mg_tau - 1e-12
-            and t_top - a >= mg_tau - 1e-12
-            and b - tlo >= mg_tau - 1e-12
-            and t_top - b >= mg_tau - 1e-12
-        )
-
-    def _clashes(triple, other) -> bool:
-        # same triple under the OR-separation rule: close on ALL three axes
-        return (
-            abs(triple[0] - other[0]) < mg_lam - 1e-9
-            and abs(triple[1] - other[1]) < mg_tau - 1e-9
-            and abs(triple[2] - other[2]) < mg_tau - 1e-9
-        )
-
-    gen = np.random.default_rng(rng)
-    seen: set[tuple] = set()
-    scored: list[tuple[float, tuple, dict]] = []
-    for _ in range(25):
-        if len(seen) >= n or (budget is not None and budget.exhausted()):
-            break
-        strata = np.empty((n, 3))
-        for j in range(3):
-            strata[:, j] = (gen.permutation(n) + gen.random(n)) / n
-        for i in range(n):
-            if len(seen) >= n:
-                break
-            sL, sa, sb = (float(v) for v in strata[i])
-            key = (
-                min(lam_grid, key=lambda g, s=sL: abs(g - (llo + s * (lhi - llo)))),
-                min(tau_grid, key=lambda g, s=sa: abs(g - (tlo + s * (t_top - tlo)))),
-                min(tau_grid, key=lambda g, s=sb: abs(g - (tlo + s * (t_top - tlo)))),
-            )
-            if key in seen or not _feasible(key):
-                continue
-            seen.add(key)
-            tree = _bottom_columns_tree([tlo, thi], [llo, lhi], t_top, *key)
-            if not _tree_feasible(tree, mg_tau, mg_lam):
-                continue
-            scored.append((float(cost_tree(tree)), key, tree))
-    scored.sort(key=lambda s: s[0])
-    kept = []
-    for cost, key, tree in scored:
-        if len(kept) >= n_keep:
-            break
-        if any(_clashes(key, other) for _, other, _ in kept):
-            continue
-        kept.append((cost, key, tree))
-    tight = _Cfg(min_gap_tau=mg_tau, min_gap_lam=mg_lam, max_sweeps=1, max_block_rounds=1)
-    use_budget = (
-        budget
-        if budget is not None
-        else _Budget(max_evals=10**9, max_seconds=3600.0, state={"n_evals": 0}, t0=time.perf_counter())
-    )
-    polished = []
-    for cost, _key, tree in kept:
-        t = copy.deepcopy(tree)
-        freeze_tau_cuts(t, top_only=True)  # top cut frozen: the bottom scan never moves it
-        t, c = _block_fixed_point_tree(
-            t, cost_tree, cfg=tight, budget=use_budget, min_gap_tau=mg_tau, min_gap_lam=mg_lam
-        )
-        polished.append((c, t))
-    polished.sort(key=lambda s: s[0])
-    final = []
-    for c, t in polished:
-        triple = _bottom_triple(t)
-        if any(_clashes(triple, _bottom_triple(u)) for _, u in final):
-            continue  # polish nudged two triples together; keep the cheaper one
-        final.append((c, t))
-    return final
-
-
 def _bottom_alloc_tree(tau_window, lam_window, t_top, lam_at, lo_cuts, hi_cuts) -> dict:
     """Flipped bottom-region tree with a per-column tau-depth allocation: root tau@`t_top`
     (deep leaf spans the full lambda width), photospheric region lam@`lam_at` with the
@@ -1385,153 +1236,6 @@ def _bottom_alloc(tree) -> tuple:
     return (L, col_cuts(bot["lo"]), col_cuts(bot["hi"]))
 
 
-def scan_bottom_allocated(
-    n,
-    tau_window,
-    lam_window,
-    t_top,
-    *,
-    min_gap_tau=MIN_GAP_TAU,
-    min_gap_lam=MIN_GAP_LAM,
-    dtau=0.5,
-    dlam=0.25,
-    n_keep=3,
-    allocations=((1, 1), (2, 0), (0, 2)),
-    cost_tree,
-    budget=None,
-    rng=None,
-) -> list:
-    """Latin-hypercube scan over flipped bottom-region tilings with a per-column tau-depth
-    allocation.
-
-    `allocations` lists the (lo_cuts, hi_cuts) cut-count pairs to scan -- (1, 1) is the
-    symmetric two-column shape, (2, 0)/(0, 2) stack all photospheric depth in one column (the
-    seed-3 winner). For each allocation the continuous parameters (L, per-column tau cuts) are
-    LHS-sampled on the `dlam`/`dtau` grids, scored raw via `cost_tree`, then the best `n_keep`
-    OR-separated survivors (separated only within the same allocation -- different cut-count
-    shapes never clash) are light-polished with a single-round `_block_fixed_point_tree` (top
-    cut frozen) and returned best-first. Scoring is fully via the injected `cost_tree`, so this
-    is data-free testable with an analytic objective.
-    """
-    n, n_keep = int(n), int(n_keep)
-    if n <= 0 or n_keep <= 0 or not allocations:
-        return []
-    if cost_tree is None:
-        raise ValueError("scan_bottom_allocated needs cost_tree(tree) -> cost")
-    tlo, thi = float(tau_window[0]), float(tau_window[1])
-    llo, lhi = float(lam_window[0]), float(lam_window[1])
-    t_top = float(t_top)
-    mg_tau, mg_lam = float(min_gap_tau), float(min_gap_lam)
-    lam_grid = _grid_points(llo, lhi, float(dlam))[1:-1]
-    tau_grid = _grid_points(tlo, t_top, float(dtau))[1:-1] if t_top > tlo else []
-    if not lam_grid or not tau_grid:
-        return []
-    if (t_top - tlo) < mg_tau - 1e-12 or (thi - t_top) < mg_tau - 1e-12:
-        return []  # top cut itself infeasible
-    if (lhi - llo) < 2 * mg_lam - 1e-12:
-        return []
-
-    gen = np.random.default_rng(rng)
-    seen: set = set()
-    scored: list[tuple[float, tuple, tuple, dict]] = []  # (cost, (L, lo, hi), alloc, tree)
-
-    def _feasible(L, lo, hi) -> bool:
-        if L - llo < mg_lam - 1e-12 or lhi - L < mg_lam - 1e-12:
-            return False
-        for cuts in (lo, hi):
-            prev = tlo
-            for c in cuts:
-                if c - prev < mg_tau - 1e-12:
-                    return False
-                prev = c
-            if t_top - prev < mg_tau - 1e-12:
-                return False
-        return True
-
-    for alloc in allocations:
-        n_lo, n_hi = int(alloc[0]), int(alloc[1])
-        if n_lo < 0 or n_hi < 0:
-            continue
-        d = 1 + n_lo + n_hi  # L + lo cuts + hi cuts
-        found = 0
-        for _ in range(25):
-            if found >= n or (budget is not None and budget.exhausted()):
-                break
-            strata = np.empty((n, d))
-            for j in range(d):
-                strata[:, j] = (gen.permutation(n) + gen.random(n)) / n
-            for i in range(n):
-                if found >= n:
-                    break
-                s = [float(v) for v in strata[i]]
-                L = min(lam_grid, key=lambda g, s=s[0]: abs(g - (llo + s * (lhi - llo))))
-                snaps = [min(tau_grid, key=lambda g, s=sv: abs(g - (tlo + sv * (t_top - tlo)))) for sv in s[1:]]
-                lo = tuple(sorted(snaps[:n_lo]))
-                hi = tuple(sorted(snaps[n_lo:]))
-                if not _feasible(L, lo, hi):
-                    continue
-                key = ((n_lo, n_hi), L, lo, hi)
-                if key in seen:
-                    continue
-                seen.add(key)
-                tree = _bottom_alloc_tree([tlo, thi], [llo, lhi], t_top, L, lo, hi)
-                if not _tree_feasible(tree, mg_tau, mg_lam):
-                    continue
-                scored.append((float(cost_tree(tree)), (L, lo, hi), (n_lo, n_hi), tree))
-                found += 1
-
-    scored.sort(key=lambda s: s[0])
-
-    def _clash(a, b):
-        # (L, lo_cuts, hi_cuts, allocation) tuples; different cut-count shapes never clash.
-        L1, lo1, hi1, alloc1 = a
-        L2, lo2, hi2, alloc2 = b
-        if alloc1 != alloc2:
-            return False
-        return (
-            abs(L1 - L2) < mg_lam - 1e-9
-            and all(abs(x - y) < mg_tau - 1e-9 for x, y in zip(lo1, lo2))
-            and all(abs(x - y) < mg_tau - 1e-9 for x, y in zip(hi1, hi2))
-        )
-
-    kept = []
-    for cost, (L, lo, hi), (n_lo, n_hi), tree in scored:
-        if len(kept) >= n_keep:
-            break
-        if any(_clash((L, lo, hi, (n_lo, n_hi)), (L2, lo2, hi2, a2)) for _c2, (L2, lo2, hi2), a2, _t2 in kept):
-            continue
-        kept.append((cost, (L, lo, hi), (n_lo, n_hi), tree))
-
-    tight = _Cfg(min_gap_tau=mg_tau, min_gap_lam=mg_lam, max_sweeps=1, max_block_rounds=1)
-    use_budget = (
-        budget
-        if budget is not None
-        else _Budget(max_evals=10**9, max_seconds=3600.0, state={"n_evals": 0}, t0=time.perf_counter())
-    )
-    polished = []
-    for _cost, _alloc, _shape, tree in kept:
-        t = copy.deepcopy(tree)
-        freeze_tau_cuts(t, top_only=True)  # top cut frozen: the bottom scan never moves it
-        t, c = _block_fixed_point_tree(
-            t, cost_tree, cfg=tight, budget=use_budget, min_gap_tau=mg_tau, min_gap_lam=mg_lam
-        )
-        polished.append((c, t))
-    polished.sort(key=lambda s: s[0])
-    final = []
-    for c, t in polished:
-        L, lo, hi = _bottom_alloc(t)
-        cur = (L, lo, hi, (len(lo), len(hi)))
-        clash = False
-        for _c2, t2 in final:
-            L2, lo2, hi2 = _bottom_alloc(t2)
-            if _clash(cur, (L2, lo2, hi2, (len(lo2), len(hi2)))):
-                clash = True  # polish nudged two seeds together; keep the cheaper one
-                break
-        if not clash:
-            final.append((c, t))
-    return final
-
-
 def scan_bottom_fine_grid(
     tau_window,
     lam_window,
@@ -1553,19 +1257,18 @@ def scan_bottom_fine_grid(
 ) -> list:
     """Deterministic fine-grid scan over flipped bottom-region tilings with a per-column tau-depth allocation.
 
-    Unlike the LHS `scan_bottom_allocated`, this exhaustively enumerates (L, per-column tau-cut
-    combinations) on `_grid_points` over a photospheric region (`lam_lo..lam_hi` x `tau_lo..tau_hi`,
-    clamped to the windows): the winner's (lambda, tau1, tau2) well is ~0.1% of the joint space, so a
-    few hundred LHS samples under-sample it, while the grid is guaranteed to land a point within half a
-    step of it. Each candidate is built via `_bottom_alloc_tree`, skipped when `_tree_feasible` fails,
+    Exhaustively enumerates (L, per-column tau-cut combinations) on `_grid_points` over a
+    photospheric region (`lam_lo..lam_hi` x `tau_lo..tau_hi`, clamped to the windows): the
+    winner's (lambda, tau1, tau2) well is ~0.1% of the joint space, so the grid enumerates it
+    instead of sampling it, landing a point within half a step of the well by construction.
+    Each candidate is built via `_bottom_alloc_tree`, skipped when `_tree_feasible` fails,
     scored raw via `cost_tree`, then the best `n_keep` OR-separated survivors are light-polished with a
-    single-round `_block_fixed_point_tree` (top cut frozen) and returned best-first -- the same return
-    contract as `scan_bottom_allocated`. Cuts within a column must be >= `min_gap_tau` apart and inside
-    [tlo, t_top]. At the default spacing the full enumeration is 6 x C(10, 2) = 270 candidates per
-    asymmetric allocation (540 raw evals); when an allocation's combinatorics exceed
-    `max_candidates // len(allocations)`, a deterministic stride subsample keeps the raw-eval budget
-    bounded (no RNG anywhere). Scoring is fully via the injected `cost_tree`, so this is data-free
-    testable with an analytic objective.
+    single-round `_block_fixed_point_tree` (top cut frozen) and returned best-first. Cuts within
+    a column must be >= `min_gap_tau` apart and inside [tlo, t_top]. At the default spacing the
+    full enumeration is 6 x C(10, 2) = 270 candidates per asymmetric allocation (540 raw evals);
+    when an allocation's combinatorics exceed `max_candidates // len(allocations)`, a deterministic
+    stride subsample keeps the raw-eval budget bounded (no RNG anywhere). Scoring is fully via the
+    injected `cost_tree`, so this is data-free testable with an analytic objective.
     """
     n_keep = int(n_keep)
     if n_keep <= 0 or not allocations:
@@ -1891,6 +1594,7 @@ def optimize_qrad(
     opt_lambda=True,
     opt_flags=True,
     grow=True,
+    topo: bool | None = None,  # topology search (SPLIT/TRANSPLANT/REALLOC); None -> follow grow
     metric="rms",
     min_gap_tau=MIN_GAP_TAU,
     min_gap_lam=MIN_GAP_LAM,
@@ -1920,20 +1624,11 @@ def optimize_qrad(
     explore=0.05,  # early exploration: adopt non-improving grow rounds within this cost fraction
     explore_rounds=2,  # how many such jumps allowed before the grow bar goes strict
     min_opacity_delta=None,  # min bottom-opacity max/min ratio to split a group (None -> score default)
-    initial_tau_bins=None,  # staged seeding: N equally-spaced tau cuts, tau-only polish, bottom-two lambda split
+    initial_tau_bins=None,  # staged seeding: N equally-spaced tau cuts, tau-only polish, fine-grid lambda split
     initial_tau_scan=0,  # staged seeding: LHS-scan this many tau-cut sets first, seed from the winner (0 = off)
-    staged_lambda_scan=0,  # staged seeding: LHS-scan this many (L, t_lo, t_hi) bottom triples (0 = off, keep sync path)
-    staged_lambda_n_keep=3,  # bottom-triple scan: survivors polished + returned best-first
-    scan_allocation=False,  # staged lambda step: scan the per-column tau-depth allocation (2,0)/(1,1)/(0,2)
-    staged_lambda_fine_scan=0,  # staged lambda step: after the coarse allocation scan, re-scan the asymmetric
-    #   allocations (depth all in one column) at fine resolution (dtau=0.1, dlam=0.05) -- the winner's
-    #   (lambda, tau1, tau2) well is narrower than the coarse 0.5/0.25 grid can represent (0 = off)
-    deterministic_fine=False,  # staged lambda step: with scan_allocation, run the deterministic
-    #   fine-grid scan (scan_bottom_fine_grid) over the photospheric region instead of the LHS
-    #   staged_lambda_fine_scan pass -- the narrow (lambda, tau1, tau2) well is ~0.1% of the joint
-    #   space, so LHS under-samples it while the grid is guaranteed to land within half a step
-    seed=None,  # RNG seed for the LHS scans (None = fresh entropy; same seed = reproducible run)
-    n_staged_seeds=1,  # staged portfolio: members sharing the budget (member m: tau rng seed+m*2, bottom seed+m*2+1)
+    staged_lambda_n_keep=3,  # staged lambda step: fine-grid survivors polished + returned best-first
+    seed=None,  # RNG seed for the tau-cut scan (None = fresh entropy; same seed = reproducible run)
+    n_staged_seeds=1,  # staged portfolio: members sharing the budget (member m seeds tau scan with seed+m*2)
     score_fn=None,
     on_progress=None,
     on_eval=None,
@@ -1947,7 +1642,10 @@ def optimize_qrad(
     Tree-only: every input shape (an explicit `binning_tree`, `lambda_edges_per_tau`,
     `per_group_lambda`, or shared tau + `flags`) is normalized to a guillotine tree and refined
     via a single seed/grow/polish path. `grow` enables splitting leaves (accepted only when rms
-    improves by > grow_tol, default an absolute 0); `beam_width >= 2` (default 3) runs a
+    improves by > grow_tol, default an absolute 0); `topo` (None -> follow `grow`) enables the
+    `_topology_search` structural pass (SPLIT/TRANSPLANT/REALLOC, each polished to its position
+    optimum; count-neutral under --max-groups except SPLIT below the cap) independently of grow,
+    so `--no-grow` + topo still escapes the tau-only basin. `beam_width >= 2` (default 3) runs a
     non-greedy beam search over tree topologies, `beam_width == 1` the greedy grow. The opt_tau/
     opt_lambda/opt_flags toggles are retained for API compatibility but are inert under the
     tree path.
@@ -2090,92 +1788,32 @@ def optimize_qrad(
             )
 
         def _member_lambda_step(tree, m, tag_suffix):
-            """Lambda step of the staged pipeline on `tree` (flipped scan or sync path).
+            """Lambda step of the staged pipeline on `tree` (fine grid or sync path).
             Returns (tree, penalized cost at the staged-lambda checkpoint)."""
+            del m  # the fine grid is deterministic: every member stages the same grid winner
             lam_mid = 0.5 * (float(lambda_edges[0]) + float(lambda_edges[-1]))
-            bottom_rng = None if seed is None else int(seed) + m * 2 + 1
             _did_lambda_scan = False
             _best = cost_tree(tree)
-            if int(staged_lambda_scan) > 0 and _n_leaves(tree) + 2 <= max_groups and not budget.exhausted():
-                # Flipped bottom-region scan: freeze the top cut, LHS-scan the bottom region, take
-                # the winner, checkpoint staged-lambda, and skip the mid-window
-                # split_bottom_two_tau_groups + _synced_wiggle path. Falls back to the sync path when
-                # the scan returns no survivor. With `scan_allocation` the scan samples the per-column
-                # tau-depth allocation (depth stacked in one lambda column, the other undivided) so the
-                # depth-where-density basin is a staged seed, not a downstream topology cliff.
+            if _n_leaves(tree) + 2 <= max_groups and not budget.exhausted():
+                # Flipped bottom-region scan: freeze the top cut, exhaustively enumerate the
+                # (L, tau-cut combinations) photospheric grid over the asymmetric allocations
+                # (depth stacked in one lambda column, the other undivided), take the winner,
+                # checkpoint staged-lambda, and skip the mid-window split_bottom_two_tau_groups +
+                # _synced_wiggle path. Falls back to the sync path when the grid yields nothing.
                 _top = max(_tau_cuts_sorted(tree), default=float(tau_edges[-1]))
                 freeze_tau_cuts(tree, top_only=True)
-                if scan_allocation:
-                    _n_cuts = int(max_groups) - 3  # deep leaf (1) + 2 column floors (2) + cuts = max_groups
-                    _allocs = [(a, _n_cuts - a) for a in range(_n_cuts + 1)]
-                    seeds = scan_bottom_allocated(
-                        int(staged_lambda_scan),
-                        [tau_edges[0], tau_edges[-1]],
-                        [lambda_edges[0], lambda_edges[-1]],
-                        _top,
-                        min_gap_tau=min_gap_tau,
-                        min_gap_lam=min_gap_lam,
-                        n_keep=int(staged_lambda_n_keep),
-                        allocations=_allocs,
-                        cost_tree=cost_tree,
-                        budget=budget,
-                        rng=bottom_rng,
-                    )
-                    if deterministic_fine and not budget.exhausted():
-                        # Deterministic fine-grid second stage: exhaustively enumerate (L, tau-cut
-                        # combinations) over the photospheric region instead of LHS-sampling it. The
-                        # winner's (lambda, tau1, tau2) well is ~0.1% of the joint space, so the LHS
-                        # fine pass under-samples it (seed 0: 9.28e7 -> 9.05e7, still far from 4.87e7);
-                        # the grid lands within half a step of the well by construction. Merged with
-                        # the coarse result exactly like the LHS fine pass.
-                        _fine = scan_bottom_fine_grid(
-                            [tau_edges[0], tau_edges[-1]],
-                            [lambda_edges[0], lambda_edges[-1]],
-                            _top,
-                            min_gap_tau=min_gap_tau,
-                            min_gap_lam=min_gap_lam,
-                            n_keep=int(staged_lambda_n_keep),
-                            allocations=((_n_cuts, 0), (0, _n_cuts)),
-                            cost_tree=cost_tree,
-                            budget=budget,
-                        )
-                        if _fine:
-                            seeds = sorted((seeds or []) + _fine, key=lambda s: s[0])[: int(staged_lambda_n_keep)]
-                    elif int(staged_lambda_fine_scan) > 0 and not budget.exhausted():
-                        # Fine joint second-stage scan: the winner's (lambda, tau1, tau2) well is narrower
-                        # than the coarse 0.5/0.25 grid can represent (the coarse tau grid skips from 0.87
-                        # to 1.37, so the winning tau1~1.02 basin is invisible). Re-scan the asymmetric
-                        # allocations at fine resolution and keep the best across both passes.
-                        _fine = scan_bottom_allocated(
-                            int(staged_lambda_fine_scan),
-                            [tau_edges[0], tau_edges[-1]],
-                            [lambda_edges[0], lambda_edges[-1]],
-                            _top,
-                            min_gap_tau=min_gap_tau,
-                            min_gap_lam=min_gap_lam,
-                            dtau=0.1,
-                            dlam=0.05,
-                            n_keep=int(staged_lambda_n_keep),
-                            allocations=((_n_cuts, 0), (0, _n_cuts)),
-                            cost_tree=cost_tree,
-                            budget=budget,
-                            rng=(None if bottom_rng is None else bottom_rng + 1000),
-                        )
-                        if _fine:
-                            seeds = sorted((seeds or []) + _fine, key=lambda s: s[0])[: int(staged_lambda_n_keep)]
-                else:
-                    seeds = scan_bottom_columns(
-                        int(staged_lambda_scan),
-                        [tau_edges[0], tau_edges[-1]],
-                        [lambda_edges[0], lambda_edges[-1]],
-                        _top,
-                        min_gap_tau=min_gap_tau,
-                        min_gap_lam=min_gap_lam,
-                        n_keep=int(staged_lambda_n_keep),
-                        cost_tree=cost_tree,
-                        budget=budget,
-                        rng=bottom_rng,
-                    )
+                _n_cuts = int(max_groups) - 3  # deep leaf (1) + 2 column floors (2) + cuts = max_groups
+                seeds = scan_bottom_fine_grid(
+                    [tau_edges[0], tau_edges[-1]],
+                    [lambda_edges[0], lambda_edges[-1]],
+                    _top,
+                    min_gap_tau=min_gap_tau,
+                    min_gap_lam=min_gap_lam,
+                    n_keep=int(staged_lambda_n_keep),
+                    allocations=((_n_cuts, 0), (0, _n_cuts)),
+                    cost_tree=cost_tree,
+                    budget=budget,
+                )
                 if seeds:
                     tree, _best = seeds[0][1], seeds[0][0]
                     checkpoint(f"staged-lambda{tag_suffix}", evaluate(binning_tree=tree)[1])
@@ -2306,7 +1944,7 @@ def optimize_qrad(
         # grow prunes it. Structural moves (split / reallocate a cut to the other axis), each polished
         # to its position optimum; bounded by the remaining budget; never worsens. Beam/non-greedy
         # only: greedy (beam_width == 1) is the fast fallback and stays as the grow left it.
-        if grow and beam_width >= 2 and not budget.exhausted():
+        if (grow if topo is None else topo) and beam_width >= 2 and not budget.exhausted():
             tree, best = _topology_search(
                 tree,
                 cost_tree,
@@ -2975,6 +2613,12 @@ def main(
     opt_lambda: bool = typer.Option(True, "--opt-lambda/--no-opt-lambda"),
     opt_flags: bool = typer.Option(True, "--opt-flags/--no-opt-flags"),
     grow: bool = typer.Option(True, "--grow/--no-grow", help="Allow growing the tau-group count."),
+    topo: bool | None = typer.Option(
+        None,
+        "--topo/--no-topo",
+        help="Run the topology search (SPLIT/TRANSPLANT/REALLOC). Default follows --grow; "
+        "--no-grow --topo polishes + restructures without beam growth.",
+    ),
     per_group_lambda: bool = typer.Option(
         False, "--per-group-lambda/--shared-lambda", help="Give each tau group its own lambda split."
     ),
@@ -2998,39 +2642,16 @@ def main(
         "--initial-tau-scan",
         help="Staged seeding: LHS-scan NUM tau-cut sets on the dtau grid and seed from the winner (0 = off).",
     ),
-    staged_lambda_scan: int = typer.Option(
-        0,
-        "--staged-lambda-scan",
-        help="Staged seeding: LHS-scan NUM (L, t_lo, t_hi) bottom-region triples after tau polish (0 = off).",
-    ),
-    scan_allocation: bool = typer.Option(
-        False,
-        "--scan-allocation/--no-scan-allocation",
-        help="Staged lambda step: scan the per-column tau-depth allocation (depth stacked in one "
-        "lambda column, the other undivided) instead of the symmetric one-cut-per-column triples.",
-    ),
-    staged_lambda_fine_scan: int = typer.Option(
-        0,
-        "--staged-lambda-fine-scan",
-        help="With --scan-allocation: after the coarse scan, re-scan the asymmetric allocations at "
-        "fine resolution (dtau=0.1, dlam=0.05) for NUM samples per allocation (0 = off).",
-    ),
-    deterministic_fine: bool = typer.Option(
-        False,
-        "--deterministic-fine/--no-deterministic-fine",
-        help="With --scan-allocation: run the deterministic fine-grid scan (photospheric lambda/tau "
-        "region, asymmetric allocations) instead of the LHS --staged-lambda-fine-scan pass.",
-    ),
     seed: int = typer.Option(
         None,
         "--seed",
-        help="RNG seed for the staged LHS scans (same seed = reproducible run; omit = fresh entropy).",
+        help="RNG seed for the staged tau-cut scan (same seed = reproducible run; omit = fresh entropy).",
     ),
     n_staged_seeds: int = typer.Option(
         1,
         "--n-staged-seeds",
         help="Staged seeding: run the stage→staged-lambda pipeline K times under the shared budget "
-        "(member m uses seed+m*2 / seed+m*2+1 for the tau/bottom scans), keep the best staged-lambda "
+        "(member m seeds its tau scan with seed+m*2), keep the best staged-lambda "
         "checkpoint, then refine once. 1 = single pass. Skipped with --load-tree.",
     ),
     max_evals: int = typer.Option(400, "--max-evals"),
@@ -3267,6 +2888,7 @@ def main(
             opt_lambda=opt_lambda,
             opt_flags=opt_flags,
             grow=grow,
+            topo=topo,
             metric=metric,
             min_gap_tau=min_gap_tau,
             min_gap_lam=min_gap_lam,
@@ -3288,16 +2910,6 @@ def main(
             initial_tau_scan=(
                 0 if loaded_tree is not None else (initial_tau_scan if initial_tau_scan and initial_tau_bins else 0)
             ),
-            staged_lambda_scan=(
-                0 if loaded_tree is not None else (staged_lambda_scan if staged_lambda_scan and initial_tau_bins else 0)
-            ),
-            scan_allocation=scan_allocation and initial_tau_bins > 0,
-            staged_lambda_fine_scan=(
-                0
-                if loaded_tree is not None or not scan_allocation
-                else (staged_lambda_fine_scan if staged_lambda_fine_scan and initial_tau_bins else 0)
-            ),
-            deterministic_fine=deterministic_fine if scan_allocation and initial_tau_bins else False,
             seed=seed,
             n_staged_seeds=(1 if loaded_tree is not None or not initial_tau_bins else n_staged_seeds),
             on_progress=_progress,

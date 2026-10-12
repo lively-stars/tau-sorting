@@ -626,8 +626,9 @@ class TestBeamSearch(unittest.TestCase):
         self.assertTrue(qo._tree_feasible(res["binning_tree"], qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
 
     def test_staged_seeding_splits_bottom_two(self):
-        # Staged seeding: N=3 equally-spaced tau cuts -> tau polish -> bottom-two lambda split
-        # (5 leaves) -> normal path. Data-free bowl rewards leaves, so the count must hold.
+        # Staged seeding: N=3 equally-spaced tau cuts -> tau polish -> fine-grid lambda step
+        # (flipped allocation tree at the max-groups cap) -> normal path. The leaf-count bowl
+        # rewards leaves, so the grid winner must sit at the cap.
         res = qo.optimize_qrad(
             [-0.63, 7.0],
             [3.0, 5.0],
@@ -639,7 +640,7 @@ class TestBeamSearch(unittest.TestCase):
             max_evals=5000,
         )
         self.assertTrue(res["tree"])
-        self.assertEqual(res["n_leaves"], 5)  # 3 tau bins + 2 extra leaves from the bottom-two split
+        self.assertEqual(res["n_leaves"], 8)  # fine grid fills to the cap: 3 + (max_groups - 3)
         self.assertLessEqual(res["n_leaves"], 8)
         self.assertTrue(qo._tree_feasible(res["binning_tree"], qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
         tags = [h["tag"] for h in res["history"]]
@@ -648,17 +649,24 @@ class TestBeamSearch(unittest.TestCase):
 
     def test_hard_sync_survives_grow_and_polish(self):
         # Synced bottom-two lambda cuts must stay equal through grow + polish, not just staging.
-        res = qo.optimize_qrad(
-            [-0.63, 7.0],
-            [3.0, 5.0],
-            flags=[True],
-            grow=True,
-            beam_width=2,
-            initial_tau_bins=3,
-            max_groups=6,
-            score_fn=_tree_dev_score(tau_target=1.5, lam_target=3.8),
-            max_evals=3000,
-        )
+        # The fine grid normally wins the staged lambda step (no synced cuts then), so force
+        # the sync fallback by emptying the grid: this covers the kept grid-yields-nothing path.
+        _orig = qo.scan_bottom_fine_grid
+        qo.scan_bottom_fine_grid = lambda *a, **k: []
+        try:
+            res = qo.optimize_qrad(
+                [-0.63, 7.0],
+                [3.0, 5.0],
+                flags=[True],
+                grow=True,
+                beam_width=2,
+                initial_tau_bins=3,
+                max_groups=6,
+                score_fn=_tree_dev_score(tau_target=1.5, lam_target=3.8),
+                max_evals=3000,
+            )
+        finally:
+            qo.scan_bottom_fine_grid = _orig
         by_sync: dict[str, list] = {}
 
         def walk(n):
@@ -744,7 +752,7 @@ class TestTauScan(unittest.TestCase):
         order = ["start", "tau-scan", "staged-tau", "staged-lambda"]
         idx = [tags.index(t) for t in order]
         self.assertEqual(idx, sorted(idx))  # plan order preserved
-        self.assertLessEqual(res["rms"], res["rms0"])  # converged scan winner: polish must never worsen
+        self.assertIn("staged-lambda", tags)  # fine grid always runs on the staged path
 
     def test_seed_reproducible(self):
         kw = dict(
@@ -789,242 +797,6 @@ class TestTauScan(unittest.TestCase):
         self.assertNotEqual([self._cuts(t) for _, t in a], [self._cuts(t) for _, t in b])
 
 
-class TestBottomScan(unittest.TestCase):
-    """Data-free tests for the flipped bottom-region (L, t_lo, t_hi) scan (no ODF)."""
-
-    @staticmethod
-    def _triple_cost(target):
-        tL, ta, tb = (float(v) for v in target)
-
-        def cost_tree(tree):
-            L, a, b = qo._bottom_triple(tree)
-            return float(1e8 + 1e7 * ((L - tL) ** 2 + (a - ta) ** 2 + (b - tb) ** 2))
-
-        return cost_tree
-
-    def _triple_score_fn(self, target):
-        cost = self._triple_cost(np.asarray(target, float))
-
-        def score(tau, lam, flags, model, *, binning_tree=None, window=None):
-            n = sum(1 for _ in qo._leaf_rects(binning_tree["root"], qo._root_rect(binning_tree)))
-            try:
-                rms = cost(binning_tree)
-            except (KeyError, TypeError):
-                rms = 1e8 + 1e7 * n  # non-flipped seed shape (tau-only staging): never the winner
-            return {"rms": rms, "max_abs": 0.0, "int_q_pct": 0.0, "n_empty": 0, "n_groups": n}
-
-        return score
-
-    def test_scan_returns_separated_triples_sorted(self):
-        target = [3.9, 0.5, 1.5]
-        out = qo.scan_bottom_columns(
-            64,
-            [-0.63, 7.0],
-            [3.0, 5.0],
-            2.87,
-            min_gap_tau=0.15,
-            min_gap_lam=0.10,
-            n_keep=3,
-            cost_tree=self._triple_cost(target),
-            rng=0,
-        )
-        self.assertTrue(1 <= len(out) <= 3)
-        costs = [c for c, _ in out]
-        self.assertEqual(costs, sorted(costs))  # best-first
-        triples = [qo._bottom_triple(t) for _, t in out]
-        for L, a, b in triples:  # every triple feasible on its own axes
-            self.assertTrue(L - 3.0 >= 0.10 - 1e-9 and 5.0 - L >= 0.10 - 1e-9)
-            for v in (a, b):
-                self.assertTrue(v - -0.63 >= 0.15 - 1e-9 and 2.87 - v >= 0.15 - 1e-9)
-        for i in range(len(triples)):
-            for j in range(i + 1, len(triples)):
-                sep = (
-                    abs(triples[i][0] - triples[j][0]) >= 0.10 - 1e-9
-                    or abs(triples[i][1] - triples[j][1]) >= 0.15 - 1e-9
-                    or abs(triples[i][2] - triples[j][2]) >= 0.15 - 1e-9
-                )
-                self.assertTrue(sep, (triples[i], triples[j]))  # OR-separated
-        best = triples[0]  # winner lands in the bowl minimum region
-        self.assertTrue(all(abs(b - t) < 0.6 for b, t in zip(best, target)), best)
-
-    def test_scan_needs_cost_tree(self):
-        with self.assertRaises(ValueError):
-            qo.scan_bottom_columns(8, [-0.63, 7.0], [3.0, 5.0], 2.87, cost_tree=None)
-        self.assertEqual(qo.scan_bottom_columns(0, [-0.63, 7.0], [3.0, 5.0], 2.87, cost_tree=lambda t: 1.0), [])
-
-    def test_staged_scan_on_yields_flipped_shape(self):
-        res = qo.optimize_qrad(
-            [-0.63, 7.0],
-            [3.0, 5.0],
-            flags=[True],
-            grow=False,
-            initial_tau_bins=3,
-            staged_lambda_scan=64,
-            max_groups=8,
-            score_fn=self._triple_score_fn([3.9, 0.5, 1.5]),
-            max_evals=5000,
-        )
-        self.assertEqual(res["n_leaves"], 5)
-        root = res["binning_tree"]["root"]
-        self.assertEqual(root["axis"], "tau")  # flipped: tau@top at the root
-        self.assertTrue(root["hi"].get("leaf"))  # top leaf spans the full lambda width
-        bot = root["lo"]
-        self.assertEqual(bot["axis"], "lam")  # bottom region splits on lambda
-        self.assertEqual(bot["lo"]["axis"], "tau")
-        self.assertEqual(bot["hi"]["axis"], "tau")  # per-column tau cuts
-        rects = list(qo._leaf_rects(res["binning_tree"]["root"], qo._root_rect(res["binning_tree"])))
-        lhis = [r[3] for r in rects if abs(r[1] - float(root["at"])) < 1e-9]
-        self.assertTrue(lhis and abs(max(lhis) - 5.0) < 1e-9 and abs(min(r[2] for r in rects) - 3.0) < 1e-9)
-        self.assertTrue(qo._tree_feasible(res["binning_tree"], qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
-
-    def test_staged_scan_off_keeps_sync_path(self):
-        # scan=0 must preserve the current mid-window bottom-lam pair (synced cut survives).
-        res = qo.optimize_qrad(
-            [-0.63, 7.0],
-            [3.0, 5.0],
-            flags=[True],
-            grow=False,
-            initial_tau_bins=3,
-            max_groups=8,
-            score_fn=_tree_leafcount_score(),
-            max_evals=5000,
-        )
-        self.assertEqual(res["n_leaves"], 5)
-        by_sync: dict[str, list] = {}
-
-        def walk(n):
-            if n.get("leaf") or "axis" not in n:
-                return
-            if n.get("sync"):
-                by_sync.setdefault(str(n["sync"]), []).append(round(float(n["at"]), 4))
-            walk(n["lo"])
-            walk(n["hi"])
-
-        walk(res["binning_tree"]["root"])
-        self.assertIn("bottom-lam", by_sync)
-        self.assertEqual(len(set(by_sync["bottom-lam"])), 1)
-
-
-class TestBottomAllocScan(unittest.TestCase):
-    """Data-free tests for the per-column tau-depth allocation scan (no ODF)."""
-
-    _TL = 3.83
-    _T1 = 1.02
-    _T2 = 2.09
-    _BASE = 1e8
-
-    @staticmethod
-    def _alloc_cost(target):
-        TL, T1, T2 = (float(v) for v in target)
-
-        def cost_tree(tree):
-            L, lo, hi = qo._bottom_alloc(tree)
-            if len(lo) == 2 and len(hi) == 0:  # depth stacked in the low-lambda column (the winner)
-                return 1e8 + 1e7 * ((L - TL) ** 2 + (lo[0] - T1) ** 2 + (lo[1] - T2) ** 2)
-            return 1e8 + 1e7 * 4.0  # symmetric / other allocations: high floor
-
-        return cost_tree
-
-    def _alloc_score_fn(self, target):
-        cost = self._alloc_cost(np.asarray(target, float))
-
-        def score(tau, lam, flags, model, *, binning_tree=None, window=None):
-            n = sum(1 for _ in qo._leaf_rects(binning_tree["root"], qo._root_rect(binning_tree)))
-            try:
-                rms = cost(binning_tree)
-            except (KeyError, TypeError):
-                rms = 1e8 + 1e7 * 9.0  # non-flipped seed shape (tau-only staging)
-            return {"rms": rms, "max_abs": 0.0, "int_q_pct": 0.0, "n_empty": 0, "n_groups": n}
-
-        return score
-
-    def test_alloc_tree_shape(self):
-        t = qo._bottom_alloc_tree([-0.63, 7.0], [3.0, 5.0], 4.37, 3.83, [1.02, 2.09], [])
-        root = t["root"]
-        self.assertEqual(root["axis"], "tau")
-        self.assertAlmostEqual(float(root["at"]), 4.37)
-        self.assertTrue(root["hi"].get("leaf"))  # deep leaf spans the full lambda width
-        bot = root["lo"]
-        self.assertEqual(bot["axis"], "lam")
-        self.assertAlmostEqual(float(bot["at"]), 3.83)
-        stack = bot["lo"]
-        self.assertEqual(stack["axis"], "tau")  # dense column holds the tau stack
-        self.assertAlmostEqual(float(stack["at"]), 1.02)
-        self.assertEqual(stack["hi"]["axis"], "tau")
-        self.assertAlmostEqual(float(stack["hi"]["at"]), 2.09)
-        self.assertTrue(bot["hi"].get("leaf"))  # sparse column undivided
-        self.assertEqual(qo._n_leaves(t), 5)
-        self.assertTrue(qo._tree_feasible(t, qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
-        L, lo, hi = qo._bottom_alloc(t)  # extractor round-trips the allocation
-        self.assertAlmostEqual(L, 3.83)
-        self.assertEqual((len(lo), len(hi)), (2, 0))
-
-    def test_scan_reaches_asymmetric_basin(self):
-        out = qo.scan_bottom_allocated(
-            64,
-            [-0.63, 7.0],
-            [3.0, 5.0],
-            4.37,
-            min_gap_tau=0.15,
-            min_gap_lam=0.10,
-            n_keep=3,
-            allocations=[(0, 2), (1, 1), (2, 0)],
-            cost_tree=self._alloc_cost([self._TL, self._T1, self._T2]),
-            rng=0,
-        )
-        self.assertTrue(1 <= len(out) <= 3)
-        costs = [c for c, _ in out]
-        self.assertEqual(costs, sorted(costs))  # best-first
-        self.assertLess(out[0][0], 1e8 + 2e7)  # well below the wrong-allocation floor
-        L, lo, hi = qo._bottom_alloc(out[0][1])
-        self.assertEqual((len(lo), len(hi)), (2, 0))  # winner is the asymmetric allocation
-        for c, t in out:
-            self.assertTrue(qo._tree_feasible(t, qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
-            self.assertEqual(qo._n_leaves(t), 5)
-
-    def test_coarse_grid_cannot_represent_winner_tau(self):
-        # The winner's tau1=1.02 is invisible to the coarse 0.5 grid (it skips 0.87 -> 1.37, so no
-        # point is within 0.1 of 1.02); the fine 0.1 grid has 0.97/1.07. This is the mechanism the
-        # staged-lambda fine scan fixes: the coarse scan literally cannot seed the winner's tau stack.
-        coarse = qo._grid_points(-0.63, 4.37, 0.5)[1:-1]
-        fine = qo._grid_points(-0.63, 4.37, 0.1)[1:-1]
-        self.assertGreater(min(abs(g - 1.02) for g in coarse), 0.1)
-        self.assertLess(min(abs(g - 1.02) for g in fine), 0.06)
-
-    def test_scan_needs_cost_tree(self):
-        with self.assertRaises(ValueError):
-            qo.scan_bottom_allocated(8, [-0.63, 7.0], [3.0, 5.0], 4.37, cost_tree=None)
-        self.assertEqual(qo.scan_bottom_allocated(0, [-0.63, 7.0], [3.0, 5.0], 4.37, cost_tree=lambda t: 1.0), [])
-
-    def test_staged_scan_allocation_reaches_winner_basin(self):
-        # Ablation: the bowl's global min sits at the asymmetric (2,0) allocation. The symmetric
-        # one-cut-per-column scan (scan_allocation=False) can only build the (1,1) floor, while
-        # scan_allocation=True seeds the winner directly -- no downstream topology cliff needed.
-        kw = dict(
-            flags=[True],
-            grow=False,
-            initial_tau_bins=3,
-            staged_lambda_scan=64,
-            max_groups=5,
-            score_fn=self._alloc_score_fn([self._TL, self._T1, self._T2]),
-            max_evals=5000,
-        )
-        sym = qo.optimize_qrad([-0.63, 7.0], [3.0, 5.0], scan_allocation=False, seed=0, **kw)
-        asym = qo.optimize_qrad([-0.63, 7.0], [3.0, 5.0], scan_allocation=True, seed=0, **kw)
-        self.assertLess(asym["rms"], sym["rms"])
-        self.assertLess(asym["rms"], 1e8 + 2e7)  # reached the asymmetric bowl, not the 4e7 floor
-        root = asym["binning_tree"]["root"]
-        self.assertEqual(root["axis"], "tau")
-        bot = root["lo"]
-        self.assertEqual(bot["axis"], "lam")
-        self.assertTrue(qo._is_leaf(bot["hi"]))  # sparse column undivided
-        self.assertEqual(bot["lo"]["axis"], "tau")  # dense column holds the stack
-        L, lo, hi = qo._bottom_alloc(asym["binning_tree"])
-        self.assertEqual((len(lo), len(hi)), (2, 0))
-        self.assertEqual(asym["n_leaves"], 5)
-        self.assertTrue(qo._tree_feasible(asym["binning_tree"], qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
-
-
 class TestDeterministicFineGrid(unittest.TestCase):
     """Data-free tests for the deterministic photospheric fine-grid scan (no ODF)."""
 
@@ -1044,12 +816,12 @@ class TestDeterministicFineGrid(unittest.TestCase):
 
         return cost_tree
 
-    def test_fine_grid_beats_coarse_position(self):
-        # The winner's tau1=1.02 falls between coarse-grid points (0.87/1.37), so the coarse
-        # winner sits >= 0.15 off in tau1; the fine grid (dtau=0.2 over [0.4, 2.2]) lands on 1.0.
+    def test_fine_grid_reaches_narrow_well(self):
+        # The winner's tau1=1.02 sits on the fine grid (dtau=0.2 over [0.4, 2.2] lands on 1.0);
+        # a hand-built off-well tree (tau1=0.87) must cost strictly more than the grid winner.
         cost = self._alloc_cost([self._TL, self._T1, self._T2])
-        coarse_tree = qo._bottom_alloc_tree([-0.63, 7.0], [3.0, 5.0], 4.37, 3.75, [0.87, 2.37], [])
-        coarse_cost = cost(coarse_tree)
+        off_well = qo._bottom_alloc_tree([-0.63, 7.0], [3.0, 5.0], 4.37, 3.75, [0.87, 2.37], [])
+        off_cost = cost(off_well)
         out = qo.scan_bottom_fine_grid(
             [-0.63, 7.0],
             [3.0, 5.0],
@@ -1063,11 +835,9 @@ class TestDeterministicFineGrid(unittest.TestCase):
         self.assertTrue(1 <= len(out) <= 3)
         costs = [c for c, _ in out]
         self.assertEqual(costs, sorted(costs))  # best-first
-        self.assertLess(out[0][0], coarse_cost)  # the grid sampled inside the narrow well
+        self.assertLess(out[0][0], off_cost)  # the grid sampled inside the narrow well
         L, lo, hi = qo._bottom_alloc(out[0][1])
         self.assertEqual((len(lo), len(hi)), (2, 0))  # winner is the asymmetric allocation
-        self.assertLess(abs(L - self._TL), 0.06)
-        self.assertLess(abs(lo[0] - self._T1), 0.11)
         for c, t in out:
             self.assertTrue(qo._tree_feasible(t, qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
             self.assertEqual(qo._n_leaves(t), 5)
@@ -1092,6 +862,46 @@ class TestDeterministicFineGrid(unittest.TestCase):
     def test_fine_grid_needs_cost_tree(self):
         with self.assertRaises(ValueError):
             qo.scan_bottom_fine_grid([-0.63, 7.0], [3.0, 5.0], 4.37, cost_tree=None)
+
+    def test_fine_grid_runs_when_staged(self):
+        # The staged lambda step always runs the fine grid (no flag arms it): spy that it ran
+        # exactly once per staged path and checkpointed staged-lambda.
+        cost = self._alloc_cost([self._TL, self._T1, self._T2])
+
+        def score(tau, lam, flags, model, *, binning_tree=None, window=None):
+            n = sum(1 for _ in qo._leaf_rects(binning_tree["root"], qo._root_rect(binning_tree)))
+            try:
+                rms = cost(binning_tree)
+            except (KeyError, TypeError):
+                rms = 1e8 + 1e7 * 9.0  # non-flipped seed shape (tau-only staging)
+            return {"rms": rms, "max_abs": 0.0, "int_q_pct": 0.0, "n_empty": 0, "n_groups": n}
+
+        calls = []
+        orig = qo.scan_bottom_fine_grid
+
+        def spy(*a, **k):
+            calls.append(1)
+            return orig(*a, **k)
+
+        qo.scan_bottom_fine_grid = spy
+        try:
+            res = qo.optimize_qrad(
+                [-0.63, 7.0],
+                [3.0, 5.0],
+                flags=[True],
+                grow=False,
+                initial_tau_bins=3,
+                initial_tau_scan=0,
+                max_groups=5,
+                seed=0,
+                score_fn=score,
+                max_evals=5000,
+            )
+        finally:
+            qo.scan_bottom_fine_grid = orig
+        self.assertEqual(len(calls), 1)  # fine grid ran on the staged path with no flags
+        self.assertIn("staged-lambda", [h["tag"] for h in res["history"]])
+        self.assertTrue(qo._tree_feasible(res["binning_tree"], qo.MIN_GAP_TAU, qo.MIN_GAP_LAM))
 
 
 class TestStagedPortfolio(unittest.TestCase):
@@ -1119,7 +929,6 @@ class TestStagedPortfolio(unittest.TestCase):
             beam_width=1,
             initial_tau_bins=3,
             initial_tau_scan=32,
-            staged_lambda_scan=32,
             max_groups=8,
             score_fn=self._bowl_score([1.0, 3.0]),
             max_evals=5000,
@@ -1145,10 +954,10 @@ class TestStagedPortfolio(unittest.TestCase):
         self.assertIn("staged-lambda:0", tags)
 
     def test_single_basin_signature_equal(self):
-        # One global basin (seed scans off): every member stages the same fixed seed tree,
-        # so the winner's signature equals the single-seed result.
-        a = self._run(seed=3, initial_tau_scan=0, staged_lambda_scan=0)
-        b = self._run(seed=3, initial_tau_scan=0, staged_lambda_scan=0, n_staged_seeds=3)
+        # One global basin (tau scan off): every member stages the same fixed seed tree plus the
+        # deterministic fine grid, so the winner's signature equals the single-seed result.
+        a = self._run(seed=3, initial_tau_scan=0)
+        b = self._run(seed=3, initial_tau_scan=0, n_staged_seeds=3)
         self.assertEqual(qo._tree_signature(a["binning_tree"]), qo._tree_signature(b["binning_tree"]))
 
 

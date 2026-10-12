@@ -161,6 +161,7 @@
       <label class="flag"><input type="checkbox" id="qv_tau" checked> &tau;</label>
       <label class="flag"><input type="checkbox" id="qv_lam" checked> &lambda;</label>
       <label class="flag"><input type="checkbox" id="qv_grow" checked> grow N</label>
+      <label class="flag"><input type="checkbox" id="qv_topo" checked> topo</label>
     </div>
     <div class="opt-row">
       <button id="qopt" class="secondary">Optimize Q_rad &rarr;</button>
@@ -193,12 +194,8 @@
         <label>grow tol % <input type="number" id="qv_growtol" min="0" step="0.5" value="1" /></label>
         <label>min gap &tau; <input type="number" id="qv_gaptau" min="0.01" step="0.01" value="0.15" /></label>
         <label>min gap &lambda; <input type="number" id="qv_gaplam" min="0.01" step="0.01" value="0.10" /></label>
-        <label>staged &lambda;-scan <input type="number" id="qv_stagedlam" min="0" max="512" value="0" title="staged seeding: LHS-scan NUM (L, t_lo, t_hi) bottom-region triples after tau polish (0 = off)" /></label>
-        <label>bottom triples kept <input type="number" id="qv_nkeep" min="1" max="10" value="3" title="staged lambda step: survivors polished + returned best-first" /></label>
-        <label class="flag"><input type="checkbox" id="qv_alloc"> scan allocation</label>
-        <label>fine scan <input type="number" id="qv_finescan" min="0" max="512" value="0" title="with scan allocation: re-scan asymmetric allocations at fine resolution (0 = off)" /></label>
-        <label class="flag"><input type="checkbox" id="qv_detfine"> deterministic fine</label>
-        <label>seed <input type="number" id="qv_seed" step="1" placeholder="random" title="RNG seed for the staged LHS scans (blank = fresh entropy)" /></label>
+        <label>fine-grid survivors <input type="number" id="qv_nkeep" min="1" max="10" value="3" title="staged lambda step: fine-grid survivors polished + returned best-first" /></label>
+        <label>seed <input type="number" id="qv_seed" step="1" placeholder="random" title="RNG seed for the staged tau-cut scan (blank = fresh entropy)" /></label>
         <label>staged seeds <input type="number" id="qv_nseeds" min="1" max="8" value="1" title="run the stage pipeline K times under the shared budget, keep the best" /></label>
         <label>beam leaves <input type="number" id="qv_beamleaves" min="1" max="12" value="4" title="widest leaves considered for splitting, per beam tree" /></label>
         <label>beam positions <input type="text" id="qv_beampos" placeholder="0.35, 0.5, 0.65" title="split-position fractions tried per leaf and axis (blank = default)" /></label>
@@ -479,6 +476,7 @@ async function qoptStart(columnsMode=false, gridMode=false) {
     tau_edges: tauwin, lambda_edges: lam, splits: SPLITS, model: $('model').value,
     opt_tau: $('qv_tau').checked, opt_lambda: $('qv_lam').checked,
     grow: $('qv_grow').checked,
+    topo: ($('qv_topo').checked ? true : ($('qv_grow').checked ? undefined : false)),
     tree: true,
     max_seconds: Math.max(20, Math.min(1800, parseInt($('qbudget').value,10)||1800)),
     window_lo: +$('win_lo').value, window_hi: +$('win_hi').value,
@@ -494,11 +492,7 @@ async function qoptStart(columnsMode=false, gridMode=false) {
     min_gap_tau: parseFloat($('qv_gaptau').value) || undefined,
     min_gap_lam: parseFloat($('qv_gaplam').value) || undefined,
     min_opacity_delta: parseFloat($('min_opacity_delta').value) || 1,
-    staged_lambda_scan: parseInt($('qv_stagedlam').value,10) || 0,
     staged_lambda_n_keep: parseInt($('qv_nkeep').value,10) || 3,
-    scan_allocation: $('qv_alloc').checked,
-    staged_lambda_fine_scan: parseInt($('qv_finescan').value,10) || 0,
-    deterministic_fine: $('qv_detfine').checked,
     seed: ($('qv_seed').value.trim() === '' ? undefined : parseInt($('qv_seed').value,10)),
     n_staged_seeds: parseInt($('qv_nseeds').value,10) || 1,
     beam_leaves: parseInt($('qv_beamleaves').value,10) || 4,
@@ -553,7 +547,8 @@ function predictPlan(body) {
     plan.push('staged-lambda');
   }
   plan.push((body.beam_width || 3) === 1 ? 'grow' : 'beam', 'blocks');
-  if ((body.beam_width || 3) >= 2) plan.push('topo');
+  const topoOn = (body.topo !== undefined) ? body.topo : (body.grow !== false);
+  if ((body.beam_width || 3) >= 2 && topoOn) plan.push('topo');
   return plan;
 }
 // Staged step list: maps optimizer on_progress tags to human bullets. Latest tag = active,

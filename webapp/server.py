@@ -105,7 +105,8 @@ def _run_plan(opt) -> list[str]:
         plan.append("staged-tau")
         plan.append("staged-lambda")
     plan += ["grow" if int(opt.get("beam_width", 3) or 3) == 1 else "beam", "blocks"]
-    if int(opt.get("beam_width", 3) or 3) >= 2:
+    topo_on = opt["topo"] if opt.get("topo") is not None else opt.get("grow", True)
+    if int(opt.get("beam_width", 3) or 3) >= 2 and topo_on:
         plan.append("topo")
     return plan
 
@@ -215,6 +216,7 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
                 opt_lambda=opt["opt_lambda"],
                 opt_flags=opt["opt_flags"],
                 grow=opt["grow"],
+                topo=(None if opt.get("topo") is None else bool(opt["topo"])),
                 metric=opt["metric"],
                 beam_width=opt["beam_width"],
                 max_seconds=opt["max_seconds"],
@@ -236,11 +238,6 @@ def _run_qrad_opt(tau_edges, lambda_edges, flags, model, opt):
                 min_opacity_delta=opt["min_opacity_delta"],
                 initial_tau_bins=(opt.get("initial_tau_bins") or None),
                 initial_tau_scan=int(opt.get("initial_tau_scan") or 0),
-                staged_lambda_scan=int(opt.get("staged_lambda_scan") or 0),
-                staged_lambda_n_keep=int(opt.get("staged_lambda_n_keep") or 3),
-                scan_allocation=bool(opt.get("scan_allocation", False)),
-                staged_lambda_fine_scan=int(opt.get("staged_lambda_fine_scan") or 0),
-                deterministic_fine=bool(opt.get("deterministic_fine", False)),
                 seed=opt.get("seed"),
                 n_staged_seeds=int(opt.get("n_staged_seeds") or 1),
                 beam_leaves=int(opt.get("beam_leaves") or 4),
@@ -578,6 +575,7 @@ class Handler(BaseHTTPRequestHandler):
                         "opt_lambda": bool(req.get("opt_lambda", True)),
                         "opt_flags": bool(req.get("opt_flags", True)),
                         "grow": bool(req.get("grow", True)),
+                        "topo": (None if req.get("topo") is None else bool(req.get("topo"))),
                         # manual split-list warm start (box + ordered splits seed the tree)
                         "splits": req.get("splits") or None,
                         # per-column-tau warm start (re-running keeps refining the current cuts)
@@ -601,11 +599,6 @@ class Handler(BaseHTTPRequestHandler):
                         "max_groups": max(2, min(MAX_GROUPS, int(req.get("max_groups", 8)))),
                         "initial_tau_bins": max(0, int(req.get("initial_tau_bins", 3) or 3)),
                         "initial_tau_scan": max(0, int(req.get("initial_tau_scan", 64) or 64)),
-                        "staged_lambda_scan": max(0, int(req.get("staged_lambda_scan", 0) or 0)),
-                        "staged_lambda_n_keep": max(1, int(req.get("staged_lambda_n_keep", 3) or 3)),
-                        "scan_allocation": bool(req.get("scan_allocation", False)),
-                        "staged_lambda_fine_scan": max(0, int(req.get("staged_lambda_fine_scan", 0) or 0)),
-                        "deterministic_fine": bool(req.get("deterministic_fine", False)),
                         "seed": (int(req["seed"]) if req.get("seed") not in (None, "") else None),
                         "n_staged_seeds": max(1, int(req.get("n_staged_seeds", 1) or 1)),
                         "beam_leaves": max(1, int(req.get("beam_leaves", 4) or 4)),
