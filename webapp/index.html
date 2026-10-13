@@ -309,6 +309,48 @@ function clearTree() {
 function _countLeaves(node) {
   return (node.leaf || !node.axis) ? 1 : _countLeaves(node.lo) + _countLeaves(node.hi);
 }
+// Find the leaf holding (tau, lam): walk root→leaf, narrowing the rect at each cut.
+// Returns {node, tlo, thi, llo, lhi} or null outside the window.
+function treeLeafAt(tree, tau, lam) {
+  const w = tree.window_tau, l = tree.window_lam;
+  let node = tree.root, tlo = w[0], thi = w[1], llo = l[0], lhi = l[1];
+  while (node && !node.leaf && node.axis) {
+    if (node.axis === 'tau') {
+      if (tau < node.at) { thi = node.at; node = node.lo; }
+      else { tlo = node.at; node = node.hi; }
+    } else {
+      if (lam < node.at) { lhi = node.at; node = node.lo; }
+      else { llo = node.at; node = node.hi; }
+    }
+  }
+  if (!node) return null;
+  if (tau < tlo || tau > thi || lam < llo || lam > lhi) return null;
+  return {node, tlo, thi, llo, lhi};
+}
+// Every internal node's cut segment + path, for click-to-remove on a tree.
+function treeCutSegments(tree) {
+  const segs = [];
+  const walk = (node, tlo, thi, llo, lhi, path) => {
+    if (!node || node.leaf || !node.axis) return;
+    segs.push({node, path,
+      axis: node.axis, at: node.at,
+      t0: tlo, t1: thi, l0: llo, l1: lhi});
+    if (node.axis === 'tau') {
+      walk(node.lo, tlo, node.at, llo, lhi, [...path, 'lo']);
+      walk(node.hi, node.at, thi, llo, lhi, [...path, 'hi']);
+    } else {
+      walk(node.lo, tlo, thi, llo, node.at, [...path, 'lo']);
+      walk(node.hi, tlo, thi, node.at, lhi, [...path, 'hi']);
+    }
+  };
+  walk(tree.root, tree.window_tau[0], tree.window_tau[1], tree.window_lam[0], tree.window_lam[1], []);
+  return segs;
+}
+function treeNodeAtPath(tree, path) {
+  let node = tree.root;
+  for (const step of path) node = node[step];
+  return node;
+}
 function renderSplitsNote() {
   if (!BINNING_TREE) return;
   const host = $('splits_host');
@@ -316,7 +358,7 @@ function renderSplitsNote() {
   note.className = 'hint';
   note.style.marginTop = '4px';
   note.innerHTML = `<b>optimizer tree active</b> — ${_countLeaves(BINNING_TREE.root)} leaf groups `
-    + `(edit the box or splits to exit).`;
+    + `(split clicks edit the tree; editing the box or windows exits it).`;
   host.prepend(note);
 }
 // Populate the model dropdown (valid models only) and the per-file validation report.
@@ -910,22 +952,35 @@ function placeSplitAt(lam, tau) {
   // Dry-run the ordered split list locally (same guillotine rule as the backend):
   // reject a click that falls outside the box or within min-gap of its bin edge,
   // so a redundant click explains itself instead of failing the recompute.
-  const err = splitError(SPLIT_MODE, tau, lam);
-  if (err) {
-    setStatus(err, true);
-    return;  // stay armed: fix the aim and click again (Esc cancels)
+  if (BINNING_TREE) {
+    // Optimizer tree active: insert a guillotine cut into the leaf under the click.
+    const leaf = treeLeafAt(BINNING_TREE, tau, lam);
+    if (!leaf) { setStatus('click falls outside the tree window — ignored', true); return; }
+    const at = SPLIT_MODE === 'tau' ? tau : lam;
+    const [lo, hi] = SPLIT_MODE === 'tau' ? [leaf.tlo, leaf.thi] : [leaf.llo, leaf.lhi];
+    const mg = SPLIT_MODE === 'tau' ? MG_TAU : MG_LAM;
+    if (at - lo < mg || hi - at < mg) {
+      setStatus(`too close to the leaf edge (min gap ${mg}) — split ignored`, true);
+      return;  // stay armed: fix the aim and click again (Esc cancels)
+    }
+    leaf.node.axis = SPLIT_MODE;
+    leaf.node.at = +at.toFixed(4);
+    leaf.node.lo = {leaf: true};
+    leaf.node.hi = {leaf: true};
+    delete leaf.node.leaf;  // was a leaf: internal nodes carry axis, not the leaf flag
+    renderSplitsNote();
+    setStatus(`split ${SPLIT_MODE} @ ${at.toFixed(3)} into optimizer tree (${_countLeaves(BINNING_TREE.root)} leaves)`);
+    compute();  // stay armed for the next click of the same kind
+    return;
   }
   clearTree();
-  SPLITS.push({axis: SPLIT_MODE, tau: +tau.toFixed(4), lam: +lam.toFixed(4)});
-  renderSplits();
-  compute();  // stay armed for the next click of the same kind
 }
 // Mirror of qrad_optimize.tree_from_splits validation for the pending split list:
 // returns an error string, or null when the split at (tau, lam) is legal.
+const MG_TAU = 0.15, MG_LAM = 0.10;  // must match qrad_optimize MIN_GAP_TAU/LAM
 function splitError(axis, tau, lam) {
   const tw = parseEdges($('tauwin').value), lw = parseEdges($('lam').value);
   if (!edgesValid(tw) || !edgesValid(lw)) return 'τ/λ windows need exactly 2 increasing edges each';
-  const MG_TAU = 0.15, MG_LAM = 0.10;  // must match qrad_optimize MIN_GAP_TAU/LAM
   if (!(tw[0] <= tau && tau <= tw[1] && lw[0] <= lam && lam <= lw[1])) return 'click falls outside the box — ignored';
   // Walk the existing splits to the bin holding the point (cut points land hi-side).
   let t0 = tw[0], t1 = tw[1], l0 = lw[0], l1 = lw[1];
@@ -1000,11 +1055,26 @@ function removeSplitAt(lam, tau) {
   if (SPLIT_MODE !== 'remove') return;
   lam = +lam; tau = +tau;
   if (!Number.isFinite(lam) || !Number.isFinite(tau)) return;
+  if (BINNING_TREE) {
+    // Optimizer tree active: collapse the internal node whose cut lies closest to the click.
+    const segs = treeCutSegments(BINNING_TREE);
+    if (!segs.length) { setStatus('tree is a single leaf — nothing to remove', true); return; }
+    const w = BINNING_TREE.window_tau, l = BINNING_TREE.window_lam;
+    const tSpan = (w[1] - w[0]) || 1, lSpan = (l[1] - l[0]) || 1;
+    let best = null, bestD = Infinity;
+    for (const s of segs) {
+      const dd = splitDistance({axis: s.axis, at: s.at, t0: s.t0, t1: s.t1, l0: s.l0, l1: s.l1}, tau, lam, tSpan, lSpan);
+      if (dd < bestD) { bestD = dd; best = s; }
+    }
+    const parent = treeNodeAtPath(BINNING_TREE, best.path);
+    delete parent.axis; delete parent.at; delete parent.lo; delete parent.hi;
+    parent.leaf = true;
+    renderSplitsNote();
+    setStatus(`removed ${best.axis} cut @ ${best.at.toFixed(3)} from optimizer tree (${_countLeaves(BINNING_TREE.root)} leaves)`);
+    compute();  // stay armed for the next removal
+    return;
+  }
   if (!SPLITS.length) { setStatus('no splits to remove', true); return; }
-  const found = nearestSplit(tau, lam);
-  if (found.error) { setStatus(found.error, true); return; }
-  if (found.index < 0) { setStatus('no splits to remove', true); return; }
-  clearTree();
   const gone = SPLITS.splice(found.index, 1)[0];
   renderSplits();
   const pos = gone.axis === 'tau' ? +gone.tau : +gone.lam;
