@@ -148,8 +148,8 @@
     <div class="hint">Below this opacity dynamic range a group stays a single band instead of low/mid/high.
        <code>1</code> = always split (default).</div>
 
-    <label>Scoring window &nbsp;<span class="hint">(log₁₀ τ_Ros, lo → hi)</span></label>
-    <div class="opt-row">
+    <label>Scoring window &nbsp;<span class="hint">(log₁₀ τ_Ros, lo → hi)<span id="win_intq_note" style="display:none"> — ignored by ∫Q</span></span></label>
+    <div class="opt-row" id="win_row">
       <span class="opt-n"><input type="number" id="win_lo" step="0.5" value="-5" /> to
         <input type="number" id="win_hi" step="0.5" value="3" /></span>
     </div>
@@ -157,7 +157,11 @@
     <label>Optimize for Q_rad &nbsp;<span class="hint">(direct &mdash; slow)</span></label>
     <div id="qvars">
       <label class="flag"><input type="checkbox" id="qv_grow" checked> grow N</label>
-      <label class="flag"><input type="checkbox" id="qv_topo" checked> topo</label>
+      <label class="flag">topo <select id="qv_topo" title="topology search (SPLIT/TRANSPLANT/REALLOC): follow grow, force on, or force off">
+        <option value="follow" selected>follow grow</option>
+        <option value="on">on</option>
+        <option value="off">off</option>
+      </select></label>
     </div>
     <div class="opt-row">
       <button id="qopt" class="secondary">Optimize Q_rad &rarr;</button>
@@ -352,6 +356,7 @@ async function init() {
   if (d.max_groups_ceiling) { $('qv_maxgroups').max = d.max_groups_ceiling; $('qv_maxgroups').value = Math.min(+$('qv_maxgroups').value, d.max_groups_ceiling); }
   renderModels(d);
   renderSplits();
+  syncWinIntq();
   // resume a Q_rad optimization that's already running (e.g. after a page reload)
   try {
     const s = await (await fetch('/api/optimize_qrad_status')).json();
@@ -361,6 +366,12 @@ async function init() {
 }
 
 function setStatus(msg, err=false){ const s=$('status'); s.textContent=msg; s.className=err?'err':''; }
+// ∫Q ignores the scoring window: dim the inputs + show the note when it is the metric.
+function syncWinIntq(){
+  const intq = $('qv_metric').value === 'int_q';
+  $('win_row').style.opacity = intq ? '0.45' : '';
+  $('win_intq_note').style.display = intq ? '' : 'none';
+}
 // Optimizer status line, shown under the Optimize Q_rad button + progress bar (not the global status).
 function setQStatus(msg, err=false){ const e=$('qstatus'); e.textContent=msg; e.style.color = err ? 'var(--bad)' : ''; }
 // CLI binning fieldset (tausort main flags): blank rows are omitted; `;` splits the
@@ -406,7 +417,8 @@ async function compute() {
   const body = {tau_edges:tauwin, lambda_edges:lam, splits:SPLITS, model:$('model').value,
                 window_lo:+$('win_lo').value, window_hi:+$('win_hi').value,
                 min_opacity_delta: parseFloat($('min_opacity_delta').value) || 1};
-  if (cli.cli) {
+  if (BINNING_TREE) body.binning_tree = BINNING_TREE;  // optimizer-result overlay drives compute
+  else if (cli.cli) {
     // CLI binning (tausort main flags) replaces the click-to-split box: explicit edges
     // override the windows, splits are dropped (the CLI modes don't use them).
     if (cli.body.tau_edges) body.tau_edges = cli.body.tau_edges;
@@ -461,7 +473,7 @@ async function qoptStart() {
   const body = {
     tau_edges: tauwin, lambda_edges: lam, splits: SPLITS, model: $('model').value,
     grow: $('qv_grow').checked,
-    topo: ($('qv_topo').checked ? true : ($('qv_grow').checked ? undefined : false)),
+    topo: ((v) => v === 'on' ? true : v === 'off' ? false : undefined)($('qv_topo').value),
     max_seconds: Math.max(20, Math.min(1800, parseInt($('qbudget').value,10)||1800)),
     window_lo: +$('win_lo').value, window_hi: +$('win_hi').value,
     metric: $('qv_metric').value,
@@ -489,9 +501,9 @@ async function qoptStart() {
   if (cli.cli) {
     if (cli.body.tau_edges) body.tau_edges = cli.body.tau_edges;
     if (cli.body.lambda_edges) body.lambda_edges = cli.body.lambda_edges;
-    if (cli.body.split_lambda_spec) body.split_lambda = cli.body.split_lambda_spec;
-    if (cli.body.lambda_per_tau_spec) body.lambda_edges_per_tau = cli.body.lambda_per_tau_spec;
-    if (cli.body.tau_per_lambda_spec) body.tau_per_lambda = cli.body.tau_per_lambda_spec;
+    if (cli.body.split_lambda_spec) body.split_lambda_spec = cli.body.split_lambda_spec;
+    if (cli.body.lambda_per_tau_spec) body.lambda_per_tau_spec = cli.body.lambda_per_tau_spec;
+    if (cli.body.tau_per_lambda_spec) body.tau_per_lambda_spec = cli.body.tau_per_lambda_spec;
     delete body.splits;
   }
   if (BINNING_TREE) body.binning_tree = BINNING_TREE;
@@ -527,12 +539,10 @@ const QSTEP_LABELS = {
   'tau-scan': 'tau seed scan (LHS) done',
   'staged-tau': 'tau groups placed + positioned',
   'staged-lambda': 'fine-grid lambda split + positioning',
-  'lambda': 'lambda cuts positioned',
   'grow': 'grew a tau group',
   'beam': 'beam grow round done',
   'blocks': 'position polish done',
   'topo': 'topology search done',
-  'tree': 'tree positions refined',
 };
 function qstepLabel(tag) {
   if (QSTEP_LABELS[tag]) return QSTEP_LABELS[tag];
@@ -575,7 +585,8 @@ function qoptFinish(result) {
   stopQBar();
   $('qcancel').style.display = 'none';
   qoptBusy(false);
-  if (result && result.history) renderSteps(result.history, false, QPLAN);
+  if (!result || !result.binning_tree) return;  // error path already reported via setQStatus
+  if (result.history) renderSteps(result.history, false, QPLAN);
   // The optimizer returns a free-form tree: keep the manual split list intact and show the
   // result as an overlay (any box/split edit exits it via onEdgeEdit).
   setTree(result.binning_tree);
@@ -600,6 +611,8 @@ async function downloadSavePlot() {
 }
 
 async function downloadKappa() {
+  const cli = cliBinningBody();
+  if (cli.error) return setStatus(cli.error, true);
   let tauwin, lam;
   try { tauwin = parseEdges($('tauwin').value); lam = parseEdges($('lam').value); }
   catch(e){ return setStatus('could not parse edges', true); }
@@ -608,6 +621,14 @@ async function downloadKappa() {
   const body = {tau_edges:tauwin, lambda_edges:lam, splits:SPLITS, model:$('model').value,
                 min_opacity_delta: parseFloat($('min_opacity_delta').value) || 1};
   if (BINNING_TREE) body.binning_tree = BINNING_TREE;
+  if (cli.cli) {
+    if (cli.body.tau_edges) body.tau_edges = cli.body.tau_edges;
+    if (cli.body.lambda_edges) body.lambda_edges = cli.body.lambda_edges;
+    if (cli.body.split_lambda_spec) body.split_lambda_spec = cli.body.split_lambda_spec;
+    if (cli.body.lambda_per_tau_spec) body.lambda_per_tau_spec = cli.body.lambda_per_tau_spec;
+    if (cli.body.tau_per_lambda_spec) body.tau_per_lambda_spec = cli.body.tau_per_lambda_spec;
+    delete body.splits;
+  }
   $('dl').disabled = true; setStatus('building kappa table…');
   try {
     const r = await fetch('/api/kappa_dat', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
@@ -660,6 +681,7 @@ async function downloadNpy() {
 }
 
 function downloadTree() {
+  if (!BINNING_TREE) return setStatus('no tree to download — run the optimizer or upload one first', true);
   const blob = new Blob([JSON.stringify(BINNING_TREE, null, 2) + '\n'], {type: 'application/json'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a'); a.href = url; a.download = 'binning_tree.json';
@@ -991,13 +1013,6 @@ function removeSplitAt(lam, tau) {
     + ` (${SPLITS.length} left)`);
   compute();  // stay armed for the next removal
 }
-function onChartClick(ev) {
-  if (!SPLIT_MODE || !ev || !ev.points || !ev.points.length) return;
-  const p = ev.points[0];
-  if (p.xaxis !== undefined && p.xaxis._id !== 'x') return;  // top binning panel only
-  if (SPLIT_MODE === 'remove') removeSplitAt(p.x, p.y);
-  else placeSplitAt(p.x, p.y);
-}
 document.getElementById('chart').addEventListener('mousemove', chartHoverCoords);
 function chartHoverCoords(e) {
   if (!SPLIT_MODE || !LAST) return;
@@ -1133,6 +1148,7 @@ $('rmsplit').addEventListener('click', () => armSplit('remove'));
 window.addEventListener('keydown', e => { if (e.key === 'Escape' && SPLIT_MODE) armSplit(SPLIT_MODE); });
 $('go').addEventListener('click', compute);
 $('qopt').addEventListener('click', () => qoptStart());
+$('qv_metric').addEventListener('change', syncWinIntq);
 $('dlplot').addEventListener('click', downloadSavePlot);
 $('qcancel').addEventListener('click', qoptCancel);
 $('dl').addEventListener('click', downloadKappa);
