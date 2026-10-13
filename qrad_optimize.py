@@ -1235,6 +1235,7 @@ def scan_bottom_fine_grid(
     max_candidates=600,
     cost_tree,
     budget=None,
+    freeze_top=True,  # freeze the top cut during survivor polish (False: polish may move it)
 ) -> list:
     """Deterministic fine-grid scan over flipped bottom-region tilings with a per-column tau-depth allocation.
 
@@ -1244,7 +1245,7 @@ def scan_bottom_fine_grid(
     instead of sampling it, landing a point within half a step of the well by construction.
     Each candidate is built via `_bottom_alloc_tree`, skipped when `_tree_feasible` fails,
     scored raw via `cost_tree`, then the best `n_keep` OR-separated survivors are light-polished with a
-    single-round `_block_fixed_point_tree` (top cut frozen) and returned best-first. Cuts within
+    single-round `_block_fixed_point_tree` (top cut frozen unless `freeze_top=False`) and returned best-first. Cuts within
     a column must be >= `min_gap_tau` apart and inside [tlo, t_top]. At the default spacing the
     full enumeration is 6 x C(10, 2) = 270 candidates per asymmetric allocation (540 raw evals);
     when an allocation's combinatorics exceed `max_candidates // len(allocations)`, a deterministic
@@ -1350,7 +1351,8 @@ def scan_bottom_fine_grid(
     polished = []
     for _cost, _alloc, _shape, tree in kept:
         t = copy.deepcopy(tree)
-        freeze_tau_cuts(t, top_only=True)  # top cut frozen: the bottom scan never moves it
+        if freeze_top:
+            freeze_tau_cuts(t, top_only=True)  # top cut frozen: the bottom scan never moves it
         t, c = _block_fixed_point_tree(
             t, cost_tree, cfg=tight, budget=use_budget, min_gap_tau=mg_tau, min_gap_lam=mg_lam
         )
@@ -1706,6 +1708,7 @@ def optimize_qrad(
                     allocations=((_n_cuts, 0), (0, _n_cuts)),
                     cost_tree=cost_tree,
                     budget=budget,
+                    freeze_top=freeze_top,
                 )
                 if seeds:
                     btree, _best_cost = seeds[0][1], seeds[0][0]
