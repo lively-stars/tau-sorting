@@ -78,16 +78,20 @@
     low/mid/high opacity split carries roughly four-fifths of the
     accuracy: disabling it degrades $4.87\times10^{7}$ to
     $2.42\times10^{8}$, and collapsing a single group already costs a
-    third. Staging selects the basin and downstream search
-    cannot leave it; early-selection portfolios, column-constrained
-    tilings and grid search all failed to reach the optimum and were
-    removed.}
+   third. Staging selects the basin and downstream search
+   cannot leave it; early-selection portfolios, column-constrained
+   tilings and grid search all failed to reach the optimum and were
+   removed. Repeating the cap ladder on the K dwarf K4 finds its own
+   asymmetric optimum ($3.46\times10^{7}$ at cap 5), but neither star's
+   optimum transfers (foreign losses of 3 to 5); only flatter mid-tier
+   tilings score near $10^{8}$ on both atmospheres.}
    {Minimizing the transfer residual directly, with staged seeding plus
-    beam grow plus topology REALLOC, finds tilings far better than
-    hand-placed edges at the same band count. The open problem is basin
-    selection: nothing cheap predicts which staging will refine well, so
-    future work must address late selection, wider transplant reach,
-    basin diversity in the beam, or objective shaping.}
+   beam grow plus topology REALLOC, finds tilings far better than
+   hand-placed edges at the same band count. The open problem is basin
+   selection: nothing cheap predicts which staging will refine well, so
+   future work must address late selection, wider transplant reach,
+   basin diversity in the beam, objective shaping, or joint optimization
+   over several atmospheres at once.}
 
    \keywords{radiative transfer --
              methods: numerical --
@@ -142,7 +146,8 @@
    Section~\ref{sec:setup} describes the validation setup.
    Section~\ref{sec:results} presents the results, including the best
    tiling found. Section~\ref{sec:negative} reports the variants that
-   failed, which we discuss in
+   failed. Section~\ref{sec:cross} repeats the ladder on a K dwarf model
+   and scores each atmosphere's winners on the other, which we discuss in
    Sect.~\ref{sec:discussion}. Section~\ref{sec:conclusions} concludes.
 
 % =====================================================================
@@ -296,7 +301,10 @@
    wavelength-cut and per-column $\tau$-cut combinations with asymmetric
    allocations (the $\tau$ depth stacked inside one $\lambda$ column,
    the other column left undivided). The winner becomes the staged
-   seed, and the frozen top cut is never moved or removed again.
+   seed, and the frozen top cut is never moved or removed again (a
+   --no-freeze-top variant that leaves it movable ties on two seeds but
+   stalls at $8.61\times10^{7}$ against $4.75\times10^{7}$ on a third,
+   so freezing stays the default).
    \emph{Grow}: the tree is expanded by splitting leaves, using a
    non-greedy \emph{beam search}: up to 3 rival topologies are
    kept in parallel, several split positions are tried per candidate leaf
@@ -304,7 +312,6 @@
    signature. The greedy limit (beam width 1) splits the widest leaf at
    its midpoint and commits a split only if $\mathcal{R}$ improves. Each
    candidate split is one full evaluation of Eq.~\ref{eq:objective}.
-   \emph{Polish}: every unfrozen cut position is swept to a fixed point.
    \emph{Topology}: a structural pass tries SPLIT (cut a leaf on either
    axis under the cap), TRANSPLANT (move $\tau$ depth across a shared
    $\lambda$ cut: collapse a $\tau$ cut inside one column and re-cut the
@@ -478,7 +485,9 @@
          verification seed 1 (best ever) & $\mathbf{4.37\times10^{7}}$ \\
          verification seeds 2, 3, 4 & $4.71\times10^{7}$ each \\
          \hline
-         8-group run floor & $\sim\!9.6\times10^{7}$ \\
+         leaf-cap 3 floor & $\sim\!1.2\times10^{8}$ \\
+         leaf-cap 4 floor & $\sim\!1.0\times10^{8}$ \\
+
          columns path floor (path deleted) & $\sim\!1.0\times10^{8}$ \\
          grid search (deleted) & $1.64\times10^{8}$ \\
          portfolio pick $\to$ final (seed 3) & $1.1014\times10^{8} \to 1.10\times10^{8}$ \\
@@ -537,18 +546,101 @@
    and its tests were deleted.
 
    Third, the group count is not the binding constraint; the allocation
-   is. An 8-group run floors near $9.6\times10^{7}$, with three paths
-   stalling within 0.1\%, far above seed 3 at 5 groups. What distinguishes
+   is. Raising the leaf cap from 3 to 4 moves the floor only from about
+   $1.2\times10^{8}$ to $1.0\times10^{8}$, while cap 5 reaches
+   $4.4$--$5.1\times10^{7}$: the jump comes from landing the asymmetric
+   allocation, not from adding leaves (Fig.~\ref{fig:caps}). What distinguishes
    the winning basin is where the depth resolution sits (stacked where
    the sub-bin density lives, sparse regions whole), and no cheap proxy
    for that transplantability exists: the optimizer cannot rank basins
    without refining them.
 
+   \begin{figure}[t]
+      \includegraphics[width=\hsize]{figures/fig7_cap_ladder.pdf}
+      \caption{Best rms versus leaf cap (top) with the winning tiling at
+               each cap below. The dashed line fits caps 2--5; cap 6
+               breaks the trend at $4.41\times10^{7}$, in the cap-5
+               family. Caps 2 and 3 are $\tau$-only stacks; the
+               $\lambda$ split appears at cap 4; the asymmetric deep
+               stack at cap 5 drops the rms by more than a factor of
+               two, and the sixth leaf (top, full $\lambda$ width) adds
+               nothing. The jump is the allocation, not the leaf count.}
+      \label{fig:caps}
+   \end{figure}
    Two more paths were deleted. The columns-constrained optimizer never
    broke about $1.0\times10^{8}$, and the winning tiling (a root $\tau$
    cut with an asymmetric $\lambda$-column stack) is not expressible in
    the column family. Grid search reached only $1.64\times10^{8}$. Both
    were removed from the code along with the portfolio machinery.
+% =====================================================================
+\section{Stability across atmospheres}
+\label{sec:cross}
+
+   Everything so far ran on the solar-like G2 model. To test whether the
+   ladder and the optima survive a different atmosphere, we repeated the
+   cap ladder (caps 2 to 6, seeds 0 and 1, budget 800, staged path,
+   window $[-5,\,3]$, smooth window 15) on the K dwarf model K4
+   (485 rows, validated like G2) and then scored every winner on the
+   other atmosphere with the same scorer.
+
+   The K4 ladder finds its own asymmetric optimum, and a steeper one.
+   Caps 2 and 3 stay $\tau$-only stacks at $1.088\times10^{8}$ and
+   $9.60\times10^{7}$, cap 4 stays $\tau$-only at $7.85\times10^{7}$,
+   and the $\lambda$ split appears at cap 5 ($3.46\times10^{7}$) and
+   deepens at cap 6 ($2.93\times10^{7}$). The K4 cap-5 winner shares the
+   family shape of the G2 optimum (a root $\tau$ cut with the depth
+   stacked inside one $\lambda$ column) but puts the root cut at 1.07
+   rather than 4.37 and the $\lambda$ cut at 3.94 rather than 3.83, and
+   it stacks only two deep against three on G2. The cap-6 winner splits
+   the sparse side as well, which G2 never rewards. Tiling shapes are in
+   Fig.~\ref{fig:k4ladder}; winner trees are in trees/ with provenance
+   in trees/README.md.
+
+   \begin{figure}[t]
+      \includegraphics[width=\hsize]{figures/fig8_k4_ladder.pdf}
+      \caption{The cap ladder repeated on the K dwarf model K4 (top:
+               best K4-native rms versus leaf cap, with the G2-native
+               ladder for comparison; bottom: the winning K4 tiling at
+               each cap). Caps 2 to 4 are $\tau$-only stacks; the
+               $\lambda$ split appears at cap 5 and the sparse side
+               splits at cap 6. The K4 optimum is steeper than G2: cap 6
+               beats cap 5 by a further 15\%.}
+      \label{fig:k4ladder}
+   \end{figure}
+
+   Neither atmosphere's optimum transfers. Scored foreign, the G2
+   cap-5 optimum degrades from $4.32\times10^{7}$ to
+   $1.35\times10^{8}$ on K4 (a factor of 3.1), and the K4 cap-5
+   G2 (a factor of 4.6). The full matrix (Fig.~\ref{fig:cross}) shows
+   the same pattern at every cap: foreign losses at the cap winners run
+   from 0.9 to 5.5, and no single tiling scores within a factor of two
+   of the native optimum on both atmospheres at once. The one robust
+   tilt is that the mid-tier tilings travel
+   best: the G2 cap-4 winner scores $8.83\times10^{7}$ on K4, close
+   to its $1.00\times10^{8}$ native value, and the plain seed tilings
+   score near $9\times10^{7}$ on both atmospheres, while both
+   atmospheres' sharp optima more than triple abroad. Sharpness does
+   not travel; mediocrity does.
+
+   \begin{figure}[t]
+      \includegraphics[width=\hsize]{figures/fig9_cross_scores.pdf}
+      \caption{Native versus foreign rms per leaf cap. Each group of
+               four bars scores that cap's G2 winner and K4 winner on
+               both atmospheres. Neither optimum transfers: the G2
+               cap-5 optimum loses a factor of 3.1 on K4 and the K4
+               cap-5 optimum loses a factor of 4.6 on G2. Mid-tier
+               tilings (cap 4, plain seeds) stay near $10^{8}$ on both.}
+      \label{fig:cross}
+   \end{figure}
+
+   The verdict is that the method transfers but the tables do not:
+   the staged pipeline finds a comparable asymmetric optimum on K4,
+   yet each atmosphere needs its own search, and a production table
+   should either be optimized per target star or regularized toward
+   the flatter tilings that score acceptably on both. The claim in
+   Sect.~\ref{sec:discussion} that the relative ordering of binnings
+   is robust to the atmosphere does not survive this test and is
+   corrected there.
 
 % =====================================================================
 \section{Discussion}
@@ -569,10 +661,11 @@
    edge-position proxy.
 
    Two caveats bound the present results. First, the transfer is 1D and
-   the validation uses a single model atmosphere; the relative ordering
-   of binnings is robust to the atmosphere, but the absolute residuals
-   should be recomputed (and ideally extended to 3D mean opacities) for
-   production tables. Second, each evaluation is a full transfer solve,
+   each binning table is atmosphere specific: Sect.~\ref{sec:cross} shows
+   neither the G2 nor the K4 optimum transfers (foreign losses of 3 to
+   5), so absolute residuals must be recomputed per target star (and
+   ideally extended to 3D mean opacities) for production tables.
+   Second, each evaluation is a full transfer solve,
    so the search is a run-and-wait batch job; for a 3D-RHD context the
    optimized table would be produced once offline and read by the
    simulation, exactly as a hand-binned table is today.
@@ -580,15 +673,17 @@
    The deeper caveat is the basin-selection problem of
    Sect.~\ref{sec:negative}: the staged-$\lambda$ rms available at
    selection time does not predict the post-topology outcome, and nothing
-   else cheap does either. Four directions remain open as future work:
+   else cheap does either. Five directions remain open as future work:
    (a) late-selection portfolios that refine each member through topology
    before picking, correct but at about five times the budget; (b) wider
    transplant reach through multi-round chains, larger joint walks, or
    transplants across rather than inside columns; (c) basin diversity in
    the beam, keeping topologically distinct rather than just
-   cost-distinct members so the deep-stack allocation survives grow; and
+   cost-distinct members so the deep-stack allocation survives grow;
    (d) objective shaping that rewards depth resolution where the sub-bin
-   density lives, at the risk of biasing the physics.
+   density lives, at the risk of biasing the physics; and (e) joint or
+   regularized optimization over several atmospheres at once, since
+   Sect.~\ref{sec:cross} shows sharp single-star optima do not transfer.
 
    The guillotine-tree representation is deliberately general: it
    subsumes the restricted layouts of earlier work as special cases and
@@ -612,8 +707,12 @@
    each far below the $1.318\times10^{8}$ seed tier. The winning tiling
    stacks $\tau$ depth in the dense $\lambda$ column (cuts at 1.02 and
    2.09 under a frozen root cut at 4.37 and a $\lambda$ cut at 3.83) and
-   leaves the sparse side whole.
-
+   leaves the sparse side whole. The same pipeline on the K dwarf K4
+   finds its own asymmetric optimum ($3.46\times10^{7}$ at cap 5,
+   $2.93\times10^{7}$ at cap 6), but neither star's optimum transfers:
+   foreign losses run 3 to 5, and only the flatter mid-tier tilings
+   score near $10^{8}$ on both (Sect.~\ref{sec:cross}). Tables must be
+   optimized per target star.
    What works is the combination: staged seeding finds candidate basins,
    beam grow refines them without early lock-in, and topology REALLOC
    escapes to the asymmetric allocation. The within-group opacity split
@@ -626,9 +725,10 @@
    do not substitute for putting the depth where the density lives.
    Basin selection is the open problem, with late selection, wider
    transplants, beam diversity and objective shaping as the candidate
-   answers. The split scheme itself is the next lever: unequal segment
-   fractions or integral-preserving quadrature may buy further accuracy
-   at the same band count.
+   answers. The split scheme was tested directly: fixed fractions score
+   $2$--$5\times$ worse than the fitted breaks, a fourth segment never
+   pays, and only wider pre-fit smoothing helps ($4.6\%$); it is now the
+   default.
 
 % =====================================================================
 \begin{appendix}
