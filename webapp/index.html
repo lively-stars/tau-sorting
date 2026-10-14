@@ -50,7 +50,7 @@
   #qcancel { display:none; margin-left:8px; color:var(--accent); font-weight:600; }
   .flag input { accent-color:var(--accent); }
   #qvars .flag { margin:0; display:inline-flex; align-items:center; gap:5px; }
-  #splits_host { margin-top:6px; min-height:1.2em; display:grid; grid-template-columns:78px max-content 24px; column-gap:8px; row-gap:6px; justify-content:start; align-items:center; }
+  #splits_host { margin-top:6px; min-height:1.2em; display:grid; grid-template-columns:78px max-content 24px 16px; column-gap:8px; row-gap:6px; justify-content:start; align-items:center; }
   #splits_host .hint { grid-column:1 / -1; }
   .sprow { display:contents; }
   .spbadge { font-weight:700; padding:2px 7px; border-radius:6px; background:#0e1420; border:1px solid var(--line); white-space:nowrap; text-align:center; box-sizing:border-box; }
@@ -58,6 +58,8 @@
   .spbadge.lam { color:var(--full); }
   .spcoord { white-space:nowrap; font-variant-numeric:tabular-nums; }
   .spdel { color:var(--muted); background:transparent; border:none; margin:0; padding:0; cursor:pointer; font-size:14px; line-height:1; width:24px; height:24px; display:inline-flex; align-items:center; justify-content:center; }
+  .spspin { width:14px; height:14px; border:2px solid var(--line); border-top-color:var(--accent); border-radius:50%; display:inline-block; animation:spspin .7s linear infinite; vertical-align:middle; }
+  @keyframes spspin { to { transform:rotate(360deg); } }
   #addtau.armed, #addlam.armed, #mvsplit.armed, #rmsplit.armed { border-color:var(--accent); color:var(--accent); }
   button { margin-top:16px; width:100%; padding:11px; font:inherit; font-weight:650; color:#0e1420;
            background:var(--accent); border:none; border-radius:9px; cursor:pointer; }
@@ -127,7 +129,6 @@
       <button id="mvsplit" class="secondary" style="flex:1 1 40%" title="Pick up the split closest to the click, move it, and click again to place">&#x2194; move split</button>
       <button id="rmsplit" class="secondary" style="flex:1 1 40%" title="Remove the split closest to the click">&minus; split</button>
     </div>
-    <div id="sprog" class="qprog"><div id="sprogbar"></div></div>
     <div class="hint" id="splitmode_hint"></div>
     <div id="splits_host"></div>
     <details id="clibin">
@@ -287,8 +288,9 @@ function renderSplits() {
   host.innerHTML = SPLITS.map((s, i) => {
     const pos = s.axis === 'tau' ? +s.tau : +s.lam;
     const at = s.axis === 'tau' ? `τ=${pos.toFixed(3)} @ λ=${(+s.lam).toFixed(3)}` : `λ=${pos.toFixed(3)} @ τ=${(+s.tau).toFixed(3)}`;
+    const spin = s.pending ? `<span class="spspin" title="computing…"></span>` : `<span></span>`;
     return `<div class="sprow" data-i="${i}"><span class="spbadge ${s.axis}">#${i + 1} ${s.axis}</span>`
-      + `<span class="spcoord">${at}</span><button type="button" class="spdel" data-i="${i}" title="remove this split">×</button></div>`;
+      + `<span class="spcoord">${at}</span><button type="button" class="spdel" data-i="${i}" title="remove this split">×</button>${spin}</div>`;
   }).join('');
   host.querySelectorAll('.spdel').forEach(b => b.addEventListener('click', () => {
     cancelPendingMove();
@@ -501,7 +503,8 @@ async function compute() {
     if (cli.body.tau_per_lambda_spec) body.tau_per_lambda_spec = cli.body.tau_per_lambda_spec;
     delete body.splits;
   }
-  $('go').disabled = true; $('cprog').classList.add('busy'); $('sprog').classList.add('busy'); setStatus('computing… (binning + radiative transfer)');
+  const snapshot = SPLITS.filter(s => s.pending);
+  $('go').disabled = true; $('cprog').classList.add('busy'); setStatus('computing… (binning + radiative transfer)');
   try {
     const r = await fetch('/api/compute', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify(body)});
@@ -510,7 +513,10 @@ async function compute() {
     render(d); setMetrics(d);
     setStatus(`done in ${d.elapsed}s · ${d.assigned}/${d.total_subbins} sub-bins assigned` + (d.n_empty?` · ${d.n_empty} empty bands`:''));
   } catch(e){ setStatus(e.message, true); }
-  finally { $('go').disabled = false; $('cprog').classList.remove('busy'); $('sprog').classList.remove('busy'); }
+  finally {
+    $('go').disabled = false; $('cprog').classList.remove('busy');
+    if (snapshot.length) { snapshot.forEach(s => { delete s.pending; }); renderSplits(); }
+  }
 }
 
 // --- Q_rad optimizer: start a background job, poll it, apply the result ---
@@ -1036,7 +1042,7 @@ function placeSplitAt(lam, tau) {
     return;  // stay armed: fix the aim and click again (Esc cancels)
   }
   clearTree();
-  SPLITS.push({axis: SPLIT_MODE, tau: +tau.toFixed(4), lam: +lam.toFixed(4)});
+  SPLITS.push({axis: SPLIT_MODE, tau: +tau.toFixed(4), lam: +lam.toFixed(4), pending: true});
   renderSplits();
   compute();  // stay armed for the next click of the same kind
 }
@@ -1297,7 +1303,7 @@ function moveSplitAt(lam, tau) {
   }
   MOVE_STATE = null;
   clearTree();
-  SPLITS.push({axis, tau: +tau.toFixed(4), lam: +lam.toFixed(4)});
+  SPLITS.push({axis, tau: +tau.toFixed(4), lam: +lam.toFixed(4), pending: true});
   renderSplits();
   const pos = axis === 'tau' ? tau : lam;
   setStatus(`moved ${axis} split to ${axis === 'tau' ? 'tau=' + pos.toFixed(3) : 'lam=' + pos.toFixed(3)}`);
