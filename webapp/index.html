@@ -34,7 +34,9 @@
   .qprog { display:none; height:6px; margin-top:8px; background:#0e1420; border:1px solid var(--line); border-radius:4px; overflow:hidden; }
   .qprog.on { display:block; }
   #qprogbar { height:100%; width:0%; background:var(--accent); transition:width .2s linear; }
-  .qsteps { display:none; list-style:none; margin:8px 0 0; padding:0; font-size:12.5px; }
+  .qprog.busy { display:block; }
+  .qprog.busy > div { width:30% !important; animation:cslide 1.1s linear infinite; }
+  @keyframes cslide { from { margin-left:-30%; } to { margin-left:100%; } }
   .qsteps.on { display:block; }
   .qsteps li { padding:3px 0 3px 22px; position:relative; color:var(--muted); }
   .qsteps li::before { content:'○'; position:absolute; left:4px; color:var(--muted); }
@@ -201,6 +203,7 @@
        The result is a free-form guillotine tiling (general 2D).</div>
 
     <button id="go">Compute Q_rad</button>
+    <div id="cprog" class="qprog"><div id="cprogbar"></div></div>
     <div id="status"></div>
 
     <div class="metrics">
@@ -478,7 +481,7 @@ async function compute() {
     if (cli.body.tau_per_lambda_spec) body.tau_per_lambda_spec = cli.body.tau_per_lambda_spec;
     delete body.splits;
   }
-  $('go').disabled = true; setStatus('computing… (binning + radiative transfer)');
+  $('go').disabled = true; $('cprog').classList.add('busy'); setStatus('computing… (binning + radiative transfer)');
   try {
     const r = await fetch('/api/compute', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify(body)});
@@ -487,7 +490,7 @@ async function compute() {
     render(d); setMetrics(d);
     setStatus(`done in ${d.elapsed}s · ${d.assigned}/${d.total_subbins} sub-bins assigned` + (d.n_empty?` · ${d.n_empty} empty bands`:''));
   } catch(e){ setStatus(e.message, true); }
-  finally { $('go').disabled = false; }
+  finally { $('go').disabled = false; $('cprog').classList.remove('busy'); }
 }
 
 // --- Q_rad optimizer: start a background job, poll it, apply the result ---
