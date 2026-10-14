@@ -228,6 +228,13 @@
     </div>
     <div class="hint">Save the current result tree, or reload one as the next run's warm start
        (round-trip exact via the CLI <code>--save-tree/--load-tree</code>).</div>
+    <div class="opt-row" style="margin-top:8px">
+      <select id="besttree" title="Load a paper-claimed optimal tree as the warm start">
+        <option value="">Best trees…</option>
+      </select>
+    </div>
+    <div class="hint">Paper-claimed optima from <code>trees/</code> (rms on G2_1D) — loads as the
+       next run's warm start, same as uploading.</div>
   </div>
 
   <div class="gutter" id="gutter"></div>
@@ -399,6 +406,7 @@ async function init() {
   renderModels(d);
   renderSplits();
   syncWinIntq();
+  refreshBestTrees();
   // resume a Q_rad optimization that's already running (e.g. after a page reload)
   try {
     const s = await (await fetch('/api/optimize_qrad_status')).json();
@@ -746,6 +754,32 @@ async function uploadTree(file) {
   finally { $('uptree').value = ''; }
 }
 
+async function loadBestTree(name) {
+  if (!name) return;
+  try {
+    const r = await fetch('/api/trees/' + encodeURIComponent(name));
+    const tree = await r.json();
+    if (!r.ok) throw new Error(tree.error || 'server error');
+    if (!tree || !Array.isArray(tree.window_tau) || !Array.isArray(tree.window_lam)
+        || typeof tree.root !== 'object' || !tree.root) throw new Error('not a binning tree');
+    setTree(tree);
+    setStatus(`loaded best tree ${name} — next optimize run warm-starts from it`);
+    compute();
+  } catch(e){ setStatus(`could not load best tree: ${e.message}`, true); }
+  finally { $('besttree').value = ''; }
+}
+async function refreshBestTrees() {
+  try {
+    const d = await (await fetch('/api/trees')).json();
+    const sel = $('besttree');
+    sel.innerHTML = '<option value="">Best trees…</option>';
+    for (const t of d.trees || []) {
+      const o = document.createElement('option');
+      o.value = t.name; o.textContent = t.label;
+      sel.appendChild(o);
+    }
+  } catch(e){ /* leave the placeholder: dropdown just stays empty */ }
+}
 async function qoptCancel(e){
   if (e) e.preventDefault();
   setQStatus('cancelling — keeping the best binning found so far…');
@@ -1225,7 +1259,7 @@ $('dl').addEventListener('click', downloadKappa);
 $('dlnpy').addEventListener('click', downloadNpy);
 $('dltree').addEventListener('click', downloadTree);
 $('uptree').addEventListener('change', e => uploadTree(e.target.files[0]));
-$('refresh').addEventListener('click', refreshModels);
+$('besttree').addEventListener('change', e => loadBestTree(e.target.value));
 $('model').addEventListener('change', () => {
   ATM = null; ATM_MODEL = null;  // invalidate cached atmosphere for the new model
   setStatus('switching atmosphere — a model’s first use precomputes (~10–30s)…');

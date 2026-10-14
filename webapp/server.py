@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -66,6 +67,42 @@ def _window(req):
     if hi - lo < 0.5:
         raise ValueError("scoring window (log10 tau_Ross) must span at least 0.5; widen it")
     return (lo, hi)
+
+
+_TREES_DIR = _REPO / "trees"  # paper-claimed optimal tilings (tracked JSON + provenance README)
+
+
+def _clean_md(s):
+    return re.sub(r"[*`_]", "", s).strip()
+
+
+def _tree_labels():
+    """{stem: label} from trees/README.md's provenance table (| file | rms | provenance |).
+    Missing/unparseable rows fall back to the bare stem; never raises."""
+    try:
+        rows = {}
+        for line in (_TREES_DIR / "README.md").read_text().splitlines():
+            m = re.match(r"\|\s*`([^`]+)`\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|", line)
+            if m and m.group(1).endswith(".json"):
+                stem = Path(m.group(1)).stem
+                rows[stem] = f"{stem} — {_clean_md(m.group(2))} ({_clean_md(m.group(3))})"
+        return rows
+    except OSError:
+        return {}
+
+
+def _list_trees():
+    """[{name, leaves, label}] for every valid trees/*.json, best-rms first by README order."""
+    labels = _tree_labels()
+    out = []
+    for path in sorted(_TREES_DIR.glob("*.json")):
+        try:
+            tree = json.loads(path.read_text())
+            leaves = qopt._count_leaves(tree["root"])
+        except (OSError, ValueError, KeyError):
+            continue
+        out.append({"name": path.stem, "leaves": leaves, "label": labels.get(path.stem, path.stem)})
+    return out
 
 
 # --- Q_rad optimizer: one background job at a time, polled by the UI ---
@@ -404,8 +441,26 @@ class Handler(BaseHTTPRequestHandler):
             )
         elif urlparse(self.path).path == "/api/save_plot":
             self._save_plot()
-        else:
-            self._send(404, json.dumps({"error": "not found"}))
+        elif urlparse(self.path).path == "/api/trees":
+            self._send(200, json.dumps({"trees": _list_trees()}))
+        elif urlparse(self.path).path.startswith("/api/trees/"):
+            # Serve one tracked tree by stem; the resolved path must stay inside trees/.
+            stem = urlparse(self.path).path[len("/api/trees/") :]
+            path = (_TREES_DIR / stem).with_suffix(".json")
+            try:
+                resolved = path.resolve()
+            except OSError:
+                resolved = path
+            if resolved.parent != _TREES_DIR.resolve() or not resolved.is_file():
+                self._send(404, json.dumps({"error": f"no such tree: {stem}"}))
+            else:
+                try:
+                    tree = json.loads(resolved.read_text())
+                    qopt._count_leaves(tree["root"])  # validate shape before serving
+                except (ValueError, KeyError) as e:
+                    self._send(400, json.dumps({"error": f"invalid tree file: {e}"}))
+                else:
+                    self._send(200, json.dumps(tree))
 
     def _save_plot(self):
         """GET /api/save_plot — render the optimizer's before/after Q_rad PNG (seed vs best).
