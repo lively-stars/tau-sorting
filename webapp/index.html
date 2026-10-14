@@ -33,7 +33,7 @@
   input[type=text]:focus, select:focus { outline:none; border-color:var(--accent); }
   .qprog { display:none; height:6px; margin-top:8px; background:#0e1420; border:1px solid var(--line); border-radius:4px; overflow:hidden; }
   .qprog.on { display:block; }
-  #qprogbar { height:100%; width:0%; background:var(--accent); transition:width .2s linear; }
+  .qprog > div { height:100%; width:0%; background:var(--accent); transition:width .2s linear; }
   .qprog.busy { display:block; }
   .qprog.busy > div { width:30% !important; animation:cslide 1.1s linear infinite; }
   @keyframes cslide { from { margin-left:-30%; } to { margin-left:100%; } }
@@ -126,6 +126,7 @@
       <button id="addlam" class="secondary" style="flex:1">+ &lambda; split</button>
       <button id="rmsplit" class="secondary" style="flex:1" title="Remove the split closest to the click">&minus; split</button>
     </div>
+    <div id="sprog" class="qprog"><div id="sprogbar"></div></div>
     <div class="hint" id="splitmode_hint"></div>
     <div id="splits_host"></div>
     <details id="clibin">
@@ -362,10 +363,11 @@ function treeNodeAtPath(tree, path) {
   return node;
 }
 function renderSplitsNote() {
-  if (!BINNING_TREE) return;
   const host = $('splits_host');
+  host.querySelectorAll('.treenote').forEach(el => el.remove());
+  if (!BINNING_TREE) return;
   const note = document.createElement('div');
-  note.className = 'hint';
+  note.className = 'hint treenote';
   note.style.marginTop = '4px';
   note.innerHTML = `<b>optimizer tree active</b> — ${_countLeaves(BINNING_TREE.root)} leaf groups `
     + `(split clicks edit the tree; editing the box or windows exits it).`;
@@ -481,7 +483,7 @@ async function compute() {
     if (cli.body.tau_per_lambda_spec) body.tau_per_lambda_spec = cli.body.tau_per_lambda_spec;
     delete body.splits;
   }
-  $('go').disabled = true; $('cprog').classList.add('busy'); setStatus('computing… (binning + radiative transfer)');
+  $('go').disabled = true; $('cprog').classList.add('busy'); $('sprog').classList.add('busy'); setStatus('computing… (binning + radiative transfer)');
   try {
     const r = await fetch('/api/compute', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify(body)});
@@ -490,7 +492,7 @@ async function compute() {
     render(d); setMetrics(d);
     setStatus(`done in ${d.elapsed}s · ${d.assigned}/${d.total_subbins} sub-bins assigned` + (d.n_empty?` · ${d.n_empty} empty bands`:''));
   } catch(e){ setStatus(e.message, true); }
-  finally { $('go').disabled = false; $('cprog').classList.remove('busy'); }
+  finally { $('go').disabled = false; $('cprog').classList.remove('busy'); $('sprog').classList.remove('busy'); }
 }
 
 // --- Q_rad optimizer: start a background job, poll it, apply the result ---
@@ -1010,7 +1012,15 @@ function placeSplitAt(lam, tau) {
     compute();  // stay armed for the next click of the same kind
     return;
   }
+  const err = splitError(SPLIT_MODE, tau, lam);
+  if (err) {
+    setStatus(err, true);
+    return;  // stay armed: fix the aim and click again (Esc cancels)
+  }
   clearTree();
+  SPLITS.push({axis: SPLIT_MODE, tau: +tau.toFixed(4), lam: +lam.toFixed(4)});
+  renderSplits();
+  compute();  // stay armed for the next click of the same kind
 }
 // Mirror of qrad_optimize.tree_from_splits validation for the pending split list:
 // returns an error string, or null when the split at (tau, lam) is legal.
@@ -1112,6 +1122,10 @@ function removeSplitAt(lam, tau) {
     return;
   }
   if (!SPLITS.length) { setStatus('no splits to remove', true); return; }
+  const found = nearestSplit(tau, lam);
+  if (found.error) { setStatus(found.error, true); return; }
+  if (found.index < 0) { setStatus('no splits to remove', true); return; }
+  clearTree();
   const gone = SPLITS.splice(found.index, 1)[0];
   renderSplits();
   const pos = gone.axis === 'tau' ? +gone.tau : +gone.lam;
@@ -1136,6 +1150,21 @@ function chartHoverCoords(e) {
     const tau = Math.max(ya.range[0], ya.range[1]) + py / ya._m;
     if (!Number.isFinite(lam) || !Number.isFinite(tau)) return;
     if (SPLIT_MODE === 'remove') {
+      if (BINNING_TREE) {
+        const segs = treeCutSegments(BINNING_TREE);
+        if (!segs.length) { $('splitmode_hint').textContent = 'tree is a single leaf — nothing to remove'; return; }
+        const w = BINNING_TREE.window_tau, l = BINNING_TREE.window_lam;
+        const tSpan = (w[1] - w[0]) || 1, lSpan = (l[1] - l[0]) || 1;
+        let best = null, bestD = Infinity;
+        for (const s of segs) {
+          const dd = splitDistance({axis: s.axis, at: s.at, t0: s.t0, t1: s.t1, l0: s.l0, l1: s.l1}, tau, lam, tSpan, lSpan);
+          if (dd < bestD) { bestD = dd; best = s; }
+        }
+        $('splitmode_hint').textContent = best
+          ? `removing ${best.axis} cut @ ${best.at.toFixed(3)} — click to remove (Esc cancels).`
+          : 'no splits to remove';
+        return;
+      }
       const {index} = nearestSplit(tau, lam);
       $('splitmode_hint').textContent = index >= 0 && SPLITS[index]
         ? `removing #${index + 1} ${SPLITS[index].axis} split — click to remove (Esc cancels).`
@@ -1263,6 +1292,7 @@ $('dlnpy').addEventListener('click', downloadNpy);
 $('dltree').addEventListener('click', downloadTree);
 $('uptree').addEventListener('change', e => uploadTree(e.target.files[0]));
 $('besttree').addEventListener('change', e => loadBestTree(e.target.value));
+$('refresh').addEventListener('click', refreshModels);
 $('model').addEventListener('change', () => {
   ATM = null; ATM_MODEL = null;  // invalidate cached atmosphere for the new model
   setStatus('switching atmosphere — a model’s first use precomputes (~10–30s)…');
