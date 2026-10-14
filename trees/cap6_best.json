@@ -1,0 +1,49 @@
+{
+  "window_tau": [
+    -0.63,
+    7.0
+  ],
+  "window_lam": [
+    3.0,
+    5.0
+  ],
+  "root": {
+    "axis": "tau",
+    "at": 4.87,
+    "lo": {
+      "axis": "lam",
+      "at": 3.82,
+      "lo": {
+        "axis": "tau",
+        "at": 1.05,
+        "lo": {
+          "leaf": true
+        },
+        "hi": {
+          "axis": "tau",
+          "at": 1.95,
+          "lo": {
+            "leaf": true
+          },
+          "hi": {
+            "axis": "tau",
+            "at": 2.5,
+            "lo": {
+              "leaf": true
+            },
+            "hi": {
+              "leaf": true
+            }
+          }
+        }
+      },
+      "hi": {
+        "leaf": true
+      }
+    },
+    "hi": {
+      "leaf": true
+    },
+    "frozen": true
+  }
+}
