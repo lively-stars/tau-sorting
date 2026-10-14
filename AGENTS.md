@@ -57,6 +57,9 @@ make status             # running?    (PID in .webapp.pid, logs in webapp.log)
 make stop               # stop it
 make restart            # stop + start
 
+# Deploy the Q_rad webapp (both scripts are re-run safe: build/ship, up -d, verify)
+./deploy-to-1blu.sh    # 1blu VPS (https://tausorting.mihac.de): local amd64 build, streamed over SSH, compose up -d
+./deploy-to-oracle.sh  # oraclearm3, /home/ubuntu/docker/tau, https://tau.filetki.de: rsync ./ -> src/, remote `docker compose up -d --build tau`; the big inputs (ODF_format.npy, continuumabs.dat/.npy, data/) live in the tau dir root and mount as /data:ro via TAUSORT_DATA_DIR=/data; mem_limit is 8g — do not lower it (OOM-loops the precompute)
 # Lint + format (pre-commit hook runs these on `git commit`; see "Pre-commit" below)
 uv run ruff check .               # lint only (autofix: --fix)
 uv run ruff format --check .      # whole-tree format check
