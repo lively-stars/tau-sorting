@@ -57,8 +57,8 @@
   .spbadge.tau { color:var(--accent); }
   .spbadge.lam { color:var(--full); }
   .spcoord { white-space:nowrap; font-variant-numeric:tabular-nums; }
-  .spdel { color:var(--muted); background:transparent; border:none; padding:3px 0; cursor:pointer; font-size:13px; width:24px; text-align:center; }
-  #addtau.armed, #addlam.armed, #rmsplit.armed { border-color:var(--accent); color:var(--accent); }
+  .spdel { color:var(--muted); background:transparent; border:none; margin:0; padding:0; cursor:pointer; font-size:14px; line-height:1; width:24px; height:24px; display:inline-flex; align-items:center; justify-content:center; }
+  #addtau.armed, #addlam.armed, #mvsplit.armed, #rmsplit.armed { border-color:var(--accent); color:var(--accent); }
   button { margin-top:16px; width:100%; padding:11px; font:inherit; font-weight:650; color:#0e1420;
            background:var(--accent); border:none; border-radius:9px; cursor:pointer; }
   button:disabled { opacity:.55; cursor:default; }
@@ -120,11 +120,12 @@
     <input type="text" id="lam" />
     <div class="hint">2 edges, e.g. <code>3, 5</code></div>
 
-    <label>Splits &nbsp;<span class="hint">(ordered; click the plot to place or remove)</span></label>
+    <label>Splits &nbsp;<span class="hint">(ordered; click the plot to place, move, or remove)</span></label>
     <div class="opt-row">
-      <button id="addtau" class="secondary" style="flex:1">+ &tau; split</button>
-      <button id="addlam" class="secondary" style="flex:1">+ &lambda; split</button>
-      <button id="rmsplit" class="secondary" style="flex:1" title="Remove the split closest to the click">&minus; split</button>
+      <button id="addtau" class="secondary" style="flex:1 1 40%">+ &tau; split</button>
+      <button id="addlam" class="secondary" style="flex:1 1 40%">+ &lambda; split</button>
+      <button id="mvsplit" class="secondary" style="flex:1 1 40%" title="Pick up the split closest to the click, move it, and click again to place">&#x2194; move split</button>
+      <button id="rmsplit" class="secondary" style="flex:1 1 40%" title="Remove the split closest to the click">&minus; split</button>
     </div>
     <div id="sprog" class="qprog"><div id="sprogbar"></div></div>
     <div class="hint" id="splitmode_hint"></div>
@@ -273,7 +274,8 @@ const $ = id => document.getElementById(id);
 const parseEdges = s => s.split(/[,\s]+/).map(t=>t.trim()).filter(Boolean).map(Number);
 let LAST = null;
 let SPLITS = [];   // ordered [{axis:'tau'|'lam', tau, lam}]; a cut spans the one bin holding its point
-let SPLIT_MODE = null;  // 'tau'|'lam' to place, 'remove' to delete closest; next top-plot click acts
+let SPLIT_MODE = null;  // 'tau'|'lam' to place, 'move' to relocate, 'remove' to delete closest; next top-plot click acts
+let MOVE_STATE = null;  // while moving a picked-up split: {axis, splitsBackup?, treeBackup?}
 let BINNING_TREE = null;  // optimizer-result overlay (explicit tree); any box/split edit exits it
 let _editTimer = null;  // debounce for auto-recompute after editing the windows
 const edgesValid = a => a.length === 2 && a.every(Number.isFinite) && a[0] < a[1];
@@ -289,21 +291,37 @@ function renderSplits() {
       + `<span class="spcoord">${at}</span><button type="button" class="spdel" data-i="${i}" title="remove this split">×</button></div>`;
   }).join('');
   host.querySelectorAll('.spdel').forEach(b => b.addEventListener('click', () => {
+    cancelPendingMove();
     clearTree();
     SPLITS.splice(+b.dataset.i, 1);
     renderSplits();
     compute();
   }));
 }
-// Arm a click mode: 'tau'/'lam' place that split, 'remove' deletes the split closest
-// to the click (toggle off on second click; arming one mode disarms the others).
+function cancelPendingMove() {
+  if (!MOVE_STATE) return;
+  if (MOVE_STATE.treeBackup) {
+    BINNING_TREE = MOVE_STATE.treeBackup;
+    renderSplitsNote();
+  } else if (MOVE_STATE.splitsBackup) {
+    SPLITS = MOVE_STATE.splitsBackup;
+    renderSplits();
+  }
+  MOVE_STATE = null;
+  if (LAST) render(LAST);
+}
+// Arm a click mode: 'tau'/'lam' place that split, 'move' picks up + relocates the closest
+// split, 'remove' deletes the split closest to the click (toggle off on second click).
 function armSplit(axis) {
+  cancelPendingMove();
   SPLIT_MODE = (SPLIT_MODE === axis) ? null : axis;
   $('addtau').classList.toggle('armed', SPLIT_MODE === 'tau');
   $('addlam').classList.toggle('armed', SPLIT_MODE === 'lam');
+  $('mvsplit').classList.toggle('armed', SPLIT_MODE === 'move');
   $('rmsplit').classList.toggle('armed', SPLIT_MODE === 'remove');
   $('splitmode_hint').textContent = !SPLIT_MODE ? ''
     : SPLIT_MODE === 'remove' ? 'removing the split closest to the click — click a cut on the top plot (Esc cancels).'
+    : SPLIT_MODE === 'move' ? 'moving a split — click a cut on the top plot to pick it up (Esc cancels).'
     : `placing ${SPLIT_MODE === 'tau' ? 'τ' : 'λ'} split — click a bin on the top plot (Esc cancels).`;
   try { $('chart').style.cursor = SPLIT_MODE ? 'crosshair' : ''; } catch(_) {}
 }
@@ -1134,6 +1152,158 @@ function removeSplitAt(lam, tau) {
     + ` (${SPLITS.length} left)`);
   compute();  // stay armed for the next removal
 }
+// Live client-side preview of the moving split at (lam, tau) — updates top-plot shapes only, no RTE.
+function previewMoveAt(lam, tau) {
+  if (!MOVE_STATE || !LAST) return;
+  const axis = MOVE_STATE.axis;
+  const rects = [];
+  let activeSeg = null;
+  if (BINNING_TREE) {
+    const walk = (node, tlo, thi, llo, lhi) => {
+      if (!node || node.leaf || !node.axis) {
+        if (tlo <= tau && tau <= thi && llo <= lam && lam <= lhi) {
+          if (axis === 'tau') {
+            rects.push([tlo, tau, llo, lhi], [tau, thi, llo, lhi]);
+            activeSeg = {axis: 'tau', at: tau, l0: llo, l1: lhi};
+          } else {
+            rects.push([tlo, thi, llo, lam], [tlo, thi, lam, lhi]);
+            activeSeg = {axis: 'lam', at: lam, t0: tlo, t1: thi};
+          }
+        } else {
+          rects.push([tlo, thi, llo, lhi]);
+        }
+        return;
+      }
+      if (node.axis === 'tau') {
+        walk(node.lo, tlo, node.at, llo, lhi);
+        walk(node.hi, node.at, thi, llo, lhi);
+      } else {
+        walk(node.lo, tlo, thi, llo, node.at);
+        walk(node.hi, tlo, thi, node.at, lhi);
+      }
+    };
+    walk(BINNING_TREE.root, BINNING_TREE.window_tau[0], BINNING_TREE.window_tau[1],
+         BINNING_TREE.window_lam[0], BINNING_TREE.window_lam[1]);
+  } else {
+    const tw = parseEdges($('tauwin').value), lw = parseEdges($('lam').value);
+    if (!edgesValid(tw) || !edgesValid(lw)) return;
+    rects.push([tw[0], tw[1], lw[0], lw[1]]);
+    for (const s of SPLITS) {
+      const idx = rects.findIndex(([a, b, c, d]) => a <= s.tau && s.tau <= b && c <= s.lam && s.lam <= d);
+      if (idx < 0) continue;
+      const [a, b, c, d] = rects.splice(idx, 1)[0];
+      if (s.axis === 'tau') rects.push([a, +s.tau, c, d], [+s.tau, b, c, d]);
+      else rects.push([a, b, c, +s.lam], [a, b, +s.lam, d]);
+    }
+    const idx = rects.findIndex(([a, b, c, d]) => a <= tau && tau <= b && c <= lam && lam <= d);
+    if (idx >= 0) {
+      const [a, b, c, d] = rects.splice(idx, 1)[0];
+      if (axis === 'tau') {
+        rects.push([a, tau, c, d], [tau, b, c, d]);
+        activeSeg = {axis: 'tau', at: tau, l0: c, l1: d};
+      } else {
+        rects.push([a, b, c, lam], [a, b, lam, d]);
+        activeSeg = {axis: 'lam', at: lam, t0: a, t1: b};
+      }
+    }
+  }
+  const shapes = rects.map(([t0, t1, l0, l1]) => ({
+    type: 'rect', xref: 'x', yref: 'y', x0: l0, x1: l1, y0: t0, y1: t1,
+    line: {color: 'rgba(240,244,250,0.7)', width: 1}, fillcolor: 'rgba(0,0,0,0)', layer: 'above',
+  }));
+  if (activeSeg) {
+    shapes.push(activeSeg.axis === 'tau'
+      ? {type: 'line', xref: 'x', yref: 'y', x0: activeSeg.l0, x1: activeSeg.l1, y0: activeSeg.at, y1: activeSeg.at,
+         line: {color: '#ff9d3c', width: 2.5, dash: 'dash'}, layer: 'above'}
+      : {type: 'line', xref: 'x', yref: 'y', x0: activeSeg.at, x1: activeSeg.at, y0: activeSeg.t0, y1: activeSeg.t1,
+         line: {color: '#3ecf8e', width: 2.5, dash: 'dash'}, layer: 'above'});
+  }
+  const wl = +$('win_lo').value, wh = +$('win_hi').value;
+  if (isFinite(wl) && isFinite(wh)) ['2','3','4','5'].forEach(ax => shapes.push({
+    type: 'rect', xref: 'x' + ax, yref: 'y' + ax + ' domain',
+    x0: wl, x1: wh, y0: 0, y1: 1, fillcolor: 'rgba(255,157,60,0.07)', line: {width: 0}, layer: 'below',
+  }));
+  try { Plotly.relayout('chart', {shapes}); } catch (_) {}
+}
+// Click-to-move: first click picks up the closest split (deleting the original without
+// recomputing); mousemove previews the new cut on the plot; second click places + recomputes.
+function moveSplitAt(lam, tau) {
+  if (SPLIT_MODE !== 'move') return;
+  lam = +lam; tau = +tau;
+  if (!Number.isFinite(lam) || !Number.isFinite(tau)) return;
+  if (!MOVE_STATE) {
+    if (BINNING_TREE) {
+      const segs = treeCutSegments(BINNING_TREE);
+      if (!segs.length) { setStatus('tree is a single leaf — nothing to move', true); return; }
+      const w = BINNING_TREE.window_tau, l = BINNING_TREE.window_lam;
+      const tSpan = (w[1] - w[0]) || 1, lSpan = (l[1] - l[0]) || 1;
+      let best = null, bestD = Infinity;
+      for (const s of segs) {
+        const dd = splitDistance({axis: s.axis, at: s.at, t0: s.t0, t1: s.t1, l0: s.l0, l1: s.l1}, tau, lam, tSpan, lSpan);
+        if (dd < bestD) { bestD = dd; best = s; }
+      }
+      const treeBackup = JSON.parse(JSON.stringify(BINNING_TREE));
+      const parent = treeNodeAtPath(BINNING_TREE, best.path);
+      delete parent.axis; delete parent.at; delete parent.lo; delete parent.hi;
+      parent.leaf = true;
+      MOVE_STATE = {axis: best.axis, treeBackup};
+      renderSplitsNote();
+      previewMoveAt(lam, tau);
+      $('splitmode_hint').textContent =
+        `moving ${best.axis === 'tau' ? 'τ' : 'λ'} split @ ${best.axis === 'tau' ? 'τ=' + tau.toFixed(3) : 'λ=' + lam.toFixed(3)} — click to place (Esc cancels).`;
+      return;
+    }
+    if (!SPLITS.length) { setStatus('no splits to move', true); return; }
+    const found = nearestSplit(tau, lam);
+    if (found.error) { setStatus(found.error, true); return; }
+    if (found.index < 0) { setStatus('no splits to move', true); return; }
+    const splitsBackup = SPLITS.map(s => ({...s}));
+    const [gone] = SPLITS.splice(found.index, 1);
+    MOVE_STATE = {axis: gone.axis, splitsBackup};
+    renderSplits();
+    previewMoveAt(lam, tau);
+    $('splitmode_hint').textContent =
+      `moving ${gone.axis === 'tau' ? 'τ' : 'λ'} split @ ${gone.axis === 'tau' ? 'τ=' + tau.toFixed(3) : 'λ=' + lam.toFixed(3)} — click to place (Esc cancels).`;
+    return;
+  }
+  // Second click: place the new split and recompute.
+  const axis = MOVE_STATE.axis;
+  if (BINNING_TREE) {
+    const leaf = treeLeafAt(BINNING_TREE, tau, lam);
+    if (!leaf) { setStatus('click falls outside the tree window — ignored', true); return; }
+    const at = axis === 'tau' ? tau : lam;
+    const [lo, hi] = axis === 'tau' ? [leaf.tlo, leaf.thi] : [leaf.llo, leaf.lhi];
+    const mg = axis === 'tau' ? MG_TAU : MG_LAM;
+    if (at - lo < mg || hi - at < mg) {
+      setStatus(`too close to the leaf edge (min gap ${mg}) — split ignored`, true);
+      return;
+    }
+    leaf.node.axis = axis;
+    leaf.node.at = +at.toFixed(4);
+    leaf.node.lo = {leaf: true};
+    leaf.node.hi = {leaf: true};
+    delete leaf.node.leaf;
+    MOVE_STATE = null;
+    renderSplitsNote();
+    setStatus(`moved ${axis} cut to ${at.toFixed(3)} in optimizer tree (${_countLeaves(BINNING_TREE.root)} leaves)`);
+    $('splitmode_hint').textContent = 'moving a split — click a cut on the top plot to pick it up (Esc cancels).';
+    compute();
+    return;
+  }
+  const err = splitError(axis, tau, lam);
+  if (err) {
+    setStatus(err, true);
+    return;
+  }
+  MOVE_STATE = null;
+  clearTree();
+  SPLITS.push({axis, tau: +tau.toFixed(4), lam: +lam.toFixed(4)});
+  renderSplits();
+  const pos = axis === 'tau' ? tau : lam;
+  setStatus(`moved ${axis} split to ${axis === 'tau' ? 'tau=' + pos.toFixed(3) : 'lam=' + pos.toFixed(3)}`);
+  $('splitmode_hint').textContent = 'moving a split — click a cut on the top plot to pick it up (Esc cancels).';
+  compute();
+}
 document.getElementById('chart').addEventListener('mousemove', chartHoverCoords);
 function chartHoverCoords(e) {
   if (!SPLIT_MODE || !LAST) return;
@@ -1149,6 +1319,34 @@ function chartHoverCoords(e) {
     const lam = xa.range[0] + px / xa._m;
     const tau = Math.max(ya.range[0], ya.range[1]) + py / ya._m;
     if (!Number.isFinite(lam) || !Number.isFinite(tau)) return;
+    if (SPLIT_MODE === 'move') {
+      if (MOVE_STATE) {
+        previewMoveAt(lam, tau);
+        $('splitmode_hint').textContent =
+          `moving ${MOVE_STATE.axis === 'tau' ? 'τ' : 'λ'} split @ ${MOVE_STATE.axis === 'tau' ? 'τ=' + tau.toFixed(3) : 'λ=' + lam.toFixed(3)} — click to place (Esc cancels).`;
+        return;
+      }
+      if (BINNING_TREE) {
+        const segs = treeCutSegments(BINNING_TREE);
+        if (!segs.length) { $('splitmode_hint').textContent = 'tree is a single leaf — nothing to move'; return; }
+        const w = BINNING_TREE.window_tau, l = BINNING_TREE.window_lam;
+        const tSpan = (w[1] - w[0]) || 1, lSpan = (l[1] - l[0]) || 1;
+        let best = null, bestD = Infinity;
+        for (const s of segs) {
+          const dd = splitDistance({axis: s.axis, at: s.at, t0: s.t0, t1: s.t1, l0: s.l0, l1: s.l1}, tau, lam, tSpan, lSpan);
+          if (dd < bestD) { bestD = dd; best = s; }
+        }
+        $('splitmode_hint').textContent = best
+          ? `moving ${best.axis} cut @ ${best.at.toFixed(3)} — click to pick up (Esc cancels).`
+          : 'no splits to move';
+        return;
+      }
+      const {index} = nearestSplit(tau, lam);
+      $('splitmode_hint').textContent = index >= 0 && SPLITS[index]
+        ? `moving #${index + 1} ${SPLITS[index].axis} split — click to pick up (Esc cancels).`
+        : 'no splits to move';
+      return;
+    }
     if (SPLIT_MODE === 'remove') {
       if (BINNING_TREE) {
         const segs = treeCutSegments(BINNING_TREE);
@@ -1203,6 +1401,7 @@ function chartDomClick(e) {
   }
   if (!Number.isFinite(lam) || !Number.isFinite(tau)) return;
   if (SPLIT_MODE === 'remove') removeSplitAt(lam, tau);
+  else if (SPLIT_MODE === 'move') moveSplitAt(lam, tau);
   else placeSplitAt(lam, tau);
 }
 
@@ -1269,6 +1468,7 @@ function switchTab(tab){
 
 // A box/split edit exits any optimizer-tree overlay; recompute once edits settle (debounced).
 const onEdgeEdit = () => {
+  MOVE_STATE = null;
   clearTree();
   renderSplits();
   clearTimeout(_editTimer);
@@ -1280,6 +1480,7 @@ $('tauwin').addEventListener('input', onEdgeEdit);
 $('lam').addEventListener('input', onEdgeEdit);
 $('addtau').addEventListener('click', () => armSplit('tau'));
 $('addlam').addEventListener('click', () => armSplit('lam'));
+$('mvsplit').addEventListener('click', () => armSplit('move'));
 $('rmsplit').addEventListener('click', () => armSplit('remove'));
 window.addEventListener('keydown', e => { if (e.key === 'Escape' && SPLIT_MODE) armSplit(SPLIT_MODE); });
 $('go').addEventListener('click', compute);
